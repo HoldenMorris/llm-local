@@ -1,0 +1,1 @@
+Classify this email as SPAM (unwanted/malicious) or HAM (legitimate). Look for common spam indicators like urgent language, suspicious links, requests for sensitive info, or too-good-to-be-true offers. Respond with a single word: SPAM or HAM

@@ -1,0 +1,23 @@
+# Ollama models (cached in Docker volume)
+ollama_storage/
+
+# Results (optional - commit if you want history)
+results/*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Temp files
+tmp/
+temp/
+*.tmp
