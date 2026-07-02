@@ -19,7 +19,7 @@ if [ ! -f "$PROMPT_FILE" ]; then
     exit 1
 fi
 
-SYSTEM_PROMPT=$(cat "$PROMPT_FILE")
+SYSTEM_PROMPT=$(cat "$PROMPT_FILE" | jq -Rs .)
 PROMPT_NAME=$(basename "$PROMPT_FILE" .txt)
 
 declare -A EXPECTED
@@ -38,14 +38,8 @@ extract_body() {
 
 run_inference() {
     local prompt="$1"
-    RESPONSE=$(curl -s --max-time 30 -X POST http://localhost:11434/api/generate -d "{
-      \"model\": \"$MODEL\",
-      \"system\": \"$SYSTEM_PROMPT\",
-      \"prompt\": \"$prompt\",
-      \"options\": {\"num_thread\": $THREADS, \"num_predict\": 5, \"temperature\": 0.0, \"top_k\": 1},
-      \"stream\": false,
-      \"keep_alive\": \"$KEEP_ALIVE\"
-    }")
+    RESPONSE=$(curl -s --max-time 30 -X POST http://localhost:11434/api/generate \
+        --data-raw "{\"model\":\"$MODEL\",\"system\":$SYSTEM_PROMPT,\"prompt\":\"$prompt\",\"options\":{\"num_thread\":$THREADS,\"num_predict\":5,\"temperature\":0.0,\"top_k\":1},\"stream\":false,\"keep_alive\":\"$KEEP_ALIVE\"}")
     echo "$RESPONSE" | jq -r '.response // empty' | tr -d '[:punct:]' | xargs
 }
 

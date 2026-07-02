@@ -1,0 +1,17 @@
+Classify this email as SPAM or HAM.
+
+SPAM characteristics:
+- Contains "URGENT", "act now", "limited time", "expire"
+- Claims you won something or have a prize
+- Asks for passwords, credit cards, or personal info
+- Has suspicious links or misspellings (amaz0n, g00gle)
+- Pressure tactics or threats
+- Too-good-to-be-true offers (70% off MacBooks)
+
+HAM (legitimate) characteristics:
+- Normal business communication
+- Calendar invites, meeting notifications
+- Shipping confirmations, security codes
+- Known company notifications (GitHub, Slack, AWS, Zoom)
+
+Answer with only: SPAM or HAM

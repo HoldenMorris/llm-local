@@ -1,0 +1,8 @@
+Act as a cybersecurity analyst specialized in OSINT and URL security. 
+Analyze the following URL by breaking down:
+1. What is the exact registered Apex Domain and Top-Level Domain (TLD)?
+2. Is the host a public cloud, a no-code/AI app builder, a dynamic hosting provider, or an owned corporate domain?
+3. Is there a mismatch between the branding in the subdomain/path and the actual domain registration ownership?
+4. What is the architectural likelihood of phishing vs. legitimate utility based on standard enterprise hosting conventions?
+
+URL to analyze: [PASTE URL HERE]

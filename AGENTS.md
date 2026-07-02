@@ -11,6 +11,8 @@ This is a local LLM spam detection benchmarking toolkit. It tests SLMs (Small La
 | `benchmark.sh` | Main script - runs full test suite against corpus |
 | `llm-test.sh` | Single email test with detailed output |
 | `show_results.sh` | Renders results table from CSV |
+| `page-fetch.sh` | Sandboxed page scraper - extracts phishing signals |
+| `url-analyze.sh` | LLM-based URL safety analysis |
 | `prompts/*.txt` | System prompts - modify these to improve accuracy |
 | `test-corpus/*/` | Labeled test emails organized by category |
 | `results/*.csv` | Benchmark results stored for comparison |
