@@ -189,6 +189,41 @@ const { URL } = require('url');
   if (finalUrl !== targetUrl && wpSuspicious.test(finalUrl))
     smells.push(`Redirect to compromised WordPress: ${new URL(finalUrl).hostname}`);
 
+  // ponytail: Random URL path (high entropy paths like /kz51odwn/)
+  const pathParts = new URL(targetUrl).pathname.split('/').filter(p => p.length > 4);
+  const randomPath = pathParts.find(p => /^[a-z0-9]{5,}$/i.test(p) && !/^(index|login|admin|user|api|auth)$/i.test(p));
+  if (randomPath)
+    smells.push(`Random URL path: /${randomPath}/`);
+
+  // ponytail: Urgency keywords in page text
+  const urgencyPatterns = /(suspend|terminat|verify.{0,10}(now|immediate)|expire|unauthorized|unusual.{0,10}activity|confirm.{0,10}identity|update.{0,10}(payment|billing)|within.{0,10}24.{0,10}hour)/i;
+  if (urgencyPatterns.test(body))
+    smells.push('Urgency language detected');
+
+  // ponytail: Hidden form fields (potential data exfil)
+  const hiddenInputs = features.forms.flatMap(f => f.inputs.filter(i => i.type === 'hidden' && i.name));
+  if (hiddenInputs.length > 3)
+    smells.push(`${hiddenInputs.length} hidden form fields`);
+
+  // ponytail: Sensitive field names
+  const sensitiveFields = /(ssn|social.?sec|credit.?card|cvv|cvc|routing|account.?num|pin|passport)/i;
+  const sensitiveInputs = features.forms.flatMap(f => f.inputs.filter(i => sensitiveFields.test(i.name || i.placeholder || '')));
+  if (sensitiveInputs.length)
+    smells.push(`Sensitive data fields: ${sensitiveInputs.map(i => i.name || i.placeholder).join(', ')}`);
+
+  // ponytail: Clipboard hijacking
+  if (/oncopy|oncut|onpaste|clipboard/i.test(allJs))
+    smells.push('Clipboard access detected');
+
+  // ponytail: Right-click/context menu disabled
+  if (/oncontextmenu.*return\s*false|preventDefault.*contextmenu/i.test(allJs))
+    smells.push('Right-click disabled');
+
+  // ponytail: Crypto wallet addresses
+  const cryptoPatterns = /(^|[^a-z0-9])(bc1[a-z0-9]{39,59}|[13][a-km-zA-HJ-NP-Z1-9]{25,34}|0x[a-fA-F0-9]{40}|T[A-Za-z1-9]{33})([^a-z0-9]|$)/;
+  if (cryptoPatterns.test(body))
+    smells.push('Crypto wallet address found');
+
   const result = {
     url: targetUrl,
     finalUrl: redirects.at(-1)?.url || targetUrl,

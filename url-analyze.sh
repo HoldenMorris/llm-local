@@ -117,6 +117,39 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
     fi
 fi
 
+# === SSL Certificate Check (openssl) ===
+if echo "$URL" | grep -q "^https://"; then
+    SSL_INFO=$(echo | timeout 5 openssl s_client -connect "$DOMAIN:443" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -dates -issuer 2>/dev/null)
+    if [ -n "$SSL_INFO" ]; then
+        CERT_START=$(echo "$SSL_INFO" | grep "notBefore" | cut -d= -f2)
+        CERT_ISSUER=$(echo "$SSL_INFO" | grep "issuer" | sed 's/.*CN = //' | cut -d',' -f1)
+        if [ -n "$CERT_START" ]; then
+            CERT_TS=$(date -d "$CERT_START" +%s 2>/dev/null || echo "")
+            if [ -n "$CERT_TS" ]; then
+                CERT_AGE_DAYS=$(( ($(date +%s) - CERT_TS) / 86400 ))
+                if [ "$CERT_AGE_DAYS" -lt 7 ]; then
+                    echo "⚠️  SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
+                elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
+                    echo "SSL cert age: $CERT_AGE_DAYS days (recent)"
+                else
+                    echo "SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
+                fi
+            fi
+        fi
+    fi
+fi
+
+# === DNS Records Check ===
+A_RECORDS=$(dig +short "$DOMAIN" A 2>/dev/null | grep -E '^[0-9]+\.' | wc -l)
+if [ "$A_RECORDS" -gt 5 ]; then
+    echo "⚠️  Fast-flux: $A_RECORDS A records (suspicious)"
+fi
+
+TTL=$(dig +noall +answer "$DOMAIN" A 2>/dev/null | awk '{print $2}' | head -1)
+if [ -n "$TTL" ] && [ "$TTL" -lt 300 ]; then
+    echo "⚠️  Low TTL: ${TTL}s (fast-flux indicator)"
+fi
+
 echo ""
 
 # === PHASE 2: Page Fetch (dynamic signals) ===
