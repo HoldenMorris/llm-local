@@ -234,33 +234,77 @@ if [ -z "$MODEL" ]; then
     fi
 fi
 
-# Build context for LLM
+# Extract explicit, pre-computed signals so the LLM reasons from facts (not raw JSON)
+HAS_LOGIN=$(echo "$PAGE_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)
+FORMS=$(echo "$PAGE_DATA" | jq -r '.counts.forms // 0' 2>/dev/null)
+LOGIN_FORMS=$(echo "$PAGE_DATA" | jq -r '.counts.loginForms // 0' 2>/dev/null)
+FINAL_URL=$(echo "$PAGE_DATA" | jq -r '.finalUrl // ""' 2>/dev/null)
+TITLE=$(echo "$PAGE_DATA" | jq -r '.title // ""' 2>/dev/null)
+THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
+SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
+SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
+
+# Did the page actually redirect? (only true if final URL differs from the requested one)
+if [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ] && [ "$FINAL_URL" != "$URL" ]; then
+    IS_REDIRECT="yes -> $FINAL_URL"
+else
+    IS_REDIRECT="no"
+fi
+
+# Classify the URL path so the model doesn't confuse an unsubscribe link with a login page
+if echo "$URL" | grep -qiE 'unsub|opt[-_]?out|list[-_]?manage|/remove|mailpref|newsletter'; then
+    URL_KIND="mailing-list / unsubscribe endpoint. The query token typically base64-encodes a per-recipient id, so a click mainly CONFIRMS the address is live (list validation) rather than stealing credentials."
+else
+    URL_KIND="general web page"
+fi
+
 CONTEXT="URL: $URL
 Domain: $DOMAIN
 TLD: $TLD
 
-Page fetch data:
-$PAGE_DATA"
+EXTRACTED SIGNALS (these are the ground truth - do not assume anything not listed here):
+- URL type: $URL_KIND
+- Domain age (days): ${AGE_DAYS:-unknown}
+- SSL cert age (days): ${CERT_AGE_DAYS:-unknown}
+- A records / DNS TTL: ${A_RECORDS:-?} records, TTL ${TTL:-?}s
+- Login or password form present: $HAS_LOGIN
+- Total forms on page: $FORMS  (login forms: $LOGIN_FORMS)
+- Redirected to a different URL: $IS_REDIRECT
+- Suspicious JS: ${SUSP_JS:-none}
+- Phishing smells flagged by scraper: ${SMELLS:-none}
+- Third-party domains loaded: ${THIRD_PARTY:-0}
+- Page title: \"$TITLE\""
 
-SYSTEM_PROMPT="You are a strict cybersecurity analyst. Analyze this URL for phishing/malware. Be paranoid.
+SYSTEM_PROMPT="You are a strict cybersecurity analyst. Classify this URL using ONLY the EXTRACTED SIGNALS provided. Do NOT invent facts: if 'Login form present' is false there is NO credential form; if 'Redirected' is 'no' there is NO redirect. Never assume a redirect or login page that is not listed.
 
-DANGEROUS (use liberally):
-- Login form + ANY red flag (off-domain submit, risky TLD, IP fingerprinting)
-- Redirect to compromised site (wp-include paths, random subdirs)
-- Brand impersonation with credential harvesting
-- Multiple phishing signals present
+A login form is NORMAL and expected on legitimate sites (Google, banks, webmail). A login form BY ITSELF is not dangerous - it is only dangerous when combined with a red flag.
 
-SUSPICIOUS:
-- Single minor red flag without login form
-- Risky TLD but no other indicators
-- Unusual patterns needing investigation
+RED FLAGS (count how many are present in the signals):
+- off-domain form submit
+- brand impersonation (brand named but not the real domain)
+- risky TLD (.cfd .xyz .top .lol .sbs .icu .buzz .monster etc.)
+- IP fingerprinting
+- sensitive field names (ssn, cvv, routing, etc.)
+- domain age under 90 days
+- suspicious JS (eval, atob, hex-encoded, document.write)
+- redirect to wp-content / wp-include / random path
+- any phishing smell flagged by the scraper
 
-SAFE:
-- Legitimate domain, no red flags, expected behavior
+Follow this decision procedure EXACTLY, in order. Count the RED FLAGS first, then apply the FIRST rule that matches:
 
-When in doubt, choose DANGEROUS over SUSPICIOUS. Phishing detection has asymmetric costs - false negatives are worse than false positives.
+RULE 1 (MANDATORY - check this first): Login form present AND red flag count >= 1.
+   -> VERDICT: DANGEROUS. This is required. A login form plus even ONE red flag is credential harvesting. You must NOT downgrade this to SUSPICIOUS or SAFE, no matter what else you think. It does NOT need a redirect to be DANGEROUS.
 
-Be concise (2-3 sentences max). End with exactly:
+RULE 2: Login form present AND red flag count = 0 (established domain >90 days, same-domain submit, no smells, no suspicious JS).
+   -> VERDICT: SAFE. This is a normal legitimate login page.
+
+RULE 3: NO login form, but it is a mailing-list / unsubscribe endpoint on a young or throwaway domain, OR any single red flag is present.
+   -> VERDICT: SUSPICIOUS (e.g. list-validation: a click confirms your address to spammers).
+
+RULE 4: NO login form, established legitimate domain, zero red flags.
+   -> VERDICT: SAFE.
+
+Be concise (2-3 sentences), state whether a login form was present and how many red flags you counted, name which RULE fired, then end with exactly one line:
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
 curl -s --max-time 120 -X POST http://localhost:11434/api/generate \
@@ -280,6 +324,39 @@ echo "$RESPONSE" | sed '/^VERDICT:/d'
 echo ""
 
 VERDICT=$(echo "$RESPONSE" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
+
+# === Deterministic safety floor ===
+# The signals are already extracted deterministically, so don't trust a small
+# model to do boolean AND-logic. Count red flags in bash; a login form plus any
+# red flag is credential harvesting and MUST be DANGEROUS. Floor only escalates,
+# never downgrades, so it can never mask a threat the LLM did catch.
+RISKY_TLDS="cfd xyz top lol sbs icu buzz monster gq tk ml ga cf work zip mov"
+RED_FLAGS=0
+# one flag per phishing smell the scraper reported
+[ -n "$SMELLS" ] && RED_FLAGS=$(( RED_FLAGS + $(echo "$SMELLS" | tr ',' '\n' | grep -c .) ))
+# suspicious JS present
+[ -n "$SUSP_JS" ] && RED_FLAGS=$(( RED_FLAGS + 1 ))
+# risky TLD
+echo " $RISKY_TLDS " | grep -q " $TLD " && RED_FLAGS=$(( RED_FLAGS + 1 ))
+# young domain (<90 days); AGE_DAYS unset means unknown -> not counted
+[ -n "$AGE_DAYS" ] && [ "$AGE_DAYS" -lt 90 ] 2>/dev/null && RED_FLAGS=$(( RED_FLAGS + 1 ))
+# redirect into a compromised WordPress tree
+echo "$FINAL_URL" | grep -qiE 'wp-content|wp-include' && RED_FLAGS=$(( RED_FLAGS + 1 ))
+
+# is this a mailing-list / unsubscribe endpoint? (list-validation risk on its own)
+if echo "$URL" | grep -qiE 'unsub|opt[-_]?out|list[-_]?manage|/remove|mailpref|newsletter'; then
+    IS_UNSUB=1
+fi
+
+if [ "$HAS_LOGIN" = "true" ] && [ "$RED_FLAGS" -ge 1 ] && [ "$VERDICT" != "DANGEROUS" ]; then
+    # login form + any red flag = credential harvesting
+    echo "⚙️  Safety floor: login form + $RED_FLAGS red flag(s) -> forcing DANGEROUS (LLM said ${VERDICT:-UNCLEAR})"
+    VERDICT="DANGEROUS"
+elif { [ "$RED_FLAGS" -ge 1 ] || [ -n "$IS_UNSUB" ]; } && { [ "$VERDICT" = "SAFE" ] || [ -z "$VERDICT" ]; }; then
+    # no login form, but red flags / list-validation present -> at least SUSPICIOUS
+    echo "⚙️  Safety floor: $RED_FLAGS red flag(s)${IS_UNSUB:+ + unsubscribe endpoint} -> forcing SUSPICIOUS (LLM said ${VERDICT:-UNCLEAR})"
+    VERDICT="SUSPICIOUS"
+fi
 
 case "$VERDICT" in
     SAFE)
