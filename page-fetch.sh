@@ -176,6 +176,19 @@ const { URL } = require('url');
   if (/(?:\\x[0-9a-f]{2}){3,}/i.test(allJs)) jsSmells.push('hex-encoded strings');
   if (/window\.location\s*=/.test(allJs)) jsSmells.push('location redirect');
 
+  // ponytail: IP fingerprinting services used to track victims
+  const ipFingerprinters = ['api.ipify.org','ipinfo.io','ip-api.com','ipapi.co','checkip.amazonaws.com',
+    'ifconfig.me','icanhazip.com','wtfismyip.com','ipecho.net','myexternalip.com'];
+  const fingerprintHits = thirdPartyDomains.filter(d => ipFingerprinters.some(f => d.includes(f)));
+  if (fingerprintHits.length)
+    smells.push(`IP fingerprinting: ${fingerprintHits.join(', ')}`);
+
+  // ponytail: Redirect to compromised WordPress (wp-include/wp-content with random paths, not plugins/themes/uploads)
+  const finalUrl = redirects.at(-1)?.url || targetUrl;
+  const wpSuspicious = /\/wp-(includes?|content)\/(?!(plugins|themes|uploads)\/)[a-z0-9]{3,}\//i;
+  if (finalUrl !== targetUrl && wpSuspicious.test(finalUrl))
+    smells.push(`Redirect to compromised WordPress: ${new URL(finalUrl).hostname}`);
+
   const result = {
     url: targetUrl,
     finalUrl: redirects.at(-1)?.url || targetUrl,
