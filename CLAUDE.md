@@ -18,47 +18,105 @@ Rules:
 - No boilerplate nobody asked for
 - Deletion over addition. Boring over clever. Fewest files possible.
 - Shortest working diff wins
-- Question complex requests: "Do you actually need X, or does Y cover it?"
 - Mark intentional simplifications with `ponytail:` comment
 
 Not lazy about: input validation, error handling, security, accessibility.
 
 ## Project Status
 
-**Current focus:** Page scraper for phishing detection
+**Current focus:** URL/Page phishing detection toolkit
 
-### Working
-- `benchmark.sh` - Email spam classification benchmark (Ollama/Docker)
-- `llm-test.sh` - Single email test
-- `page-fetch.sh` - Sandboxed page scraper with phishing signals (FIXED)
-- `url-analyze.sh` - LLM-based URL analysis
+### Tools
 
-### page-fetch.sh
-Puppeteer-based scraper in hardened Docker container. Extracts:
-- Redirect chains, forms, links, scripts, iframes
-- Login form detection
-- Third-party domains
-- Phishing signals: brand impersonation, external link ratio, off-domain form submission, suspicious JS
+| Script | Purpose |
+|--------|---------|
+| `url-analyze.sh` | Full URL analysis (static + dynamic + LLM) |
+| `page-fetch.sh` | Sandboxed page scraper with phishing signals |
+| `benchmark.sh` | Email spam classification benchmark |
+| `llm-test.sh` | Single email test |
 
-OAuth/payment whitelist: accounts.google.com, stripe.com, supabase.co, etc. are recognized as legitimate integrations (won't trigger brand impersonation false positives).
+## url-analyze.sh - 3-Phase Analysis
 
-### Test Corpus
-Categories: spam_high, spam_low, phishing, whale_phishing, dangerous, clean
+### Phase 1: Static URL Analysis (no network)
+
+| Detection | Description |
+|-----------|-------------|
+| High-risk TLD | `.cfd`, `.xyz`, `.top`, `.lol`, `.sbs`, `.icu`, `.buzz`, `.monster`, etc. |
+| Typosquatting | Brand name in subdomain but not apex domain |
+| Excessive subdomains | >4 levels (hiding real domain) |
+| Homograph attack | Non-ASCII characters in domain |
+| Random domain | High-entropy alphanumeric strings |
+
+### Phase 2: Domain Info Lookup
+
+| Detection | Source |
+|-----------|--------|
+| IP geolocation | ip-api.com (country, org, ISP) |
+| Domain age | RDAP/Verisign (flags <30 days as high risk) |
+| SSL cert age | openssl (flags <7 days as suspicious) |
+| SSL issuer | openssl |
+| Fast-flux DNS | >5 A records or TTL <300s |
+
+### Phase 3: Page Fetch (via page-fetch.sh)
+
+| Detection | Description |
+|-----------|-------------|
+| Login form | Password field present |
+| Off-domain form | Login submits to different domain |
+| IP fingerprinting | api.ipify.org, ipinfo.io, etc. |
+| Compromised WordPress | Redirect to `/wp-include/` or `/wp-content/` with random paths |
+| Random URL path | High-entropy paths like `/kz51odwn/` |
+| Urgency language | "suspended", "verify now", "24 hours", etc. |
+| Hidden form fields | >3 hidden inputs |
+| Sensitive field names | ssn, credit_card, cvv, routing, etc. |
+| Clipboard hijacking | `oncopy`, clipboard API usage |
+| Right-click disabled | `oncontextmenu` blocked |
+| Crypto wallet addresses | BTC, ETH, TRX patterns |
+| Brand impersonation | Brand mentioned but not in domain (with OAuth whitelist) |
+| Suspicious JS | eval(), atob(), document.write(), hex-encoded strings |
+| External link ratio | Skewed external vs internal links |
+
+### Phase 4: LLM Analysis
+
+- Contextual analysis of all signals
+- Verdict: **SAFE** / **SUSPICIOUS** / **DANGEROUS**
+- Strict mode: "when in doubt, choose DANGEROUS"
+
+## Brand Detection (80+ brands)
+
+| Category | Brands |
+|----------|--------|
+| Tech | google, microsoft, apple, amazon, paypal, netflix, zoom, slack |
+| Crypto | coinbase, binance, metamask, ledger, trustwallet, kraken |
+| US Banks | chase, wellsfargo, bankofamerica, citi, schwab, fidelity, amex |
+| UK Banks | barclays, hsbc, lloyds, natwest, monzo, revolut |
+| EU Banks | ing, bnp, deutsche, ubs, creditsuisse |
+| African Banks | nedbank, standardbank, fnb, absa, capitec, investec |
+| APAC Banks | dbs, ocbc, maybank, icici, hdfc, anz, westpac |
 
 ## Commands
 
 ```bash
-./benchmark.sh [model] [prompt]     # Run full benchmark
-./llm-test.sh [model]               # Test single email
-./page-fetch.sh <url>               # Scrape page for phishing signals
-./url-analyze.sh -m <model> <url>   # LLM URL analysis
+# Full analysis with LLM
+./url-analyze.sh -m gemma2:2b <url>
+
+# Static analysis only (skip page fetch)
+./url-analyze.sh -s <url>
+
+# Page scraper only (JSON output)
+./page-fetch.sh <url>
+
+# Email spam benchmark
+./benchmark.sh [model] [prompt]
 ```
 
 ## Dependencies
-- Docker with Ollama image (llm-spam-test container)
-- Docker with ghcr.io/puppeteer/puppeteer for page-fetch
-- jq, bc
+
+- Docker with Ollama image (`llm-spam-test` container)
+- Docker with `ghcr.io/puppeteer/puppeteer` for page-fetch
+- `jq`, `bc`, `dig`, `openssl`, `curl`
 
 ## Skills Installed
+
 - **GSD (Get Shit Done)** - Project management for solo devs
 - **Ponytail** - Lazy senior dev mode (marketplace added)
