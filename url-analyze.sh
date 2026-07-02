@@ -152,15 +152,25 @@ TLD: $TLD
 Page fetch data:
 $PAGE_DATA"
 
-SYSTEM_PROMPT="You are a cybersecurity analyst. Analyze this URL and page data for phishing/malware indicators.
+SYSTEM_PROMPT="You are a strict cybersecurity analyst. Analyze this URL for phishing/malware. Be paranoid.
 
-Consider:
-1. Domain legitimacy (TLD, typosquatting, random strings)
-2. Page signals (login forms, redirects, third-party domains)
-3. Brand impersonation patterns
-4. Technical indicators (IP fingerprinting, compromised hosts)
+DANGEROUS (use liberally):
+- Login form + ANY red flag (off-domain submit, risky TLD, IP fingerprinting)
+- Redirect to compromised site (wp-include paths, random subdirs)
+- Brand impersonation with credential harvesting
+- Multiple phishing signals present
 
-Be concise. End with exactly:
+SUSPICIOUS:
+- Single minor red flag without login form
+- Risky TLD but no other indicators
+- Unusual patterns needing investigation
+
+SAFE:
+- Legitimate domain, no red flags, expected behavior
+
+When in doubt, choose DANGEROUS over SUSPICIOUS. Phishing detection has asymmetric costs - false negatives are worse than false positives.
+
+Be concise (2-3 sentences max). End with exactly:
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
 curl -s --max-time 120 -X POST http://localhost:11434/api/generate \
