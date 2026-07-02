@@ -6,7 +6,10 @@
 
 set -e
 
-URL="${1:?Usage: $0 <url>}"
+# ponytail: -m/--mobile swaps to a mobile UA to defeat mobile-only cloakers
+UA_MODE="desktop"
+[[ "$1" == "-m" || "$1" == "--mobile" ]] && { UA_MODE="mobile"; shift; }
+URL="${1:?Usage: $0 [-m|--mobile] <url>}"
 
 CONTAINER_NAME="llm-page-fetch-$$"
 IMAGE="ghcr.io/puppeteer/puppeteer:latest"
@@ -18,8 +21,9 @@ const { URL } = require('url');
 (async () => {
   const targetUrl = process.argv[2];
   const parsed = new URL(targetUrl);
-  const domain = parsed.hostname;
-  const apexDomain = domain.split('.').slice(-2).join('.');
+  // let: re-anchored to the LANDED host after redirects so analysis isn't judged against the entry shortener
+  let domain = parsed.hostname;
+  let apexDomain = domain.split('.').slice(-2).join('.');
 
   const browser = await puppeteer.launch({
     headless: 'new',
@@ -34,10 +38,28 @@ const { URL } = require('url');
 
   const page = await browser.newPage();
 
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
-  );
-  await page.setViewport({ width: 1920, height: 1080 });
+  // ponytail: mobile UA when requested — many phishing cloakers only forward mobile victims
+  const uaMode = process.argv[3] || 'desktop';
+  const UAS = {
+    desktop: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    mobile: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+  };
+  await page.setUserAgent(UAS[uaMode] || UAS.desktop);
+  if (uaMode === 'mobile') await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  else await page.setViewport({ width: 1920, height: 1080 });
+
+  // ponytail: realistic headers — cloakers 403 bare (curl-style) requests missing these
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  });
+
+  // Track every main-frame navigation (captures JS/meta/cookie redirects, not just HTTP 3xx)
+  const hops = [];
+  page.on('framenavigated', (frame) => {
+    const u = frame.url();
+    if (frame === page.mainFrame() && u && u !== 'about:blank' && hops.at(-1) !== u) hops.push(u);
+  });
 
   // Track all requests
   const requests = [];
@@ -55,26 +77,41 @@ const { URL } = require('url');
     req.continue();
   });
 
-  const resp = await page.goto(targetUrl, {
-    waitUntil: 'networkidle0',
-    timeout: 15000
+  // Initial navigation — tolerate mid-flight JS redirects that destroy the JS context
+  let resp = await page.goto(targetUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000
   }).catch(() => null);
 
-  if (!resp) {
+  // Follow JS/meta/cookie redirects (cloaker gates) until the URL stops changing
+  let prevUrl = null;
+  for (let i = 0; i < 6 && page.url() !== prevUrl; i++) {
+    prevUrl = page.url();
+    const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 8000 }).catch(() => null);
+    if (nav) resp = nav;
+  }
+
+  // Let the landing page settle so dynamically-injected forms/scripts are captured
+  await page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {});
+
+  const landedUrl = page.url();
+  if (!landedUrl || landedUrl === 'about:blank') {
     console.log(JSON.stringify({ error: 'timeout or unreachable' }));
     await browser.close();
     process.exit(0);
   }
 
-  // Redirect chain
-  const redirects = [];
-  let r = resp;
-  while (r) {
-    redirects.push({ url: r.url(), status: r.status() });
-    r = r.request().redirectChain().length
-      ? r.request().redirectChain().at(-1).response()
-      : null;
-  }
+  const status = resp ? resp.status() : 0;
+
+  // Re-anchor host to where we actually landed (redirects may cross domains)
+  domain = new URL(landedUrl).hostname;
+  apexDomain = domain.split('.').slice(-2).join('.');
+
+  // Full hop chain (HTTP + JS/meta/cookie redirects), consecutive-deduped
+  const redirects = hops.map(u => ({ url: u, status: null }));
+  if (!redirects.length) redirects.push({ url: targetUrl, status });
+  if (redirects.at(-1).url !== landedUrl) redirects.push({ url: landedUrl, status });
+  redirects.at(-1).status = status;
 
   const features = await page.evaluate(() => {
     const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
@@ -115,7 +152,7 @@ const { URL } = require('url');
   const smells = [];
 
   // External resources summary (moved up for brand check)
-  const thirdParty = requests.filter(r => r.isThirdParty);
+  const thirdParty = requests.filter(r => r.domain && r.domain !== domain);
   const thirdPartyDomains = [...new Set(thirdParty.map(r => r.domain))].slice(0,15);
 
   // Brand mismatch - but whitelist OAuth/payment integrations
@@ -140,7 +177,8 @@ const { URL } = require('url');
     'appleid.apple.com','amazon.com','paypal.com','stripe.com','js.stripe.com','m.stripe.com','github.com',
     'login.live.com','auth0.com','okta.com','supabase.co'];
   const body = features.text.toLowerCase();
-  const matched = brands.filter(b => body.includes(b));
+  // Word-boundary match so short brands (e.g. "ing") don't hit inside "tracking"/"information"
+  const matched = brands.filter(b => new RegExp(`\\b${b}\\b`, 'i').test(body));
   if (matched.length) {
     const dom = domain.toLowerCase();
     const brandInDomain = matched.some(b => dom.includes(b.replace(/\s/g,'')));
@@ -203,7 +241,7 @@ const { URL } = require('url');
     smells.push(`Redirect to compromised WordPress: ${new URL(finalUrl).hostname}`);
 
   // ponytail: Random URL path (high entropy paths like /kz51odwn/)
-  const pathParts = new URL(targetUrl).pathname.split('/').filter(p => p.length > 4);
+  const pathParts = new URL(landedUrl).pathname.split('/').filter(p => p.length > 4);
   const randomPath = pathParts.find(p => /^[a-z0-9]{5,}$/i.test(p) && !/^(index|login|admin|user|api|auth)$/i.test(p));
   if (randomPath)
     smells.push(`Random URL path: /${randomPath}/`);
@@ -240,7 +278,7 @@ const { URL } = require('url');
   const result = {
     url: targetUrl,
     finalUrl: redirects.at(-1)?.url || targetUrl,
-    status: resp.status(),
+    status,
     redirects,
     domain, apexDomain,
     title: features.title,
@@ -283,6 +321,6 @@ docker run --rm --name "$CONTAINER_NAME" \
   --cpus 1 \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
   "$IMAGE" \
-  node /home/pptruser/script.js "$URL" 2>/dev/null
+  node /home/pptruser/script.js "$URL" "$UA_MODE" 2>/dev/null
 
 rm -f /tmp/page-fetch.js
