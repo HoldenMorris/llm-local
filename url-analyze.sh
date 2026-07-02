@@ -75,6 +75,48 @@ if [ ${#DOMAIN_BASE} -gt 8 ] && echo "$DOMAIN_BASE" | grep -qE '^[a-z0-9]+$' && 
     echo "⚠️  Random-looking domain: $DOMAIN_BASE"
 fi
 
+# === Domain Info Lookup ===
+echo "--- Domain Info ---"
+
+# Get apex domain (last 2 parts for most TLDs)
+APEX_DOMAIN=$(echo "$DOMAIN" | grep -oE '[^.]+\.[^.]+$')
+
+# DNS + IP info
+IP=$(dig +short "$DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+if [ -n "$IP" ]; then
+    IP_INFO=$(curl -s --max-time 5 "http://ip-api.com/json/$IP?fields=country,org,isp" 2>/dev/null)
+    COUNTRY=$(echo "$IP_INFO" | jq -r '.country // "?"')
+    ORG=$(echo "$IP_INFO" | jq -r '.org // .isp // "?"')
+    echo "IP: $IP ($COUNTRY, $ORG)"
+else
+    echo "IP: (unresolvable)"
+fi
+
+# Domain age via RDAP (works for .com, .net, .org)
+if echo "$TLD" | grep -qE '^(com|net|org)$'; then
+    RDAP_URL="https://rdap.verisign.com/$TLD/v1/domain/$APEX_DOMAIN"
+    RDAP=$(curl -s --max-time 5 "$RDAP_URL" 2>/dev/null)
+    CREATED=$(echo "$RDAP" | jq -r '.events[] | select(.eventAction=="registration") | .eventDate' 2>/dev/null | head -1)
+    if [ -n "$CREATED" ] && [ "$CREATED" != "null" ]; then
+        CREATED_DATE=$(echo "$CREATED" | cut -d'T' -f1)
+        # Calculate age in days
+        CREATED_TS=$(date -d "$CREATED_DATE" +%s 2>/dev/null || echo "")
+        if [ -n "$CREATED_TS" ]; then
+            NOW_TS=$(date +%s)
+            AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
+            if [ "$AGE_DAYS" -lt 30 ]; then
+                echo "⚠️  Domain age: $AGE_DAYS days (VERY NEW - high risk)"
+            elif [ "$AGE_DAYS" -lt 90 ]; then
+                echo "⚠️  Domain age: $AGE_DAYS days (new)"
+            else
+                echo "Domain age: $AGE_DAYS days (created $CREATED_DATE)"
+            fi
+        else
+            echo "Domain created: $CREATED_DATE"
+        fi
+    fi
+fi
+
 echo ""
 
 # === PHASE 2: Page Fetch (dynamic signals) ===
