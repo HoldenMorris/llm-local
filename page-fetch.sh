@@ -119,9 +119,22 @@ const { URL } = require('url');
   const thirdPartyDomains = [...new Set(thirdParty.map(r => r.domain))].slice(0,15);
 
   // Brand mismatch - but whitelist OAuth/payment integrations
-  const brands = ['google','facebook','microsoft','apple','amazon','paypal',
-    'netflix','instagram','linkedin','twitter','github','dropbox','adobe',
-    'chase','wells fargo','amex','visa','mastercard'];
+  const brands = [
+    // Tech
+    'google','facebook','microsoft','apple','amazon','paypal','netflix','instagram','linkedin','twitter','github','dropbox','adobe','zoom','slack',
+    // Crypto
+    'coinbase','binance','metamask','tronlink','trustwallet','kraken','ledger','blockchain',
+    // US Banks
+    'chase','wellsfargo','bankofamerica','citibank','usbank','capitalone','tdbank','truist','schwab','fidelity','americanexpress','amex','visa','mastercard',
+    // UK Banks
+    'barclays','hsbc','lloyds','natwest','santander','halifax','monzo','revolut',
+    // EU Banks
+    'ing','bnp','deutsche','commerzbank','rabobank','unicredit','creditsuisse','ubs',
+    // African Banks
+    'nedbank','standardbank','fnb','absa','capitec','investec','firstrand','oldmutual',
+    // APAC Banks
+    'dbs','ocbc','maybank','icici','hdfc','commonwealth','anz','westpac'
+  ];
   // ponytail: OAuth/payment providers whose presence explains brand mentions
   const oauthPaymentDomains = ['accounts.google.com','apis.google.com','facebook.com','login.microsoftonline.com',
     'appleid.apple.com','amazon.com','paypal.com','stripe.com','js.stripe.com','m.stripe.com','github.com',
