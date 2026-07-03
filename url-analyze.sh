@@ -4,6 +4,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ollama-up.sh"
+source "$SCRIPT_DIR/verdict.sh"
 
 spinner() {
     local pid=$1
@@ -46,9 +47,8 @@ echo ""
 DOMAIN=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
 TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 
-# ponytail: High-risk TLDs commonly used for phishing
-RISKY_TLDS="cfd|xyz|top|lol|sbs|icu|buzz|surf|monster|click|link|gq|ml|tk|cf|ga"
-if echo "$TLD" | grep -qE "^($RISKY_TLDS)$"; then
+# ponytail: High-risk TLDs (list lives in verdict.sh, single source of truth)
+if is_risky_tld "$TLD"; then
     echo "⚠️  High-risk TLD: .$TLD"
 fi
 
@@ -328,38 +328,11 @@ echo ""
 
 VERDICT=$(echo "$RESPONSE" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
 
-# === Deterministic safety floor ===
-# The signals are already extracted deterministically, so don't trust a small
-# model to do boolean AND-logic. Count red flags in bash; a login form plus any
-# red flag is credential harvesting and MUST be DANGEROUS. Floor only escalates,
-# never downgrades, so it can never mask a threat the LLM did catch.
-RISKY_TLDS="cfd xyz top lol sbs icu buzz monster gq tk ml ga cf work zip mov"
-RED_FLAGS=0
-# one flag per phishing smell the scraper reported
-[ -n "$SMELLS" ] && RED_FLAGS=$(( RED_FLAGS + $(echo "$SMELLS" | tr ',' '\n' | grep -c .) ))
-# suspicious JS present
-[ -n "$SUSP_JS" ] && RED_FLAGS=$(( RED_FLAGS + 1 ))
-# risky TLD
-echo " $RISKY_TLDS " | grep -q " $TLD " && RED_FLAGS=$(( RED_FLAGS + 1 ))
-# young domain (<90 days); AGE_DAYS unset means unknown -> not counted
-[ -n "$AGE_DAYS" ] && [ "$AGE_DAYS" -lt 90 ] 2>/dev/null && RED_FLAGS=$(( RED_FLAGS + 1 ))
-# redirect into a compromised WordPress tree
-echo "$FINAL_URL" | grep -qiE 'wp-content|wp-include' && RED_FLAGS=$(( RED_FLAGS + 1 ))
-
-# is this a mailing-list / unsubscribe endpoint? (list-validation risk on its own)
-if echo "$URL" | grep -qiE 'unsub|opt[-_]?out|list[-_]?manage|/remove|mailpref|newsletter'; then
-    IS_UNSUB=1
-fi
-
-if [ "$HAS_LOGIN" = "true" ] && [ "$RED_FLAGS" -ge 1 ] && [ "$VERDICT" != "DANGEROUS" ]; then
-    # login form + any red flag = credential harvesting
-    echo "⚙️  Safety floor: login form + $RED_FLAGS red flag(s) -> forcing DANGEROUS (LLM said ${VERDICT:-UNCLEAR})"
-    VERDICT="DANGEROUS"
-elif { [ "$RED_FLAGS" -ge 1 ] || [ -n "$IS_UNSUB" ]; } && { [ "$VERDICT" = "SAFE" ] || [ -z "$VERDICT" ]; }; then
-    # no login form, but red flags / list-validation present -> at least SUSPICIOUS
-    echo "⚙️  Safety floor: $RED_FLAGS red flag(s)${IS_UNSUB:+ + unsubscribe endpoint} -> forcing SUSPICIOUS (LLM said ${VERDICT:-UNCLEAR})"
-    VERDICT="SUSPICIOUS"
-fi
+# === Deterministic verdict (classify_verdict in verdict.sh) ===
+# Signals are extracted deterministically upstream, so the final verdict is
+# decided by the decision table in verdict.sh -- it escalates over the LLM's
+# verdict but never downgrades. The "⚙️ Safety floor" notice goes to stderr.
+VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$VERDICT")
 
 case "$VERDICT" in
     SAFE)
