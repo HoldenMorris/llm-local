@@ -3,6 +3,7 @@
 # URL Analyzer - combines page-fetch signals with LLM analysis
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/ollama-up.sh"
 
 spinner() {
     local pid=$1
@@ -210,6 +211,8 @@ fi
 echo ""
 
 # === PHASE 3: LLM Analysis ===
+ensure_ollama || exit 1
+
 if [ -z "$MODEL" ]; then
     echo "Available models:"
     MODELS=($(docker exec llm-spam-test ollama list 2>/dev/null | awk 'NR>1 {print $1}'))

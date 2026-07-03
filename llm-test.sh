@@ -26,29 +26,9 @@ if [ "$FREE_RAM" -lt 2000 ]; then
     exit 1
 fi
 
-# GPU Check
-DOCKER_GPU_FLAG=""
-if command -v nvidia-smi &> /dev/null && nvidia-smi &> /dev/null; then
-    echo "✅ GPU: NVIDIA Detected. Enabling hardware acceleration."
-    DOCKER_GPU_FLAG="--gpus all"
-else
-    echo "ℹ️  GPU: None. Optimizing for CPU ($THREADS threads)."
-fi
-
 echo -e "\n--- 📦 CONTAINER & CACHE ---"
-if docker ps -q -f name=$CONTAINER_NAME | grep -q .; then
-    echo "✅ Ollama container already running."
-elif docker ps -aq -f name=$CONTAINER_NAME | grep -q .; then
-    echo "🚀 Restarting existing Ollama container..."
-    docker start $CONTAINER_NAME
-    until curl -s --max-time 5 localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
-else
-    echo "🚀 Creating new Ollama instance..."
-    docker run -d $DOCKER_GPU_FLAG --name $CONTAINER_NAME -p 11434:11434 \
-      -e OLLAMA_KEEP_ALIVE=$KEEP_ALIVE \
-      -v ollama_storage:/root/.ollama ollama/ollama:latest
-    until curl -s --max-time 5 localhost:11434/api/tags > /dev/null 2>&1; do sleep 1; done
-fi
+source "$(dirname "${BASH_SOURCE[0]}")/ollama-up.sh"
+ensure_ollama || exit 1
 
 # Cache Check
 echo "📥 Checking model cache for $SELECTED_MODEL..."
