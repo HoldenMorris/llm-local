@@ -174,8 +174,9 @@ echo ""
 # === PHASE 2: Page Fetch (dynamic signals) ===
 if [ -z "$SKIP_FETCH" ]; then
     echo "Fetching page content..."
-    # Capture a screenshot too, for the vision escalation in Phase 3 (see below)
-    [ -z "$NO_VISION" ] && SHOT="$(mktemp -d)/page.jpg"
+    # Capture a screenshot too, for the vision escalation in Phase 3 (see below).
+    # Keep it alive until the script exits so the user can open it for manual review.
+    [ -z "$NO_VISION" ] && SHOT="$(mktemp -d)/page.jpg" && trap 'rm -rf "$(dirname "$SHOT")"' EXIT
     PAGE_DATA=$(PAGE_SHOT="$SHOT" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
 
     if echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1; then
@@ -262,8 +263,12 @@ SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev
 VISION_NOTE=""
 if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
    && docker exec llm-spam-test ollama list 2>/dev/null | grep -q "$VISION_MODEL"; then
+    # Compare the brand against the domain we ACTUALLY landed on (post-redirect), not the
+    # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
+    LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
+    LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
     echo "👁️  Login form present — visual brand check via $VISION_MODEL (~1min on CPU)..."
-    VP="This screenshot is the web page served at domain '$DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
+    VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
     # think:false — we want a crisp brand verdict, not a reasoning essay. Without it the
     # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
     VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
@@ -273,7 +278,13 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
     VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
     [ -n "$VISION_NOTE" ] && echo "   → $VISION_NOTE"
 fi
-[ -n "$SHOT" ] && rm -rf "$(dirname "$SHOT")"
+
+# Offer to open the screenshot for human validation (interactive terminal + GUI only).
+# The EXIT trap deletes it on exit; the viewer has loaded it by then.
+if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    read -r -p "🖼️  Open page screenshot for manual review? [y/N] " _ans
+    [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
+fi
 
 # Did the page actually redirect? (only true if final URL differs from the requested one)
 if [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ] && [ "$FINAL_URL" != "$URL" ]; then
@@ -340,8 +351,8 @@ RULE 4: NO login form, established legitimate domain, zero red flags.
 Be concise (2-3 sentences), state whether a login form was present and how many red flags you counted, name which RULE fired, then end with exactly one line:
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
-curl -s --max-time 120 -X POST http://localhost:11434/api/generate \
-    --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json &
+curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
+    --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json &
 CURL_PID=$!
 
 spinner $CURL_PID "LLM analyzing..."
