@@ -11,6 +11,10 @@ UA_MODE="desktop"
 [[ "$1" == "-m" || "$1" == "--mobile" ]] && { UA_MODE="mobile"; shift; }
 URL="${1:?Usage: $0 [-m|--mobile] <url>}"
 
+# ponytail: PAGE_SHOT=<host .png/.jpg> also saves a viewport screenshot there, for
+# the vision-model escalation step. Unset = no screenshot, no output change.
+SHOT="${PAGE_SHOT:-}"
+
 CONTAINER_NAME="llm-page-fetch-$$"
 IMAGE="ghcr.io/puppeteer/puppeteer:latest"
 
@@ -299,6 +303,13 @@ const { URL } = require('url');
     phishingSmells: smells,
   };
 
+  // ponytail: optional viewport screenshot for the vision-model escalation (argv[4] = container path)
+  const shotPath = process.argv[4];
+  if (shotPath) {
+    const isJpeg = /\.jpe?g$/i.test(shotPath);
+    await page.screenshot({ path: shotPath, ...(isJpeg ? { quality: 70 } : {}) }).catch(() => {});
+  }
+
   console.log(JSON.stringify(result));
   await browser.close();
 })();
@@ -311,6 +322,14 @@ if ! docker image inspect "$IMAGE" &>/dev/null; then
   docker pull "$IMAGE" >/dev/null
 fi
 
+# Mount a writable dir + pass a container path only when a screenshot was requested
+SHOT_MOUNT=() SHOT_ARG=""
+if [ -n "$SHOT" ]; then
+  mkdir -p "$(dirname "$SHOT")" && chmod 777 "$(dirname "$SHOT")"  # ponytail: pptruser (uid!=host) must write the mount
+  SHOT_MOUNT=(-v "$(dirname "$SHOT")":/out)
+  SHOT_ARG="/out/$(basename "$SHOT")"
+fi
+
 docker run --rm --name "$CONTAINER_NAME" \
   --cap-drop ALL \
   --cap-add SYS_ADMIN \
@@ -320,7 +339,8 @@ docker run --rm --name "$CONTAINER_NAME" \
   --memory 1g \
   --cpus 1 \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
+  "${SHOT_MOUNT[@]}" \
   "$IMAGE" \
-  node /home/pptruser/script.js "$URL" "$UA_MODE" 2>/dev/null
+  node /home/pptruser/script.js "$URL" "$UA_MODE" "$SHOT_ARG" 2>/dev/null
 
 rm -f /tmp/page-fetch.js

@@ -27,8 +27,10 @@ is_unsub_url() {
 count_red_flags() {
     local tld="$1" age="$2" final_url="$3" smells="$4" susp_js="$5"
     local n=0
-    # one flag per phishing smell the scraper reported
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -c .) ))
+    # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
+    # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
+    # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -vi 'hidden form field' | grep -c .) ))
     # suspicious JS present
     [ -n "$susp_js" ] && n=$(( n + 1 ))
     # risky TLD

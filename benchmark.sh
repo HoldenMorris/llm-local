@@ -38,9 +38,10 @@ extract_body() {
 
 run_inference() {
     local prompt="$1"
+    # num_predict must clear the <think> block for reasoning models; plain models still stop at EOS after one word
     RESPONSE=$(curl -s --max-time 30 -X POST http://localhost:11434/api/generate \
-        --data-raw "{\"model\":\"$MODEL\",\"system\":$SYSTEM_PROMPT,\"prompt\":\"$prompt\",\"options\":{\"num_thread\":$THREADS,\"num_predict\":5,\"temperature\":0.0,\"top_k\":1},\"stream\":false,\"keep_alive\":\"$KEEP_ALIVE\"}")
-    echo "$RESPONSE" | jq -r '.response // empty' | tr -d '[:punct:]' | xargs
+        --data-raw "{\"model\":\"$MODEL\",\"system\":$SYSTEM_PROMPT,\"prompt\":\"$prompt\",\"options\":{\"num_thread\":$THREADS,\"num_predict\":256,\"temperature\":0.0,\"top_k\":1},\"stream\":false,\"keep_alive\":\"$KEEP_ALIVE\"}")
+    echo "$RESPONSE" | jq -r '(.response // empty) | gsub("(?s)<think>.*?</think>";"")' | tr -d '[:punct:]' | xargs
 }
 
 echo "=============================================="

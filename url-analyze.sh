@@ -21,12 +21,15 @@ spinner() {
 MODEL=""
 URL=""
 SKIP_FETCH=""
+NO_VISION=""
+VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
-while getopts "m:s" opt; do
+while getopts "m:sV" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
-        *) echo "Usage: $0 [-m model] [-s] <url>"; exit 1 ;;
+        V) NO_VISION=1 ;;
+        *) echo "Usage: $0 [-m model] [-s] [-V no-vision] <url>"; exit 1 ;;
     esac
 done
 shift $((OPTIND-1))
@@ -171,7 +174,9 @@ echo ""
 # === PHASE 2: Page Fetch (dynamic signals) ===
 if [ -z "$SKIP_FETCH" ]; then
     echo "Fetching page content..."
-    PAGE_DATA=$("$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
+    # Capture a screenshot too, for the vision escalation in Phase 3 (see below)
+    [ -z "$NO_VISION" ] && SHOT="$(mktemp -d)/page.jpg"
+    PAGE_DATA=$(PAGE_SHOT="$SHOT" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
 
     if echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1; then
         echo "⚠️  Page unreachable or timeout"
@@ -247,6 +252,29 @@ THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/nul
 SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
 SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
 
+# === Vision escalation ===
+# A login form is where a visual brand-clone is both most likely and most costly to
+# miss. Only there do we spend the ~1min VLM call: it "sees" the rendered page (logo,
+# colours, layout) and catches clones that text/DOM scraping can't. Its answer feeds
+# the LLM below as another signal. Gated on -V, a captured screenshot, and the model
+# being installed. ponytail: login-form trigger only; widen to conflicting-signal
+# cases if it proves worth the minute.
+VISION_NOTE=""
+if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
+   && docker exec llm-spam-test ollama list 2>/dev/null | grep -q "$VISION_MODEL"; then
+    echo "👁️  Login form present — visual brand check via $VISION_MODEL (~1min on CPU)..."
+    VP="This screenshot is the web page served at domain '$DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
+    # think:false — we want a crisp brand verdict, not a reasoning essay. Without it the
+    # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
+    VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
+        '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
+        | curl -s --max-time 180 http://localhost:11434/api/generate -d @- | jq -r '.response // ""')
+    # belt-and-braces: strip a <think> block if the model emits one anyway
+    VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+    [ -n "$VISION_NOTE" ] && echo "   → $VISION_NOTE"
+fi
+[ -n "$SHOT" ] && rm -rf "$(dirname "$SHOT")"
+
 # Did the page actually redirect? (only true if final URL differs from the requested one)
 if [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ] && [ "$FINAL_URL" != "$URL" ]; then
     IS_REDIRECT="yes -> $FINAL_URL"
@@ -276,6 +304,7 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Suspicious JS: ${SUSP_JS:-none}
 - Phishing smells flagged by scraper: ${SMELLS:-none}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
+- Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
 - Page title: \"$TITLE\""
 
 SYSTEM_PROMPT="You are a strict cybersecurity analyst. Classify this URL using ONLY the EXTRACTED SIGNALS provided. Do NOT invent facts: if 'Login form present' is false there is NO credential form; if 'Redirected' is 'no' there is NO redirect. Never assume a redirect or login page that is not listed.
@@ -285,6 +314,7 @@ A login form is NORMAL and expected on legitimate sites (Google, banks, webmail)
 RED FLAGS (count how many are present in the signals):
 - off-domain form submit
 - brand impersonation (brand named but not the real domain)
+- visual brand mismatch: the 'Visual brand check' says the page LOOKS like a known brand (its logo/design) but that brand does not match the domain
 - risky TLD (.cfd .xyz .top .lol .sbs .icu .buzz .monster etc.)
 - IP fingerprinting
 - sensitive field names (ssn, cvv, routing, etc.)
@@ -322,11 +352,22 @@ RESPONSE=$(jq -r '.response // "Error: No response from model"' /tmp/url_analyze
 rm -f /tmp/url_analyze_response.json
 
 echo ""
+# Reasoning models wrap their chain-of-thought in <think>...</think>. Surface it as
+# an explicit audit trail (why it decided) instead of dumping it into the analysis.
+# ponytail: assumes <think> tags sit on their own lines (true for minicpm/qwen); a
+# same-line </think>text would over-trim -- revisit if a model emits that.
+THINK=$(echo "$RESPONSE" | sed -n '/<think>/,/<\/think>/p' | sed '1d;$d')
+BODY=$(echo "$RESPONSE" | sed '/<think>/,/<\/think>/d')
+if [ -n "$THINK" ]; then
+    echo "=== 🧠 Model Reasoning ==="
+    echo "$THINK"
+    echo ""
+fi
 echo "=== LLM Analysis ==="
-echo "$RESPONSE" | sed '/^VERDICT:/d'
+echo "$BODY" | sed '/^VERDICT:/d'
 echo ""
 
-VERDICT=$(echo "$RESPONSE" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
+VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
 
 # === Deterministic verdict (classify_verdict in verdict.sh) ===
 # Signals are extracted deterministically upstream, so the final verdict is
