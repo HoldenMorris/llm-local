@@ -32,16 +32,20 @@ EXPECTED["clean"]="HAM"
 
 CATEGORIES=("spam_high" "spam_low" "phishing" "whale_phishing" "dangerous" "clean")
 
+# quote-safe whitespace trim (xargs mangles unmatched ' and ")
+trim() { tr -s '[:space:]' ' ' | sed 's/^ *//; s/ *$//'; }
+
 extract_body() {
-    sed -n '/^$/,/^--/p' "$1" | sed '1d;$d' | tr -d '\n' | sed 's/<[^>]*>//g' | xargs
+    sed -n '/^$/,/^--/p' "$1" | sed '1d;$d' | tr -d '\n' | sed 's/<[^>]*>//g' | trim
 }
 
 run_inference() {
-    local prompt="$1"
+    local prompt="$1" prompt_json
+    prompt_json=$(printf '%s' "$prompt" | jq -Rs .)  # JSON-safe: a " in the body must not break the request
     # num_predict must clear the <think> block for reasoning models; plain models still stop at EOS after one word
     RESPONSE=$(curl -s --max-time 30 -X POST http://localhost:11434/api/generate \
-        --data-raw "{\"model\":\"$MODEL\",\"system\":$SYSTEM_PROMPT,\"prompt\":\"$prompt\",\"options\":{\"num_thread\":$THREADS,\"num_predict\":256,\"temperature\":0.0,\"top_k\":1},\"stream\":false,\"keep_alive\":\"$KEEP_ALIVE\"}")
-    echo "$RESPONSE" | jq -r '(.response // empty) | gsub("(?s)<think>.*?</think>";"")' | tr -d '[:punct:]' | xargs
+        --data-raw "{\"model\":\"$MODEL\",\"system\":$SYSTEM_PROMPT,\"prompt\":$prompt_json,\"options\":{\"num_thread\":$THREADS,\"num_predict\":256,\"temperature\":0.0,\"top_k\":1},\"stream\":false,\"keep_alive\":\"$KEEP_ALIVE\"}")
+    echo "$RESPONSE" | jq -r '(.response // empty) | gsub("(?s)<think>.*?</think>";"")' | tr -d '[:punct:]' | trim
 }
 
 echo "=============================================="
