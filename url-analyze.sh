@@ -401,21 +401,26 @@ if [ -z "$HEURISTIC" ]; then
 # being installed. ponytail: login-form trigger only; widen to conflicting-signal
 # cases if it proves worth the minute.
 VISION_NOTE=""
-if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
-   && docker exec llm-spam-test ollama list 2>/dev/null | grep -q "$VISION_MODEL"; then
-    # Compare the brand against the domain we ACTUALLY landed on (post-redirect), not the
-    # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
-    LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
-    LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-    echo "${CYAN}[vision] Login form present - visual brand check via $VISION_MODEL (~1min on CPU)...${RESET}"
-    VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
-    # think:false  we want a crisp brand verdict, not a reasoning essay. Without it the
-    # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
-    VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
-        '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
-        | curl -s --max-time 180 http://localhost:11434/api/generate -d @- | jq -r '.response // ""')
-    # belt-and-braces: strip a <think> block if the model emits one anyway
-    VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ]; then
+    if [ -f "$CACHE_DIR/vision.txt" ]; then
+        # Reuse the cached VLM verdict (the ~1min call is the single most expensive step).
+        VISION_NOTE=$(cat "$CACHE_DIR/vision.txt")
+    elif [ -f "$SHOT" ] && docker exec llm-spam-test ollama list 2>/dev/null | grep -q "$VISION_MODEL"; then
+        # Compare the brand against the domain we ACTUALLY landed on (post-redirect), not the
+        # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
+        LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
+        LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
+        echo "${CYAN}[vision] Login form present - visual brand check via $VISION_MODEL (~1min on CPU)...${RESET}"
+        VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
+        # think:false  we want a crisp brand verdict, not a reasoning essay. Without it the
+        # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
+        VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
+            '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
+            | curl -s --max-time 180 http://localhost:11434/api/generate -d @- | jq -r '.response // ""')
+        # belt-and-braces: strip a <think> block if the model emits one anyway
+        VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+        printf '%s' "$VISION_NOTE" > "$CACHE_DIR/vision.txt"
+    fi
     [ -n "$VISION_NOTE" ] && echo "   -> $VISION_NOTE"
 fi
 
@@ -486,14 +491,24 @@ RULE 4: NO login form, established legitimate domain, zero red flags.
 Be concise (2-3 sentences), state whether a login form was present and how many red flags you counted, name which RULE fired, then end with exactly one line:
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
-echo "${CYAN}[.] LLM analyzing...${RESET}"
-LLM_START=$(date +%s.%N)
-curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
-    --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json
-LLM_SECS=$(echo "$(date +%s.%N) - $LLM_START" | bc)
-
-RESPONSE=$(jq -r '.response // "Error: No response from model"' /tmp/url_analyze_response.json 2>/dev/null)
-rm -f /tmp/url_analyze_response.json
+# Cache the LLM answer keyed by model + full request (system+context). Same URL + same
+# model -> same signals -> same answer, so re-scans reuse it. -r wipes the cache dir.
+LLM_CACHE="$CACHE_DIR/llm-$(printf '%s' "$MODEL|$SYSTEM_PROMPT|$CONTEXT" | sha256sum | cut -c1-16).txt"
+if [ -f "$LLM_CACHE" ]; then
+    RESPONSE=$(cat "$LLM_CACHE")
+    LLM_LABEL="cached"
+else
+    echo "${CYAN}[.] LLM analyzing...${RESET}"
+    LLM_START=$(date +%s.%N)
+    curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
+        --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json
+    LLM_SECS=$(echo "$(date +%s.%N) - $LLM_START" | bc)
+    RESPONSE=$(jq -r '.response // "Error: No response from model"' /tmp/url_analyze_response.json 2>/dev/null)
+    rm -f /tmp/url_analyze_response.json
+    # cache a real answer only, never the error stub (so a transient failure retries)
+    [ "$RESPONSE" != "Error: No response from model" ] && printf '%s' "$RESPONSE" > "$LLM_CACHE"
+    LLM_LABEL=$(printf '%.1fs' "$LLM_SECS")
+fi
 
 echo ""
 # Reasoning models wrap their chain-of-thought in <think>...</think>. Surface it as
@@ -507,8 +522,8 @@ if [ -n "$THINK" ]; then
     echo "$THINK"
     echo ""
 fi
-printf "=== LLM Analysis (%s, %.1fs) ===\n" "$MODEL" "$LLM_SECS"
-echo "$BODY" | sed '/^VERDICT:/d'
+printf "${BOLD}LLM Analysis (%s, %s)${RESET}\n" "$MODEL" "$LLM_LABEL"
+echo_grey "$(echo "$BODY" | sed '/^VERDICT:/d')"
 echo ""
 
 VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')

@@ -64,9 +64,12 @@ accept `-c mono` as a leading flag.
 
 ### URL scan cache
 
-`url-analyze.sh` caches each URL's page content, screenshot and domain metadata in
-`.cache/<url-hash>/` (`page.json`, `page.jpg`, `meta.env`), so re-scans and the model
-benchmark reuse one fetch instead of re-hitting Docker/the network. `-r` forces a refresh.
+`url-analyze.sh` caches each URL's work in `.cache/<url-hash>/`: page content
+(`page.json`), screenshot (`page.jpg`), domain metadata (`meta.env`), inline scripts
+(`scripts/`), deobfuscation signals (`deob-signals.txt`), the vision VLM verdict
+(`vision.txt`), and each LLM answer (`llm-<hash>.txt`, keyed by model + request). So
+re-scans reuse the fetch, the ~1min vision call, and the LLM verdict instead of
+re-computing. `-r` forces a full refresh.
 
 Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
 back to gemma2:2b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
