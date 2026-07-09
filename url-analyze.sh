@@ -341,7 +341,7 @@ if [ -z "$MODEL" ]; then
         echo "  $((i+1)): ${MODELS[$i]}$tag"
     done
     echo ""
-    read -p "${CYAN}Select model (0-${#MODELS[@]}) [Enter = $DEFAULT], 0/s = pure heuristic: ${RESET}" SEL
+    read -p "${CYAN}Select model (0-${#MODELS[@]}) [Enter = $DEFAULT]: ${RESET}" SEL
     if [ "$SEL" = 0 ] || [ "$SEL" = s ] || [ "$SEL" = skip ]; then
         HEURISTIC=1        # pure heuristic: no LLM, verdict from the decision table
     elif [ -z "$SEL" ]; then
