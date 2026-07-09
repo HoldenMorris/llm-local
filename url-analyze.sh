@@ -323,6 +323,7 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
     if [ -f "$CACHE_DIR/deob-signals.txt" ]; then
         DEOBFUS_SIGNALS=$(cat "$CACHE_DIR/deob-signals.txt")
     else
+        _deob_printed=1
         echo "${BOLD}Deobfuscation${RESET}"
         echo_grey "- obfuscated JS detected; deobfuscating with webcrack (sandboxed)..."
         LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
@@ -342,6 +343,8 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
         done < <(printf '%s\n' "$DEOBFUS_SIGNALS" | sed 's/; /\n/g; s/, /\n/g')
     fi
 fi
+# Separate the Deobfuscation section from what follows (only when it actually printed).
+[ -n "$_deob_printed" ] && echo ""
 
 # === PHASE 3: LLM Analysis (skipped in heuristic mode: -H, -m heuristic, or menu option 0) ===
 VERDICT=""   # default; only a real LLM run overrides it. Heuristic modes leave it empty.
