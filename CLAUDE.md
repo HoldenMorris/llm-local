@@ -30,9 +30,10 @@ Not lazy about: input validation, error handling, security, accessibility.
 
 | Role | Model | Notes |
 |------|-------|-------|
-| Verdict LLM | `gemma2:2b` + `prompts/focused.txt` | Best benchmark: 96% acc, 15/15 threat recall, ~4s. Non-reasoning = no `<think>` tax. |
+| Verdict LLM | `qwen2.5:1.5b` | URL benchmark (`14c-30g-cpu`): 100% (5/5), ~18s avg (~4-5s on clean pages), ~2× faster than gemma2:2b. Non-reasoning. `-m auto` selects it. |
+| Runner-up | `gemma2:2b` | Also 100% on the URL corpus but ~2× slower. Best on the email-spam benchmark (`benchmark.sh` + `prompts/focused.txt`, 96%). |
 | Vision | `openbmb/minicpm-v4.6:q4_K_M` | Only small VLM; ~50s/screenshot. Login-form escalation only. |
-| Avoid for verdict | `minicpm5` (1B), `minicpm4.1` (8B) | Reasoning models: 1B whiffs on signals, 8B ~2min (too slow). |
+| Avoid for verdict | `llama3.2:3b`, `minicpm5` (1B), `minicpm4.1` (8B) | llama3.2:3b false-positived a real login page; reasoning models whiff (1B) or are ~2min (8B). |
 
 Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs).
 
