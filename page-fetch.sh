@@ -19,6 +19,10 @@ SHOT="${PAGE_SHOT:-}"
 # when obfuscation markers fire, for the JS-deobfuscation escalation. Unset = no dump.
 SCRIPTS_DIR="${PAGE_SCRIPTS_DIR:-}"
 
+# Config: brand-impersonation match mode. strict (default) = title/form-action only;
+# body = also match body-text mentions (noisier). Passed into the container below.
+BRAND_MATCH="${BRAND_MATCH:-strict}"
+
 CONTAINER_NAME="llm-page-fetch-$$"
 IMAGE="ghcr.io/puppeteer/puppeteer:latest"
 
@@ -218,9 +222,20 @@ const { URL } = require('url');
   const oauthPaymentDomains = ['accounts.google.com','apis.google.com','facebook.com','login.microsoftonline.com',
     'appleid.apple.com','amazon.com','paypal.com','stripe.com','js.stripe.com','m.stripe.com','github.com',
     'login.live.com','auth0.com','okta.com','supabase.co'];
+  // Where a brand must appear to count as impersonation. Config knob: BRAND_MATCH env.
+  //   'strict' (default): page TITLE or a FORM ACTION -- the strong signals a phishing clone
+  //            emits (titles itself "PayPal Login", posts creds to a paypal-named URL).
+  //   'body': also count body-text mentions -- noisier; legit content sites merely NAME brands
+  //           (wikipedia -> "google, apple"), so this over-flags. Kept for future tuning.
+  const brandMatch = (process.env.BRAND_MATCH || 'strict').toLowerCase();
+  const title = (features.title || '').toLowerCase();
+  const formActions = features.forms.map(f => (f.action || '').toLowerCase()).join(' ');
   const body = features.text.toLowerCase();
+  const brandHaystack = brandMatch === 'body'
+    ? [title, formActions, body].join(' ')
+    : [title, formActions].join(' ');
   // Word-boundary match so short brands (e.g. "ing") don't hit inside "tracking"/"information"
-  const matched = brands.filter(b => new RegExp(`\\b${b}\\b`, 'i').test(body));
+  const matched = brands.filter(b => new RegExp(`\\b${b}\\b`, 'i').test(brandHaystack));
   if (matched.length) {
     const dom = domain.toLowerCase();
     const brandInDomain = matched.some(b => dom.includes(b.replace(/\s/g,'')));
@@ -228,12 +243,8 @@ const { URL } = require('url');
     const brandExplainedByOAuth = matched.every(b =>
       thirdPartyDomains.some(d => d.includes(b.replace(/\s/g,'')) || oauthPaymentDomains.some(o => d.includes(o.split('.')[0])))
     );
-    // NOTE (known false positive): fires on legit content sites that merely NAME brands in
-    // body text (e.g. wikipedia.org mentioning "google, apple"). The OAuth/payment whitelist
-    // does not cover editorial mentions. Left as-is deliberately -- strict mode prefers the
-    // false positive to a miss -- but this is the main source of benign-page SUSPICIOUS.
     if (!brandInDomain && !brandExplainedByOAuth)
-      smells.push(`Brand impersonation: page mentions "${matched.slice(0,3).join(', ')}" but domain is "${domain}"`);
+      smells.push(`Brand impersonation: "${matched.slice(0,3).join(', ')}" in title/form but domain is "${domain}"`);
   }
 
   // Links
@@ -411,6 +422,7 @@ docker run --rm --name "$CONTAINER_NAME" \
   --shm-size=256m \
   --memory 1g \
   --cpus 1 \
+  -e BRAND_MATCH="$BRAND_MATCH" \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
   "${SHOT_MOUNT[@]}" \
   "${SCRIPTS_MOUNT[@]}" \

@@ -125,7 +125,7 @@ CORPUS=my-urls.txt ./url-benchmark.sh
 | Clipboard hijacking | `oncopy`, clipboard API usage |
 | Right-click disabled | `oncontextmenu` blocked |
 | Crypto wallet addresses | BTC, ETH, TRX patterns |
-| Brand impersonation | Brand mentioned but not in domain (with OAuth whitelist) |
+| Brand impersonation | Brand in page **title or form action** but not the domain (OAuth whitelist). `BRAND_MATCH=body` also matches body text (noisier) |
 | Suspicious JS | eval(), atob(), document.write(), hex-encoded strings, obfuscator.io `_0x` identifiers, String.fromCharCode |
 | External link ratio | Skewed external vs internal links |
 
@@ -180,6 +180,14 @@ Gated (only runs on obfuscation markers), cached per URL, `-D` to skip. Scripts:
 # Email spam benchmark
 ./benchmark.sh [model] [prompt]
 ```
+
+## Config (env vars)
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| `BRAND_MATCH` | `strict` | Brand impersonation match scope: `strict` = title/form-action; `body` = also body text |
+| `VISION_MODEL` | `openbmb/minicpm-v4.6:q4_K_M` | VLM for the login-form visual brand check |
+| `NO_COLOR` | (unset) | Disable ANSI color (also `-c mono`) |
 
 ## Dependencies
 
