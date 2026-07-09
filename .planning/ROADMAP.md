@@ -26,6 +26,11 @@ see the login form. See [phases/anti-bot-rendering/](phases/anti-bot-rendering/)
 as far as is feasible and appropriate for a *defensive* scanner — without pretending headless
 CF-Turnstile bypass is reliably solvable.
 
+**Front-runner (operator-in-the-loop):** the analyst passes the gate in a real visible browser;
+page-fetch **attaches over CDP** (`puppeteer.connect`) to the cleared tab and analyses the
+uncloaked DOM — or harvests the `cf_clearance` cookie to reuse. Sidesteps the whole JA4 / proxy /
+solver arms race. Headful+xvfb is the auto best-effort fallback. See CONTEXT.md + PLAN.md.
+
 **Scope to decide (pending research):**
 - Headful Chromium under `xvfb` in the container (passes more challenges than `headless:'new'`).
 - Patched/stealth automation drivers (puppeteer-extra-stealth, rebrowser-patches, patchright,

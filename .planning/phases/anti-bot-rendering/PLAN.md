@@ -17,13 +17,31 @@ bypass exists. Improves recall on CF-fronted phishing (Azure static -> throwaway
    navigator, canvas/WebGL, timing, TLS/JA3/JA4, HTTP/2) — which can we neutralize cheaply?
 5. Legal/ethical: what's acceptable for a defensive/authorized phishing-analysis tool?
 
-## Candidate implementation (to refine post-research)
-- `page-fetch` gains a headful mode: launch xvfb-run + Chromium `headless:false` inside the
-  container (add xvfb to the image), gated behind a flag (default stays headless for speed).
-- Optionally swap the launcher/stealth layer if research favors a patched driver.
-- Keep the detect-and-flag + "open in local browser" fallbacks already shipped.
+## Approaches, ranked for THIS tool (local, CPU-only, human-run)
+
+**A. Operator-in-the-loop (PREFERRED)** — the analyst passes the gate; the tool analyzes the
+uncloaked page. Two shapes:
+  - *Attach mode:* launch a real, visible Chromium with remote debugging (`--remote-debugging-
+    port`), the operator solves Turnstile manually, then page-fetch **connects over CDP**
+    (`puppeteer.connect`) to the already-cleared tab and runs the full extraction/screenshot/
+    vision on the live DOM. No fingerprint/JA4/proxy fight at all.
+  - *Clearance harvest:* operator solves once; capture the `cf_clearance` cookie (+ UA), then
+    reuse it for subsequent automated `page-fetch` runs of that host until it expires.
+  This is low-risk, maintainable, and matches how the tool is actually run.
+
+**B. Headful + xvfb (auto, best-effort)** — Chromium `headless:false` under `xvfb-run` in the
+container passes more *managed/invisible* challenges than `headless:'new'`. Gated behind a flag;
+default stays headless for speed. Cost/efficacy TBD by research.
+
+**C. Detect-and-flag (already shipped, always-on floor)** — when a challenge can't be passed,
+flag "Cloudflare bot challenge" + offer to open in the operator's browser. Honest fallback.
+
+**Deferred / out of scope:** patched-binary drivers (Camoufox/rebrowser) unless research shows
+a cheap, maintainable win; JA4/TLS spoofing; API CAPTCHA solvers; residential proxies (the IP is
+the real gate, but a proxy option is heavy and only marginally defensive — revisit if needed).
 
 ## Non-goals
-- Paid CAPTCHA/Turnstile solver services.
+- Paid CAPTCHA/Turnstile solver services baked in.
 - Any technique whose only realistic use is offensive.
-- A perfect bypass — Turnstile is an arms race; "reach more, honestly flag the rest" is the bar.
+- A perfect headless bypass — Turnstile is an arms race; "operator passes it, tool analyses it,
+  honestly flag the rest" is the bar.
