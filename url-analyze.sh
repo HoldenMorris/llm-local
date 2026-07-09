@@ -8,18 +8,6 @@ source "$SCRIPT_DIR/verdict.sh"
 source "$SCRIPT_DIR/js-signals.sh"
 # colors.sh is sourced further down, after args are parsed (so -c mono can disable color)
 
-spinner() {
-    local pid=$1
-    local msg="${2:-Analyzing...}"
-    local chars='|/-\'
-    local i=0
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r%c %s" "${chars:i++%${#chars}:1}" "$msg"
-        sleep 0.1
-    done
-    printf "\r %s\n" "$msg"
-}
-
 # best_model -> the top-scoring model from the url-benchmark.sh CSV (highest accuracy,
 # then fastest). Excludes the heuristic baseline. Empty if there is no benchmark data.
 best_model() {
@@ -463,14 +451,10 @@ RULE 4: NO login form, established legitimate domain, zero red flags.
 Be concise (2-3 sentences), state whether a login form was present and how many red flags you counted, name which RULE fired, then end with exactly one line:
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
+echo "${CYAN}[.] LLM analyzing...${RESET}"
 LLM_START=$(date +%s.%N)
 curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
-    --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json &
-CURL_PID=$!
-
-spinner $CURL_PID "LLM analyzing..."
-
-wait $CURL_PID 2>/dev/null
+    --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json
 LLM_SECS=$(echo "$(date +%s.%N) - $LLM_START" | bc)
 
 RESPONSE=$(jq -r '.response // "Error: No response from model"' /tmp/url_analyze_response.json 2>/dev/null)
