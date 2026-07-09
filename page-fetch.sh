@@ -90,9 +90,15 @@ const { URL } = require('url');
   // debug lines) and to see WHY a client-rendered page failed to mount (blank SPA).
   const consoleLogs = [];
   const pushLog = (type, text) => { if (consoleLogs.length < 40 && text) consoleLogs.push({ type, text: String(text).slice(0, 300) }); };
-  page.on('console', m => pushLog(m.type(), m.text()));
+  const isNoise = (u) => /\/favicon\.ico(\?|$)/i.test(u || '');   // benign, every site 404s it
+  page.on('console', m => {
+    const u = (m.location && m.location().url) || '';
+    if (isNoise(u)) return;
+    // include the resource URL -- a bare "Failed to load resource: 404" is useless without it
+    pushLog(m.type(), u ? `${m.text()} (${u})` : m.text());
+  });
   page.on('pageerror', e => pushLog('pageerror', e && e.message ? e.message : e));
-  page.on('requestfailed', r => pushLog('requestfailed', r.url() + ' ' + (r.failure() && r.failure().errorText)));
+  page.on('requestfailed', r => { if (!isNoise(r.url())) pushLog('requestfailed', r.url() + ' ' + (r.failure() && r.failure().errorText)); });
 
   // Track all requests
   const requests = [];
@@ -377,7 +383,8 @@ const { URL } = require('url');
   const allJs = features.inlineScripts.join('\n');
   const jsSmells = [];
   if (/eval\s*\(/.test(allJs)) jsSmells.push('eval()');
-  if (/atob\s*\(/.test(allJs)) jsSmells.push('atob()');
+  // \batob\b (not atob\() so aliasing is caught: kits do `tt = atob; tt('base64')`
+  if (/\batob\b/.test(allJs)) jsSmells.push('atob()');
   if (/document\.write/.test(allJs)) jsSmells.push('document.write()');
   if (/(?:\\x[0-9a-f]{2}){3,}/i.test(allJs)) jsSmells.push('hex-encoded strings');
   if (/window\.location\s*=/.test(allJs)) jsSmells.push('location redirect');
@@ -386,10 +393,27 @@ const { URL } = require('url');
   if ((allJs.match(/_0x[0-9a-f]{4,}/gi) || []).length >= 5) jsSmells.push('obfuscated identifiers (_0x)');
   if (/String\.fromCharCode\s*\(/.test(allJs)) jsSmells.push('String.fromCharCode');
 
-  // ponytail: IP fingerprinting services used to track victims
+  // Obfuscated network exfil: JS that decodes strings (atob) AND fires a request. Legit pages
+  // almost never atob() a fetch URL -- this is the classic credential-harvest handler
+  // (e.g. #signin click -> fetch(atob(...)+input.value)). The endpoint stays hidden because
+  // it only fires on submit (never a page resource) and is base64-encoded (no plain URL).
+  if (/\batob\b/.test(allJs) && /\bfetch\s*\(|XMLHttpRequest|\.open\s*\(|sendBeacon/.test(allJs))
+    smells.push('Obfuscated network call: JS atob-decodes then makes a request (likely credential exfil)');
+
+  // Decode base64 string literals from the JS and flag any off-domain endpoint they reveal.
+  const b64decoded = (allJs.match(/[A-Za-z0-9+/]{16,}={0,2}/g) || [])
+    .map(s => { try { return Buffer.from(s, 'base64').toString('utf8'); } catch { return ''; } })
+    .filter(d => /^[\x09\x0A\x0D\x20-\x7E]+$/.test(d)).join(' ');
+  const offB64 = [...new Set([...b64decoded.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase()))]
+    .filter(h => h.split('.').slice(-2).join('.') !== apexDomain);
+  if (offB64.length)
+    smells.push(`Off-domain endpoint (base64-decoded from JS): ${offB64.slice(0,3).join(', ')}`);
+
+  // ponytail: IP fingerprinting services used to track victims (also seen base64-encoded in JS)
   const ipFingerprinters = ['api.ipify.org','ipinfo.io','ip-api.com','ipapi.co','checkip.amazonaws.com',
-    'ifconfig.me','icanhazip.com','wtfismyip.com','ipecho.net','myexternalip.com'];
-  const fingerprintHits = thirdPartyDomains.filter(d => ipFingerprinters.some(f => d.includes(f)));
+    'ifconfig.me','icanhazip.com','wtfismyip.com','ipecho.net','myexternalip.com','myips.cc'];
+  const fingerprintHits = [...new Set([...thirdPartyDomains, ...(b64decoded.match(/[a-z0-9.-]+\.[a-z]{2,}/gi) || [])])]
+    .filter(d => ipFingerprinters.some(f => String(d).includes(f)));
   if (fingerprintHits.length)
     smells.push(`IP fingerprinting: ${fingerprintHits.join(', ')}`);
 
