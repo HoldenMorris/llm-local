@@ -61,7 +61,7 @@ URL="${1:-$URL}"
 
 # Prompt for a URL when none was given (interactive only, so piped/benchmark runs don't hang)
 if [ -z "$URL" ] && [ -t 0 ]; then
-    read -r -p "Enter URL to analyze: " URL
+    read -r -p "${CYAN}Enter URL to analyze: ${RESET}" URL
 fi
 if [ -z "$URL" ]; then
     echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] [-D no-deobfuscate] <url>"
@@ -347,7 +347,7 @@ if [ -z "$MODEL" ]; then
         echo "  $((i+1)): ${MODELS[$i]}$tag"
     done
     echo ""
-    read -p "Select model (1-${#MODELS[@]}) [Enter = $DEFAULT], or 's' to skip LLM: " SEL
+    read -p "${CYAN}Select model (1-${#MODELS[@]}) [Enter = $DEFAULT], or 's' to skip LLM: ${RESET}" SEL
     if [ "$SEL" = s ] || [ "$SEL" = skip ]; then
         echo ""
         echo "=== Summary (static analysis only) ==="
@@ -392,7 +392,7 @@ fi
 # Offer to open the screenshot for human validation (interactive terminal + GUI only).
 # The EXIT trap deletes it on exit; the viewer has loaded it by then.
 if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
-    read -r -p " Open page screenshot for manual review? [y/N] " _ans
+    read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
 fi
 
