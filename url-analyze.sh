@@ -71,13 +71,18 @@ mkdir -p "$CACHE_DIR"
 echo "${BOLD}=== URL Analysis: $URL ===${RESET}"
 echo ""
 
+# All signals collect here and print as one bullet list before the verdict, instead of
+# being sprinkled through the phases. add_signal appends; render_signals prints them.
+SIGNALS=()
+add_signal() { SIGNALS+=("$1"); }
+
 # Extract domain info
 DOMAIN=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
 TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 
 # ponytail: High-risk TLDs (list lives in verdict.sh, single source of truth)
 if is_risky_tld "$TLD"; then
-    echo_yellow "[!] High-risk TLD: .$TLD"
+    add_signal "High-risk TLD: .$TLD"
 fi
 
 # ponytail: Typosquatting detection (brand in subdomain but not apex)
@@ -99,24 +104,24 @@ APAC_BANKS="dbs|ocbc|uob|maybank|cimb|icici|hdfc|sbi|kotak|axis|commonwealth|anz
 BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|$APAC_BANKS"
 if echo "$DOMAIN" | grep -qiE "($BRANDS)" && ! echo "$DOMAIN" | grep -qiE "^(www\.)?($BRANDS)\.(com|org|net|io)$"; then
     MATCHED=$(echo "$DOMAIN" | grep -oiE "($BRANDS)" | head -1)
-    echo_yellow "[!] Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
+    add_signal "Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
 fi
 
 # ponytail: Excessive subdomains (often used to hide real domain)
 SUBDOMAIN_COUNT=$(echo "$DOMAIN" | tr '.' '\n' | wc -l)
 if [ "$SUBDOMAIN_COUNT" -gt 4 ]; then
-    echo_yellow "[!] Excessive subdomains ($SUBDOMAIN_COUNT levels)"
+    add_signal "Excessive subdomains ($SUBDOMAIN_COUNT levels)"
 fi
 
 # ponytail: Homograph detection (mixed scripts in domain)
 if echo "$DOMAIN" | grep -qP '[^\x00-\x7F]'; then
-    echo_yellow "[!] Homograph attack: non-ASCII characters in domain"
+    add_signal "Homograph attack: non-ASCII characters in domain"
 fi
 
 # ponytail: Random-looking domain (high entropy)
 DOMAIN_BASE=$(echo "$DOMAIN" | sed 's/\.[^.]*$//' | tr -d '.-')
 if [ ${#DOMAIN_BASE} -gt 8 ] && echo "$DOMAIN_BASE" | grep -qE '^[a-z0-9]+$' && echo "$DOMAIN_BASE" | grep -qE '[0-9].*[0-9]'; then
-    echo_yellow "[!] Random-looking domain: $DOMAIN_BASE"
+    add_signal "Random-looking domain: $DOMAIN_BASE"
 fi
 
 # === Domain Info Lookup ===
@@ -128,7 +133,7 @@ if [ -f "$CACHE_DIR/meta.env" ]; then
     echo_grey "IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
     [ -n "$AGE_DAYS" ] && echo_grey "Domain age: $AGE_DAYS days"
     [ -n "$CERT_AGE_DAYS" ] && echo_grey "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
-    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && echo_yellow "[!] Fast-flux: $A_RECORDS A records"
+    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records"
     echo ""
 else
 echo_grey "--- Domain Info ---"
@@ -160,9 +165,9 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
             NOW_TS=$(date +%s)
             AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
             if [ "$AGE_DAYS" -lt 30 ]; then
-                echo_yellow "[!] Domain age: $AGE_DAYS days (VERY NEW - high risk)"
+                add_signal "Domain age: $AGE_DAYS days (VERY NEW - high risk)"
             elif [ "$AGE_DAYS" -lt 90 ]; then
-                echo_yellow "[!] Domain age: $AGE_DAYS days (new)"
+                add_signal "Domain age: $AGE_DAYS days (new)"
             else
                 echo_grey "Domain age: $AGE_DAYS days (created $CREATED_DATE)"
             fi
@@ -183,7 +188,7 @@ if echo "$URL" | grep -q "^https://"; then
             if [ -n "$CERT_TS" ]; then
                 CERT_AGE_DAYS=$(( ($(date +%s) - CERT_TS) / 86400 ))
                 if [ "$CERT_AGE_DAYS" -lt 7 ]; then
-                    echo_yellow "[!] SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
+                    add_signal "SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
                 elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
                     echo_grey "SSL cert age: $CERT_AGE_DAYS days (recent)"
                 else
@@ -197,12 +202,12 @@ fi
 # === DNS Records Check ===
 A_RECORDS=$(dig +short "$DOMAIN" A 2>/dev/null | grep -E '^[0-9]+\.' | wc -l)
 if [ "$A_RECORDS" -gt 5 ]; then
-    echo_yellow "[!] Fast-flux: $A_RECORDS A records (suspicious)"
+    add_signal "Fast-flux: $A_RECORDS A records (suspicious)"
 fi
 
 TTL=$(dig +noall +answer "$DOMAIN" A 2>/dev/null | awk '{print $2}' | head -1)
 if [ -n "$TTL" ] && [ "$TTL" -lt 300 ]; then
-    echo_yellow "[!] Low TTL: ${TTL}s (fast-flux indicator)"
+    add_signal "Low TTL: ${TTL}s (fast-flux indicator)"
 fi
 
 echo ""
@@ -246,22 +251,19 @@ if [ -z "$SKIP_FETCH" ]; then
         THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
 
         if [ "$FINAL_URL" != "$URL" ] && [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ]; then
-            echo_cyan "-> Redirects to: $FINAL_URL"
+            add_signal "Redirects to: $FINAL_URL"
         fi
 
-        if [ "$HAS_LOGIN" = "true" ]; then
-            echo_cyan "[login] Login form detected"
-        fi
+        [ "$HAS_LOGIN" = "true" ] && add_signal "Login form detected"
 
+        # Each scraper phishing smell becomes its own signal (here-string, not a pipe, so
+        # the appends survive in the current shell).
         if [ -n "$SMELLS" ]; then
-            echo ""
-            echo_red "[!!] Phishing signals detected:"
-            echo "$SMELLS" | while read -r smell; do
-                echo "    $smell"
-            done
+            while IFS= read -r smell; do
+                [ -n "$smell" ] && add_signal "$smell"
+            done <<< "$SMELLS"
         fi
 
-        echo ""
         echo_grey "Third-party domains: $THIRD_PARTY"
     fi
 else
@@ -281,6 +283,7 @@ TITLE=$(echo "$PAGE_DATA" | jq -r '.title // ""' 2>/dev/null)
 THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
 SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
 SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
+[ -n "$SUSP_JS" ] && add_signal "Suspicious JS: $SUSP_JS"
 
 # === JS deobfuscation escalation ===
 # When the scraper flagged obfuscation markers, deobfuscate the cached inline scripts
@@ -302,7 +305,13 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
         done
         printf '%s' "$DEOBFUS_SIGNALS" > "$CACHE_DIR/deob-signals.txt"
     fi
-    [ -n "$DEOBFUS_SIGNALS" ] && echo_yellow "[!] Deobfuscated JS signals: $DEOBFUS_SIGNALS"
+    # Each deobfuscated finding becomes its own signal (split on the ", " / "; " joiners).
+    # Process substitution (not a pipe) so the appends survive in the current shell.
+    if [ -n "$DEOBFUS_SIGNALS" ]; then
+        while IFS= read -r _sig; do
+            [ -n "$_sig" ] && add_signal "deobfuscated JS: $_sig"
+        done < <(printf '%s\n' "$DEOBFUS_SIGNALS" | sed 's/; /\n/g; s/, /\n/g')
+    fi
 fi
 
 # === PHASE 3: LLM Analysis (skipped in heuristic mode: -H, -m heuristic, or menu option 0) ===
@@ -382,13 +391,6 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
     # belt-and-braces: strip a <think> block if the model emits one anyway
     VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
     [ -n "$VISION_NOTE" ] && echo "   -> $VISION_NOTE"
-fi
-
-# Offer to open the screenshot for human validation (interactive terminal + GUI only).
-# The EXIT trap deletes it on exit; the viewer has loaded it by then.
-if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
-    read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
-    [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
 fi
 
 # Did the page actually redirect? (only true if final URL differs from the requested one)
@@ -486,6 +488,26 @@ echo ""
 VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
 fi   # end real-LLM path (inner heuristic guard)
 fi   # end PHASE 3 (outer heuristic guard)
+
+# Offer to open the page screenshot for human validation (interactive terminal + GUI only).
+# Outside the LLM guard so heuristic mode (-H / -m heuristic / menu 0) offers it too; the
+# screenshot persists in the cache dir.
+if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
+    [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
+fi
+
+# === Consolidated signal list ===
+# Every signal gathered across the phases, printed together as one bullet list instead
+# of sprinkled through the output. Gray detail; the colored verdict banner carries severity.
+echo ""
+if [ ${#SIGNALS[@]} -gt 0 ]; then
+    echo "${BOLD}Signals (${#SIGNALS[@]}):${RESET}"
+    for _s in "${SIGNALS[@]}"; do echo_grey "  - $_s"; done
+else
+    echo_grey "Signals: none detected."
+fi
+echo ""
 
 # === Deterministic verdict (classify_verdict in verdict.sh) ===
 # Signals are extracted deterministically upstream, so the final verdict is
