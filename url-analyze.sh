@@ -133,14 +133,14 @@ fi
 # model benchmark skip these network round-trips. -r refreshes.
 if [ -f "$CACHE_DIR/meta.env" ]; then
     source "$CACHE_DIR/meta.env"
-    echo "--- Domain Info (cached) ---"
-    echo "IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
-    [ -n "$AGE_DAYS" ] && echo "Domain age: $AGE_DAYS days"
-    [ -n "$CERT_AGE_DAYS" ] && echo "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
+    echo_grey "--- Domain Info (cached) ---"
+    echo_grey "IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
+    [ -n "$AGE_DAYS" ] && echo_grey "Domain age: $AGE_DAYS days"
+    [ -n "$CERT_AGE_DAYS" ] && echo_grey "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
     [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && echo_yellow "[!]  Fast-flux: $A_RECORDS A records"
     echo ""
 else
-echo "--- Domain Info ---"
+echo_grey "--- Domain Info ---"
 
 # Get apex domain (last 2 parts for most TLDs)
 APEX_DOMAIN=$(echo "$DOMAIN" | grep -oE '[^.]+\.[^.]+$')
@@ -151,9 +151,9 @@ if [ -n "$IP" ]; then
     IP_INFO=$(curl -s --max-time 5 "http://ip-api.com/json/$IP?fields=country,org,isp" 2>/dev/null)
     COUNTRY=$(echo "$IP_INFO" | jq -r '.country // "?"')
     ORG=$(echo "$IP_INFO" | jq -r '.org // .isp // "?"')
-    echo "IP: $IP ($COUNTRY, $ORG)"
+    echo_grey "IP: $IP ($COUNTRY, $ORG)"
 else
-    echo "IP: (unresolvable)"
+    echo_grey "IP: (unresolvable)"
 fi
 
 # Domain age via RDAP (works for .com, .net, .org)
@@ -173,10 +173,10 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
             elif [ "$AGE_DAYS" -lt 90 ]; then
                 echo_yellow "[!]  Domain age: $AGE_DAYS days (new)"
             else
-                echo "Domain age: $AGE_DAYS days (created $CREATED_DATE)"
+                echo_grey "Domain age: $AGE_DAYS days (created $CREATED_DATE)"
             fi
         else
-            echo "Domain created: $CREATED_DATE"
+            echo_grey "Domain created: $CREATED_DATE"
         fi
     fi
 fi
@@ -194,9 +194,9 @@ if echo "$URL" | grep -q "^https://"; then
                 if [ "$CERT_AGE_DAYS" -lt 7 ]; then
                     echo_yellow "[!]  SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
                 elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
-                    echo "SSL cert age: $CERT_AGE_DAYS days (recent)"
+                    echo_grey "SSL cert age: $CERT_AGE_DAYS days (recent)"
                 else
-                    echo "SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
+                    echo_grey "SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
                 fi
             fi
         fi
@@ -232,10 +232,10 @@ if [ -z "$SKIP_FETCH" ]; then
     # one fetch. The screenshot also feeds the Phase 3 vision escalation.
     [ -z "$NO_VISION" ] && SHOT="$CACHE_DIR/page.jpg"
     if [ -f "$CACHE_DIR/page.json" ]; then
-        echo "Using cached page content ($CACHE_DIR)"
+        echo_grey "Using cached page content ($CACHE_DIR)"
         PAGE_DATA=$(cat "$CACHE_DIR/page.json")
     else
-        echo "Fetching page content..."
+        echo_grey "Fetching page content..."
         # Cache full inline scripts too (page-fetch only dumps them when obfuscation fires),
         # so the JS-deobfuscation escalation can reuse them.
         PAGE_DATA=$(PAGE_SHOT="$SHOT" PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
@@ -271,11 +271,11 @@ if [ -z "$SKIP_FETCH" ]; then
         fi
 
         echo ""
-        echo "Third-party domains: $THIRD_PARTY"
+        echo_grey "Third-party domains: $THIRD_PARTY"
     fi
 else
     PAGE_DATA="{}"
-    echo "(page fetch skipped)"
+    echo_grey "(page fetch skipped)"
 fi
 
 echo ""
@@ -329,7 +329,7 @@ if [ "$MODEL" = auto ]; then
         echo "auto: best model '$MODEL' not installed -> using '${INSTALLED[0]}'"
         MODEL="${INSTALLED[0]}"
     fi
-    echo "auto -> model: $MODEL"
+    echo "${CYAN}[model] $MODEL (auto)${RESET}"
 fi
 
 if [ -z "$MODEL" ]; then

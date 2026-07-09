@@ -30,7 +30,7 @@ ensure_ollama() {
             -v ollama_storage:/root/.ollama ollama/ollama:latest >/dev/null || return 1
     fi
 
-    printf "${CYAN:-}[..] Waiting for Ollama API on :11434...${RESET:-}"
+    printf "${CYAN:-}[.] Waiting for Ollama API on :11434...${RESET:-}"
     for _ in $(seq 1 30); do
         if curl -s --max-time 5 localhost:11434/api/tags >/dev/null 2>&1; then
             echo " ready."
