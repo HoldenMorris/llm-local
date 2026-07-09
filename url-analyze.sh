@@ -481,14 +481,6 @@ VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk
 fi   # end real-LLM path (inner heuristic guard)
 fi   # end PHASE 3 (outer heuristic guard)
 
-# Offer to open the page screenshot for human validation (interactive terminal + GUI only).
-# Outside the LLM guard so heuristic mode (-H / -m heuristic / menu 0) offers it too; the
-# screenshot persists in the cache dir.
-if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
-    read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
-    [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
-fi
-
 # === Consolidated signal list ===
 # Every signal gathered across the phases, printed together as one bullet list instead
 # of sprinkled through the output. Gray detail; the colored verdict banner carries severity.
@@ -500,6 +492,14 @@ else
     echo_grey "Signals: none detected."
 fi
 echo ""
+
+# Offer to open the page screenshot for human validation (interactive terminal + GUI only).
+# After the signals list; outside the LLM guard so heuristic mode offers it too. The
+# screenshot persists in the cache dir.
+if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
+    [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
+fi
 
 # === Deterministic verdict (classify_verdict in verdict.sh) ===
 # Signals are extracted deterministically upstream, so the final verdict is
