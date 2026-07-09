@@ -75,7 +75,7 @@ re-scans reuse the fetch, the ~1min vision call, and the LLM verdict instead of
 re-computing. `-r` forces a full refresh.
 
 Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
-back to gemma2:2b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
+back to qwen2.5:1.5b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
 `-H` heuristic-only (no LLM — verdict straight from `verdict.sh`'s decision table), `-r`
 ignore cache, `-c mono` no color, `-D` skip JS deobfuscation. With no URL arg it prompts
 for one; the interactive model menu lists `0: none (pure heuristic)` plus the installed models
@@ -92,7 +92,7 @@ compare within one machine, and `-m auto` / `best_model` only picks from **this*
 machine's rows.
 
 ```bash
-./url-benchmark.sh                      # none + gemma2:2b (default)
+./url-benchmark.sh                      # none + qwen2.5:1.5b (default)
 ./url-benchmark.sh gemma2:2b minicpm4.1:8b
 CORPUS=my-urls.txt ./url-benchmark.sh
 ```
@@ -191,7 +191,7 @@ Gated (only runs on obfuscation markers), cached per URL, `-D` to skip. Scripts:
 
 ```bash
 # Full analysis with LLM
-./url-analyze.sh -m gemma2:2b <url>
+./url-analyze.sh -m qwen2.5:1.5b <url>
 
 # Static analysis only (skip page fetch)
 ./url-analyze.sh -s <url>

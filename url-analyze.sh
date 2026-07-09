@@ -348,11 +348,11 @@ if [ -z "$HEURISTIC" ]; then
 echo "${BOLD}Model${RESET}"
 ensure_ollama || exit 1
 
-# -m auto -> best benchmarked model (falls back to gemma2:2b if no benchmark data yet).
+# -m auto -> best benchmarked model (falls back to qwen2.5:1.5b if no benchmark data yet).
 # Guard: if that model isn't actually installed, drop to the first installed one.
 if [ "$MODEL" = auto ]; then
     MODEL=$(best_model)
-    [ -z "$MODEL" ] && MODEL="gemma2:2b"
+    [ -z "$MODEL" ] && MODEL="qwen2.5:1.5b"
     INSTALLED=($(docker exec llm-spam-test ollama list 2>/dev/null | awk 'NR>1 {print $1}'))
     if ! printf '%s\n' "${INSTALLED[@]}" | grep -qxF "$MODEL"; then
         [ ${#INSTALLED[@]} -eq 0 ] && { echo "auto: no models installed (is llm-spam-test running?)"; exit 1; }
@@ -369,7 +369,7 @@ if [ -z "$MODEL" ]; then
         exit 1
     fi
     # Default = best benchmarked model if it's installed, else the first one. Enter picks it.
-    DEFAULT=$(best_model); [ -z "$DEFAULT" ] && DEFAULT="gemma2:2b"
+    DEFAULT=$(best_model); [ -z "$DEFAULT" ] && DEFAULT="qwen2.5:1.5b"
     printf '%s\n' "${MODELS[@]}" | grep -qxF "$DEFAULT" || DEFAULT="${MODELS[0]}"
     echo "Available models:"
     echo "  0: none (pure heuristic, no LLM)"
@@ -528,9 +528,15 @@ if [ -n "$THINK" ]; then
     echo ""
 fi
 printf "${BOLD}LLM Analysis (%s, %s)${RESET}\n" "$MODEL" "$LLM_LABEL"
-echo "$BODY" | sed '/^VERDICT:/d' | while IFS= read -r _l; do
-    [ -n "$_l" ] && echo_grey "- $_l"
-done
+_llm_body=$(echo "$BODY" | sed '/^VERDICT:/d')
+if [ -n "$(printf '%s' "$_llm_body" | tr -d '[:space:]')" ]; then
+    while IFS= read -r _l; do
+        [ -n "$_l" ] && echo_grey "- $_l"
+    done <<< "$_llm_body"
+else
+    # Terse models (e.g. qwen2.5:1.5b) often emit only the VERDICT line, no prose.
+    echo_grey "- (verdict only, no explanation from the model)"
+fi
 echo ""
 
 VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')

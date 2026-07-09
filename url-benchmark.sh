@@ -8,7 +8,7 @@
 # Ollama model. The page is fetched once per URL and cached, so comparing N
 # models costs one fetch, not N.
 #
-# Usage:  ./url-benchmark.sh [model ...]        (default: gemma2:2b)
+# Usage:  ./url-benchmark.sh [model ...]        (default: qwen2.5:1.5b)
 #         ./url-benchmark.sh gemma2:2b minicpm4.1:8b
 #         CORPUS=my-urls.txt ./url-benchmark.sh
 # ==============================================================================
@@ -26,8 +26,8 @@ MACHINE=$(machine_id)   # timings only comparable within the same hardware finge
 
 [ -f "$CORPUS" ] || { echo "Corpus not found: $CORPUS"; exit 1; }
 
-# Engines: "none" (heuristic baseline) first, then the models given (default gemma2:2b).
-ENGINES=("none" "${@:-gemma2:2b}")
+# Engines: "none" (heuristic baseline) first, then the models given (default qwen2.5:1.5b).
+ENGINES=("none" "${@:-qwen2.5:1.5b}")
 
 # Read corpus into parallel arrays (skip blanks/comments).
 EXP=() URLS=()
