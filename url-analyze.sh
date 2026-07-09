@@ -507,10 +507,10 @@ fi
 VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS" "$VERDICT")
 
 case "$VERDICT" in
-    SAFE)       VC="$GREEN";  VLINE="  [+] VERDICT: SAFE" ;;
-    SUSPICIOUS) VC="$YELLOW"; VLINE="  [!] VERDICT: SUSPICIOUS" ;;
-    DANGEROUS)  VC="$RED";    VLINE="  [!!] VERDICT: DANGEROUS" ;;
-    *)          VC="$CYAN";   VLINE="  [?] VERDICT: UNCLEAR" ;;
+    SAFE)       VC="$GREEN";  VLINE="[+] VERDICT: SAFE" ;;
+    SUSPICIOUS) VC="$YELLOW"; VLINE="[!] VERDICT: SUSPICIOUS" ;;
+    DANGEROUS)  VC="$RED";    VLINE="[!!] VERDICT: DANGEROUS" ;;
+    *)          VC="$CYAN";   VLINE="[?] VERDICT: UNCLEAR" ;;
 esac
 echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
