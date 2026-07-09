@@ -50,6 +50,19 @@ const { URL } = require('url');
 
   const page = await browser.newPage();
 
+  // Stealth: some SPAs (and anti-bot layers) refuse to render for headless Chrome, checking
+  // navigator.webdriver / missing chrome object / empty plugins. Mask those before any
+  // navigation so client-rendered login pages (e.g. Securemail) actually mount.
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    window.chrome = window.chrome || { runtime: {} };
+    const origQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (origQuery) window.navigator.permissions.query = (p) =>
+      p && p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : origQuery(p);
+  });
+
   // ponytail: mobile UA when requested  many phishing cloakers only forward mobile victims
   const uaMode = process.argv[3] || 'desktop';
   const UAS = {
@@ -72,6 +85,14 @@ const { URL } = require('url');
     const u = frame.url();
     if (frame === page.mainFrame() && u && u !== 'about:blank' && hops.at(-1) !== u) hops.push(u);
   });
+
+  // Capture page console output + JS errors. Useful as a signal (skimmers/exfil kits log
+  // debug lines) and to see WHY a client-rendered page failed to mount (blank SPA).
+  const consoleLogs = [];
+  const pushLog = (type, text) => { if (consoleLogs.length < 40 && text) consoleLogs.push({ type, text: String(text).slice(0, 300) }); };
+  page.on('console', m => pushLog(m.type(), m.text()));
+  page.on('pageerror', e => pushLog('pageerror', e && e.message ? e.message : e));
+  page.on('requestfailed', r => pushLog('requestfailed', r.url() + ' ' + (r.failure() && r.failure().errorText)));
 
   // Track all requests
   const requests = [];
@@ -146,11 +167,56 @@ const { URL } = require('url');
   if (redirects.at(-1).url !== landedUrl) redirects.push({ url: landedUrl, status });
   redirects.at(-1).status = status;
 
+  // Vue/React SPAs (e.g. Securemail) mount AFTER network idle and render the login form
+  // late, into SHADOW DOM that a plain querySelector can't see. Poll (bounded ~10s, breaks
+  // early) for a shadow-piercing password field or real body text before scraping.
+  for (let i = 0; i < 12; i++) {
+    let ready = false;
+    for (const frame of page.frames()) {
+      try {
+        ready = await frame.evaluate(() => {
+          const deepPw = (root, d = 0) => {
+            if (d > 8 || !root.querySelectorAll) return false;
+            if (root.querySelector('input[type="password"]')) return true;
+            for (const el of root.querySelectorAll('*')) if (el.shadowRoot && deepPw(el.shadowRoot, d + 1)) return true;
+            return false;
+          };
+          return deepPw(document) || (!!document.body && document.body.innerText.trim().length > 30);
+        });
+      } catch {}
+      if (ready) break;
+    }
+    if (ready) break;
+    await new Promise(r => setTimeout(r, 800));
+  }
+
   const features = await page.evaluate(() => {
+    // Shadow-DOM-piercing helpers: Vue/web-component apps (e.g. Securemail) render forms,
+    // inputs and text INTO shadow roots that a plain document.querySelector can't reach.
+    const deepAll = (sel) => {
+      const out = [], stack = [document];
+      while (stack.length) {
+        const n = stack.pop();
+        if (!n.querySelectorAll) continue;
+        out.push(...n.querySelectorAll(sel));
+        for (const el of n.querySelectorAll('*')) if (el.shadowRoot) stack.push(el.shadowRoot);
+      }
+      return out;
+    };
+    const deepText = () => {
+      let t = document.body ? document.body.innerText : '', stack = [document];
+      while (stack.length) {
+        const n = stack.pop();
+        if (!n.querySelectorAll) continue;
+        for (const el of n.querySelectorAll('*')) if (el.shadowRoot) { t += '\n' + (el.shadowRoot.textContent || ''); stack.push(el.shadowRoot); }
+      }
+      return t;
+    };
+
     // Compare APEX domains, not hostnames -- otherwise a site's own subdomains
     // (en.wikipedia.org vs www.wikipedia.org) count as "external" and skew the profile.
     const apex = h => (h || '').split('.').slice(-2).join('.');
-    const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
+    const links = deepAll('a[href]').map(a => ({
       href: a.href, text: (a.textContent||'').trim().slice(0,80),
       isExternal: !!a.hostname && apex(a.hostname) !== apex(location.hostname)
     }));
@@ -160,7 +226,7 @@ const { URL } = require('url');
       .find(m => (m.getAttribute('http-equiv') || '').toLowerCase() === 'refresh');
     const metaRefresh = _mr ? (_mr.getAttribute('content') || '') : '';
 
-    const forms = Array.from(document.forms).map(f => ({
+    const forms = deepAll('form').map(f => ({
       action: f.action, method: f.method,
       hasPassword: !!f.querySelector('input[type="password"]'),
       inputs: Array.from(f.querySelectorAll('input')).map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder }))
@@ -187,11 +253,34 @@ const { URL } = require('url');
 
     return {
       title: document.title,
-      text: (document.body ? document.body.innerText : '').slice(0, 4000),
+      text: deepText().slice(0, 4000),
       links, forms, scripts, inlineScripts, iframes, images, meta, metaRefresh,
-      hasLoginForm: !!document.querySelector('input[type="password"]'),
+      hasLoginForm: deepAll('input[type="password"]').length > 0,
     };
   });
+
+  // SPAs / webmail (e.g. Securemail, Zimbra) render the login form INSIDE an iframe, invisible
+  // to a main-frame-only DOM query. Puppeteer can evaluate in child frames, so merge their
+  // forms + password fields + text/title so login detection and brand/urgency checks work.
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    try {
+      const sub = await frame.evaluate(() => ({
+        forms: Array.from(document.forms).map(f => ({
+          action: f.action, method: f.method,
+          hasPassword: !!f.querySelector('input[type="password"]'),
+          inputs: Array.from(f.querySelectorAll('input')).map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder })),
+        })),
+        hasPassword: !!document.querySelector('input[type="password"]'),
+        text: (document.body ? document.body.innerText : '').slice(0, 4000),
+        title: document.title,
+      }));
+      if (sub.forms.length) features.forms.push(...sub.forms);
+      if (sub.hasPassword) features.hasLoginForm = true;
+      if (!features.text && sub.text) features.text = sub.text;    // main frame had no body text
+      if (!features.title && sub.title) features.title = sub.title;
+    } catch {}
+  }
 
   // --- Analysis ---
 
@@ -367,7 +456,14 @@ const { URL } = require('url');
     thirdPartyDomains,
     suspiciousJs: jsSmells,
     phishingSmells: smells,
+    console: consoleLogs,
   };
+
+  // A page that renders blank/empty but logged JS errors -- common with SPAs that fail to
+  // mount headless, and worth flagging (the screenshot/vision won't see anything either).
+  const consoleErrs = consoleLogs.filter(l => l.type === 'error' || l.type === 'pageerror');
+  if (features.text.trim().length < 20 && consoleErrs.length)
+    smells.push(`Page did not render (${consoleErrs.length} JS error(s); likely an SPA that failed to mount headless)`);
 
   // ponytail: optional viewport screenshot for the vision-model escalation (argv[4] = container path)
   const shotPath = process.argv[4];

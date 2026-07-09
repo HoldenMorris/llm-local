@@ -313,6 +313,15 @@ SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/
 SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
 [ -n "$SUSP_JS" ] && add_signal "Suspicious JS: $SUSP_JS"
 
+# Surface notable page console output (errors / failed requests) -- diagnoses blank SPAs
+# and can reveal skimmer debug lines. Full console (incl. logs) is in the cached page.json.
+CONSOLE=$(echo "$PAGE_DATA" | jq -r '(.console // []) | map(select(.type=="error" or .type=="pageerror" or .type=="requestfailed")) | .[:8] | .[] | "[\(.type)] \(.text)"' 2>/dev/null)
+if [ -n "$CONSOLE" ]; then
+    echo ""
+    echo "${BOLD}Console${RESET}"
+    while IFS= read -r _c; do [ -n "$_c" ] && echo_grey "- $_c"; done <<< "$CONSOLE"
+fi
+
 # === JS deobfuscation escalation ===
 # When the scraper flagged obfuscation markers, deobfuscate the cached inline scripts
 # (webcrack, sandboxed) and scan the CLEARTEXT for signals the obfuscation was hiding
