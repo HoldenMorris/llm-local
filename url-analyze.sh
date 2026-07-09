@@ -377,7 +377,7 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
     # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
     LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
     LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-    echo "[vision]  Login form present  visual brand check via $VISION_MODEL (~1min on CPU)..."
+    echo "${CYAN}[vision]  Login form present - visual brand check via $VISION_MODEL (~1min on CPU)...${RESET}"
     VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
     # think:false  we want a crisp brand verdict, not a reasoning essay. Without it the
     # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
@@ -484,7 +484,7 @@ echo ""
 THINK=$(echo "$RESPONSE" | sed -n '/<think>/,/<\/think>/p' | sed '1d;$d')
 BODY=$(echo "$RESPONSE" | sed '/<think>/,/<\/think>/d')
 if [ -n "$THINK" ]; then
-    echo "=== [reasoning] Model Reasoning ==="
+    echo "${CYAN}=== [reasoning] Model Reasoning ===${RESET}"
     echo "$THINK"
     echo ""
 fi

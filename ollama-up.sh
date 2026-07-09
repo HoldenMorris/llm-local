@@ -12,25 +12,25 @@ ensure_ollama() {
     local keep_alive="${KEEP_ALIVE:-5m}"
 
     if docker ps -q -f name="$name" | grep -q .; then
-        echo "[+] Ollama container already running."
+        echo "${GREEN:-}[+] Ollama container already running.${RESET:-}"
     elif docker ps -aq -f name="$name" | grep -q .; then
-        echo "[*] Restarting existing Ollama container..."
+        echo "${CYAN:-}[*] Restarting existing Ollama container...${RESET:-}"
         docker start "$name" >/dev/null || return 1
     else
-        echo "[*] Creating new Ollama instance..."
+        echo "${CYAN:-}[*] Creating new Ollama instance...${RESET:-}"
         local gpu_flag=""
         if nvidia-smi &>/dev/null; then
-            echo "[+] GPU: NVIDIA detected. Enabling hardware acceleration."
+            echo "${GREEN:-}[+] GPU: NVIDIA detected. Enabling hardware acceleration.${RESET:-}"
             gpu_flag="--gpus all"
         else
-            echo "[i]  GPU: none. Running on CPU."
+            echo "${CYAN:-}[i]  GPU: none. Running on CPU.${RESET:-}"
         fi
         docker run -d $gpu_flag --name "$name" -p 11434:11434 \
             -e OLLAMA_KEEP_ALIVE="$keep_alive" \
             -v ollama_storage:/root/.ollama ollama/ollama:latest >/dev/null || return 1
     fi
 
-    printf "[..] Waiting for Ollama API on :11434..."
+    printf "${CYAN:-}[..] Waiting for Ollama API on :11434...${RESET:-}"
     for _ in $(seq 1 30); do
         if curl -s --max-time 5 localhost:11434/api/tags >/dev/null 2>&1; then
             echo " ready."
