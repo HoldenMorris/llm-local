@@ -21,6 +21,29 @@ best_model() {
     } END { print bm }' "$csv"
 }
 
+# domain_dns <domain> -> one line "<domain> -> <ip> (country, org), age Nd" for an off-domain
+# exfil target. Uses a general RDAP bootstrap (rdap.org) so arbitrary TLDs (.cc, .no, ...) get
+# a registration age. The caller parses ", age Nd" to flag very-new domains.
+domain_dns() {
+    local d="$1" ip country org created cts age=""
+    ip=$(dig +short "$d" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+    if [ -n "$ip" ]; then
+        local info; info=$(curl -s --max-time 5 "http://ip-api.com/json/$ip?fields=country,org,isp" 2>/dev/null)
+        country=$(echo "$info" | jq -r '.country // "?"' 2>/dev/null)
+        org=$(echo "$info" | jq -r '.org // .isp // "?"' 2>/dev/null)
+    fi
+    created=$(curl -s --max-time 6 "https://rdap.org/domain/$d" 2>/dev/null \
+        | jq -r '.events[]? | select(.eventAction=="registration") | .eventDate' 2>/dev/null | head -1 | cut -dT -f1)
+    if [ -n "$created" ] && [ "$created" != "null" ]; then
+        cts=$(date -d "$created" +%s 2>/dev/null)
+        [ -n "$cts" ] && age=$(( ($(date +%s) - cts) / 86400 ))
+    fi
+    printf '%s' "$d"
+    [ -n "$ip" ] && printf ' -> %s (%s, %s)' "$ip" "${country:-?}" "${org:-?}" || printf ' (unresolvable)'
+    [ -n "$age" ] && printf ', age %sd' "$age"
+    printf '\n'
+}
+
 usage() {
     cat <<EOF
 Usage: $(basename "$0") [options] <url>
@@ -320,6 +343,24 @@ if [ -n "$CONSOLE" ]; then
     while IFS= read -r _c; do [ -n "$_c" ] && echo_grey "- $_c"; done <<< "$CONSOLE"
 fi
 
+# Off-domain exfil targets the page's code posts to -- with DNS/geo/age. A newly-registered
+# target is a strong signal. Cached (exfil.txt) so re-scans skip the lookups.
+EXFIL_DOMAINS=$(echo "$PAGE_DATA" | jq -r '(.exfilDomains // []) | .[]' 2>/dev/null)
+if [ -n "$EXFIL_DOMAINS" ]; then
+    echo ""
+    echo "${BOLD}Exfil Targets${RESET}"
+    if [ ! -f "$CACHE_DIR/exfil.txt" ]; then
+        while IFS= read -r _d; do [ -n "$_d" ] && domain_dns "$_d"; done <<< "$EXFIL_DOMAINS" > "$CACHE_DIR/exfil.txt"
+    fi
+    while IFS= read -r _line; do
+        [ -z "$_line" ] && continue
+        echo_grey "- $_line"
+        # flag a freshly-registered exfil target (age < 30d) as its own signal
+        _age=$(printf '%s' "$_line" | grep -oE 'age [0-9]+d' | grep -oE '[0-9]+')
+        [ -n "$_age" ] && [ "$_age" -lt 30 ] 2>/dev/null && add_signal "Exfil target ${_line%% *} is only ${_age}d old (freshly registered)"
+    done < "$CACHE_DIR/exfil.txt"
+fi
+
 # === JS deobfuscation escalation ===
 # When the scraper flagged obfuscation markers, deobfuscate the cached inline scripts
 # (webcrack, sandboxed) and scan the CLEARTEXT for signals the obfuscation was hiding
@@ -369,7 +410,7 @@ if [ "$MODEL" = auto ]; then
         echo "auto: best model '$MODEL' not installed -> using '${INSTALLED[0]}'"
         MODEL="${INSTALLED[0]}"
     fi
-    echo "${CYAN}[model] $MODEL (auto)${RESET}"
+    echo_grey "- $MODEL (auto)"
 fi
 
 if [ -z "$MODEL" ]; then
@@ -427,7 +468,7 @@ if [ -z "$NO_VISION" ] && [ -n "$VISION_TRIGGER" ]; then
         # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
         LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
         LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-        echo "${CYAN}[vision] visual check (brand + credential input) via $VISION_MODEL (~1min on CPU)...${RESET}"
+        echo_grey "- visual check (brand + credential input) via $VISION_MODEL (~1min on CPU)..."
         VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. Answer concisely in two lines:
 BRAND: what brand/company does its visual design (logo, colours, layout) imitate, and does it match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so.
 PASSWORD: is a password or login/credential input field visible on the page? Reply exactly 'PASSWORD: yes' or 'PASSWORD: no'."
@@ -441,7 +482,7 @@ PASSWORD: is a password or login/credential input field visible on the page? Rep
         printf '%s' "$VISION_NOTE" > "$CACHE_DIR/vision.txt"
     fi
     if [ -n "$VISION_NOTE" ]; then
-        echo "   -> $VISION_NOTE"
+        echo_grey "- $VISION_NOTE"
         # Double-check: if the VLM sees a credential field the DOM missed, treat it as a login
         # page so the verdict floor (login + red flag) can fire. Match only 'PASSWORD: yes'.
         if [ "$HAS_LOGIN" != "true" ] && echo "$VISION_NOTE" | grep -qiE 'PASSWORD:?[[:space:]]*yes'; then
@@ -528,7 +569,7 @@ if [ -z "${NO_LLM_CACHE:-}" ] && [ -f "$LLM_CACHE" ]; then
     RESPONSE=$(cat "$LLM_CACHE")
     LLM_LABEL="cached"
 else
-    echo "${CYAN}[.] LLM analyzing...${RESET}"
+    echo_grey "- LLM analyzing..."
     LLM_START=$(date +%s.%N)
     curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
         --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json
