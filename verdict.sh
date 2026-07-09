@@ -20,12 +20,12 @@ is_unsub_url() {
     printf '%s' "$1" | grep -qiE 'unsub|opt[-_]?out|list[-_]?manage|/remove|mailpref|newsletter'
 }
 
-# count_red_flags <tld> <age_days> <final_url> <smells> <susp_js>
+# count_red_flags <tld> <age_days> <final_url> <smells> <susp_js> <deobfus_signals>
 #   Echoes the number of deterministic red flags in the extracted signals.
 #   The signals are already computed deterministically upstream, so we never
 #   ask a small model to do this boolean counting.
 count_red_flags() {
-    local tld="$1" age="$2" final_url="$3" smells="$4" susp_js="$5"
+    local tld="$1" age="$2" final_url="$3" smells="$4" susp_js="$5" deobfus="$6"
     local n=0
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
@@ -33,6 +33,9 @@ count_red_flags() {
     [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -vi 'hidden form field' | grep -c .) ))
     # suspicious JS present
     [ -n "$susp_js" ] && n=$(( n + 1 ))
+    # deobfuscated JS revealed real malicious intent: off-domain exfil, JS redirect, or
+    # crypto address. Same-domain URLs / storage access alone do NOT count (false-positive guard).
+    printf '%s' "$deobfus" | grep -qiE 'off-domain URL|JS redirect|crypto wallet' && n=$(( n + 1 ))
     # risky TLD
     is_risky_tld "$tld" && n=$(( n + 1 ))
     # young domain (<90 days); empty age = unknown -> not counted
@@ -53,7 +56,7 @@ _severity() {
     esac
 }
 
-# classify_verdict <has_login> <tld> <age_days> <final_url> <url> <smells> <susp_js> <llm_verdict>
+# classify_verdict <has_login> <tld> <age_days> <final_url> <url> <smells> <susp_js> <deobfus_signals> <llm_verdict>
 #   The deterministic core. Computes the minimum verdict the signals demand (the
 #   "safety floor") and returns the more severe of that floor and the LLM's
 #   verdict -- it escalates but never downgrades, so it can never mask a threat
@@ -61,9 +64,9 @@ _severity() {
 #   which may be empty -> caller shows UNCLEAR) to stdout. When the floor
 #   overrides the LLM, an explanatory notice is written to stderr.
 classify_verdict() {
-    local has_login="$1" tld="$2" age="$3" final_url="$4" url="$5" smells="$6" susp_js="$7" llm="$8"
+    local has_login="$1" tld="$2" age="$3" final_url="$4" url="$5" smells="$6" susp_js="$7" deobfus="$8" llm="$9"
     local flags unsub=""
-    flags=$(count_red_flags "$tld" "$age" "$final_url" "$smells" "$susp_js")
+    flags=$(count_red_flags "$tld" "$age" "$final_url" "$smells" "$susp_js" "$deobfus")
     is_unsub_url "$url" && unsub=1
 
     # Floor: the minimum severity the signals demand. Empty = impose nothing.

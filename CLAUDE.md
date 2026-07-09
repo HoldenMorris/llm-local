@@ -43,6 +43,8 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 | `url-analyze.sh` | Full URL analysis (static + dynamic + LLM) |
 | `url-benchmark.sh` | Compare models (+ heuristic baseline) on a labeled URL corpus |
 | `page-fetch.sh` | Sandboxed page scraper with phishing signals |
+| `js-deobfuscate.sh` | Sandboxed webcrack runner: obfuscated JS in -> cleartext out |
+| `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `llm-test.sh` | Single email test |
 | `colors.sh` | Shared ANSI colors — `source` it, use `${RED}..${RESET}` or `cecho` |
@@ -69,7 +71,7 @@ benchmark reuse one fetch instead of re-hitting Docker/the network. `-r` forces 
 Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
 back to gemma2:2b), `-s` skip page fetch, `-V` no vision, `-H` heuristic-only (no LLM —
 verdict straight from `verdict.sh`'s decision table), `-r` ignore cache, `-c mono` no
-color. With no URL arg
+color, `-D` skip JS deobfuscation. With no URL arg
 it prompts for one; the interactive model menu defaults to the best model (press Enter),
 or `s` to skip the LLM. The LLM analysis line prints which model ran and how long it took.
 
@@ -123,8 +125,26 @@ CORPUS=my-urls.txt ./url-benchmark.sh
 | Right-click disabled | `oncontextmenu` blocked |
 | Crypto wallet addresses | BTC, ETH, TRX patterns |
 | Brand impersonation | Brand mentioned but not in domain (with OAuth whitelist) |
-| Suspicious JS | eval(), atob(), document.write(), hex-encoded strings |
+| Suspicious JS | eval(), atob(), document.write(), hex-encoded strings, obfuscator.io `_0x` identifiers, String.fromCharCode |
 | External link ratio | Skewed external vs internal links |
+
+### Phase 3.5: JS Deobfuscation (escalation)
+
+When Phase 3 flags obfuscation, `url-analyze.sh` escalates: it deobfuscates the page's
+inline scripts with **webcrack** (static AST, sandboxed — never executes attacker JS) and
+re-scans the cleartext for signals the obfuscation hid.
+
+| Detection | Description |
+|-----------|-------------|
+| Off-domain exfil URL | `fetch`/XHR/form target on a different host than the landed domain |
+| Cookie / storage theft | `document.cookie`, localStorage/sessionStorage reads feeding a send |
+| JS redirect | `location.href/replace/assign`, `window.location=` |
+| Revealed crypto address | BTC/ETH/TRX wallet decoded from the string array |
+
+Off-domain exfil / redirect / crypto count as a deterministic red flag (see `verdict.sh`) —
+so an obfuscated **login** page that deobfuscates to off-domain exfil floors to DANGEROUS.
+Gated (only runs on obfuscation markers), cached per URL, `-D` to skip. Scripts: run
+`./js-deobfuscate.sh <file.js>` standalone.
 
 ### Phase 4: LLM Analysis
 
@@ -164,6 +184,7 @@ CORPUS=my-urls.txt ./url-benchmark.sh
 
 - Docker with Ollama image (`llm-spam-test` container)
 - Docker with `ghcr.io/puppeteer/puppeteer` for page-fetch
+- Docker `local-llm-webcrack` image (auto-built on first deobfuscation: `node:22-alpine` + `webcrack`)
 - `jq`, `bc`, `dig`, `openssl`, `curl`
 
 ## Skills Installed

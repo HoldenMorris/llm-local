@@ -502,7 +502,7 @@ fi
 # Signals are extracted deterministically upstream, so the final verdict is
 # decided by the decision table in verdict.sh -- it escalates over the LLM's
 # verdict but never downgrades. The "[floor] Safety floor" notice goes to stderr.
-VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$VERDICT")
+VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS" "$VERDICT")
 
 case "$VERDICT" in
     SAFE)       VC="$GREEN";  VLINE="  [+] VERDICT: SAFE" ;;
