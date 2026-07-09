@@ -117,6 +117,7 @@ CORPUS=my-urls.txt ./url-benchmark.sh
 | Off-domain form | Login submits to different domain |
 | IP fingerprinting | api.ipify.org, ipinfo.io, etc. |
 | Compromised WordPress | Redirect to `/wp-include/` or `/wp-content/` with random paths |
+| Silent refresh redirect | HTTP `Refresh:` response header or in-body `<meta refresh>` (not just 3xx `Location`) |
 | Random URL path | High-entropy paths like `/kz51odwn/` |
 | Urgency language | "suspended", "verify now", "24 hours", etc. |
 | Hidden form fields | >3 hidden inputs |

@@ -85,11 +85,32 @@ const { URL } = require('url');
     req.continue();
   });
 
+  // Capture HTTP "Refresh:" headers on document hops -- a silent redirect that never
+  // appears as a 3xx Location, used by cloakers. Collected across every hop, since the
+  // intermediate gate (not the landed page) is usually what carries it.
+  const refreshHeaders = [];
+  page.on('response', (r) => {
+    try {
+      if (r.request().resourceType() === 'document') {
+        const rh = r.headers()['refresh'];
+        if (rh) refreshHeaders.push(rh);
+      }
+    } catch {}
+  });
+
   // Initial navigation  tolerate mid-flight JS redirects that destroy the JS context
   let resp = await page.goto(targetUrl, {
     waitUntil: 'domcontentloaded',
     timeout: 30000
   }).catch(() => null);
+
+  // Grab any <meta refresh> on the FIRST document before we follow it away -- an auto-
+  // refresh navigates and the tag is gone from the landed DOM. Best-effort (racy for 0-sec).
+  let metaRefreshSeen = await page.evaluate(() => {
+    const m = Array.from(document.querySelectorAll('meta'))
+      .find(x => (x.getAttribute('http-equiv') || '').toLowerCase() === 'refresh');
+    return m ? (m.getAttribute('content') || '') : '';
+  }).catch(() => '');
 
   // Follow JS/meta/cookie redirects (cloaker gates) until the URL stops changing
   let prevUrl = null;
@@ -122,10 +143,18 @@ const { URL } = require('url');
   redirects.at(-1).status = status;
 
   const features = await page.evaluate(() => {
+    // Compare APEX domains, not hostnames -- otherwise a site's own subdomains
+    // (en.wikipedia.org vs www.wikipedia.org) count as "external" and skew the profile.
+    const apex = h => (h || '').split('.').slice(-2).join('.');
     const links = Array.from(document.querySelectorAll('a[href]')).map(a => ({
       href: a.href, text: (a.textContent||'').trim().slice(0,80),
-      isExternal: a.hostname && a.hostname !== location.hostname
+      isExternal: !!a.hostname && apex(a.hostname) !== apex(location.hostname)
     }));
+
+    // In-body <meta http-equiv="refresh" content="0;url=..."> -- another silent redirect.
+    const _mr = Array.from(document.querySelectorAll('meta'))
+      .find(m => (m.getAttribute('http-equiv') || '').toLowerCase() === 'refresh');
+    const metaRefresh = _mr ? (_mr.getAttribute('content') || '') : '';
 
     const forms = Array.from(document.forms).map(f => ({
       action: f.action, method: f.method,
@@ -155,7 +184,7 @@ const { URL } = require('url');
     return {
       title: document.title,
       text: (document.body ? document.body.innerText : '').slice(0, 4000),
-      links, forms, scripts, inlineScripts, iframes, images, meta,
+      links, forms, scripts, inlineScripts, iframes, images, meta, metaRefresh,
       hasLoginForm: !!document.querySelector('input[type="password"]'),
     };
   });
@@ -199,6 +228,10 @@ const { URL } = require('url');
     const brandExplainedByOAuth = matched.every(b =>
       thirdPartyDomains.some(d => d.includes(b.replace(/\s/g,'')) || oauthPaymentDomains.some(o => d.includes(o.split('.')[0])))
     );
+    // NOTE (known false positive): fires on legit content sites that merely NAME brands in
+    // body text (e.g. wikipedia.org mentioning "google, apple"). The OAuth/payment whitelist
+    // does not cover editorial mentions. Left as-is deliberately -- strict mode prefers the
+    // false positive to a miss -- but this is the main source of benign-page SUSPICIOUS.
     if (!brandInDomain && !brandExplainedByOAuth)
       smells.push(`Brand impersonation: page mentions "${matched.slice(0,3).join(', ')}" but domain is "${domain}"`);
   }
@@ -226,6 +259,15 @@ const { URL } = require('url');
   // Redirects
   if (redirects.length > 2)
     smells.push(`${redirects.length}-hop redirect chain`);
+
+  // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
+  // gates that bounce victims without a visible 3xx Location. Flag when a url= target exists.
+  const refreshHit = refreshHeaders.find(rh => /url=/i.test(rh));
+  if (refreshHit)
+    smells.push(`HTTP Refresh header redirect: ${refreshHit.slice(0,120)}`);
+  const metaRefreshFound = metaRefreshSeen || features.metaRefresh;
+  if (metaRefreshFound && /url=/i.test(metaRefreshFound))
+    smells.push(`Meta-refresh redirect: ${metaRefreshFound.slice(0,120)}`);
 
   // HTTPS
   if (targetUrl.startsWith('http:'))
