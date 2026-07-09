@@ -343,6 +343,7 @@ fi
 # === PHASE 3: LLM Analysis (skipped in heuristic mode: -H, -m heuristic, or menu option 0) ===
 VERDICT=""   # default; only a real LLM run overrides it. Heuristic modes leave it empty.
 if [ -z "$HEURISTIC" ]; then
+echo "${BOLD}Model${RESET}"
 ensure_ollama || exit 1
 
 # -m auto -> best benchmarked model (falls back to gemma2:2b if no benchmark data yet).
