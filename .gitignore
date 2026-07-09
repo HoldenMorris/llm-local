@@ -1,6 +1,9 @@
 # Ollama models (cached in Docker volume)
 ollama_storage/
 
+# Hashed URL scan cache (page content, screenshots, domain metadata)
+.cache/
+
 # Results (optional - commit if you want history)
 results/*.csv
 

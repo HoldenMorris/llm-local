@@ -78,9 +78,9 @@ classify_verdict() {
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then
         if [ "$floor" = DANGEROUS ]; then
-            echo "⚙️  Safety floor: login form + $flags red flag(s) -> forcing DANGEROUS (LLM said ${llm:-UNCLEAR})" >&2
+            echo "[floor]  Safety floor: login form + $flags red flag(s) -> forcing DANGEROUS (LLM said ${llm:-UNCLEAR})" >&2
         else
-            echo "⚙️  Safety floor: $flags red flag(s)${unsub:+ + unsubscribe endpoint} -> forcing SUSPICIOUS (LLM said ${llm:-UNCLEAR})" >&2
+            echo "[floor]  Safety floor: $flags red flag(s)${unsub:+ + unsubscribe endpoint} -> forcing SUSPICIOUS (LLM said ${llm:-UNCLEAR})" >&2
         fi
         printf '%s' "$floor"
     else

@@ -41,9 +41,49 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 | Script | Purpose |
 |--------|---------|
 | `url-analyze.sh` | Full URL analysis (static + dynamic + LLM) |
+| `url-benchmark.sh` | Compare models (+ heuristic baseline) on a labeled URL corpus |
 | `page-fetch.sh` | Sandboxed page scraper with phishing signals |
 | `benchmark.sh` | Email spam classification benchmark |
 | `llm-test.sh` | Single email test |
+| `colors.sh` | Shared ANSI colors — `source` it, use `${RED}..${RESET}` or `cecho` |
+
+### colors.sh (shared)
+
+Any tool can `source "$SCRIPT_DIR/colors.sh"` (after parsing args) to get:
+- Vars: `RED GREEN YELLOW BLUE CYAN GREY BOLD DIM RESET`
+- Readable helpers: `echo_red "..."`, `echo_green`, `echo_yellow`, `echo_blue`,
+  `echo_cyan`, `echo_grey`, `echo_bold`, and `cecho <color> <text>`.
+
+Color is emitted **only** when stdout is a terminal **and** not disabled. Disable via
+`-c mono` (the tool sets `MONO=1` before sourcing), the `NO_COLOR` env var, or a
+non-terminal stdout (piped / captured) — so machine-parsed output stays plain ASCII.
+Used by `url-analyze.sh`, `url-benchmark.sh`, `benchmark.sh`, and `llm-test.sh`. All four
+accept `-c mono` as a leading flag.
+
+### URL scan cache
+
+`url-analyze.sh` caches each URL's page content, screenshot and domain metadata in
+`.cache/<url-hash>/` (`page.json`, `page.jpg`, `meta.env`), so re-scans and the model
+benchmark reuse one fetch instead of re-hitting Docker/the network. `-r` forces a refresh.
+
+Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
+back to gemma2:2b), `-s` skip page fetch, `-V` no vision, `-H` heuristic-only (no LLM —
+verdict straight from `verdict.sh`'s decision table), `-r` ignore cache, `-c mono` no
+color. With no URL arg
+it prompts for one; the interactive model menu defaults to the best model (press Enter),
+or `s` to skip the LLM. The LLM analysis line prints which model ran and how long it took.
+
+### url-benchmark.sh
+
+Runs `url-corpus.txt` (labeled `VERDICT URL` lines) through each engine and prints an
+accuracy-vs-time matrix + `results/url_benchmark.csv`. `heuristic` = the no-model
+if-then decision table baseline (empty/UNCLEAR normalized to a SAFE guess).
+
+```bash
+./url-benchmark.sh                      # heuristic + gemma2:2b (default)
+./url-benchmark.sh gemma2:2b minicpm4.1:8b
+CORPUS=my-urls.txt ./url-benchmark.sh
+```
 
 ## url-analyze.sh - 3-Phase Analysis
 

@@ -5,6 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ollama-up.sh"
 source "$SCRIPT_DIR/verdict.sh"
+# colors.sh is sourced further down, after args are parsed (so -c mono can disable color)
 
 spinner() {
     local pid=$1
@@ -15,35 +16,65 @@ spinner() {
         printf "\r%c %s" "${chars:i++%${#chars}:1}" "$msg"
         sleep 0.1
     done
-    printf "\r✓ %s\n" "$msg"
+    printf "\r %s\n" "$msg"
+}
+
+# best_model -> the top-scoring model from the url-benchmark.sh CSV (highest accuracy,
+# then fastest). Excludes the heuristic baseline. Empty if there is no benchmark data.
+best_model() {
+    local csv="$SCRIPT_DIR/results/url_benchmark.csv"
+    [ -f "$csv" ] || return 0
+    awk -F, 'NR>1 && $2!="heuristic" {
+        acc=$5; sub(/%/,"",acc); t=$7; sub(/s/,"",t)
+        if (acc+0>ba || (acc+0==ba && t+0<bt)) { ba=acc+0; bt=t+0; bm=$2 }
+    } END { print bm }' "$csv"
 }
 
 MODEL=""
 URL=""
 SKIP_FETCH=""
 NO_VISION=""
+HEURISTIC=""
+REFRESH=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
-while getopts "m:sV" opt; do
+while getopts "m:sVHrc:" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
         V) NO_VISION=1 ;;
-        *) echo "Usage: $0 [-m model] [-s] [-V no-vision] <url>"; exit 1 ;;
+        H) HEURISTIC=1 ;;     # heuristic-only: no LLM, verdict from verdict.sh decision table
+        r) REFRESH=1 ;;       # ignore any cached page/screenshot/metadata and re-fetch
+        c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
+        *) echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] <url>"; exit 1 ;;
     esac
 done
 shift $((OPTIND-1))
 
+# Now that -c mono is known, load the shared color helpers.
+source "$SCRIPT_DIR/colors.sh"
+
 URL="${1:-$URL}"
 
+# Prompt for a URL when none was given (interactive only, so piped/benchmark runs don't hang)
+if [ -z "$URL" ] && [ -t 0 ]; then
+    read -r -p "Enter URL to analyze: " URL
+fi
 if [ -z "$URL" ]; then
-    echo "Usage: $0 [-m model] [-s skip-fetch] <url>"
-    echo "       $0 -m gemma2:2b https://example.com"
+    echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] <url>"
+    echo "       $0 -m gemma2:2b https://example.com   (-m auto = best benchmarked model)"
     exit 1
 fi
 
+# ponytail: content cache keyed by URL hash. Page fetch (Docker+Chrome), screenshot and
+# domain lookups are the slow parts; cache them so re-scans and the model benchmark reuse
+# one fetch across many models. -r wipes it.
+CACHE_DIR="$SCRIPT_DIR/.cache/$(printf '%s' "$URL" | sha256sum | cut -c1-16)"
+[ -n "$REFRESH" ] && rm -rf "$CACHE_DIR"
+mkdir -p "$CACHE_DIR"
+
 # === PHASE 1: Static URL Analysis (zero-day signals) ===
-echo "=== URL Analysis: $URL ==="
+echo "${BOLD}=== URL Analysis: $URL ===${RESET}"
 echo ""
 
 # Extract domain info
@@ -52,7 +83,7 @@ TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 
 # ponytail: High-risk TLDs (list lives in verdict.sh, single source of truth)
 if is_risky_tld "$TLD"; then
-    echo "⚠️  High-risk TLD: .$TLD"
+    echo_yellow "[!]  High-risk TLD: .$TLD"
 fi
 
 # ponytail: Typosquatting detection (brand in subdomain but not apex)
@@ -74,27 +105,38 @@ APAC_BANKS="dbs|ocbc|uob|maybank|cimb|icici|hdfc|sbi|kotak|axis|commonwealth|anz
 BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|$APAC_BANKS"
 if echo "$DOMAIN" | grep -qiE "($BRANDS)" && ! echo "$DOMAIN" | grep -qiE "^(www\.)?($BRANDS)\.(com|org|net|io)$"; then
     MATCHED=$(echo "$DOMAIN" | grep -oiE "($BRANDS)" | head -1)
-    echo "⚠️  Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
+    echo_yellow "[!]  Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
 fi
 
 # ponytail: Excessive subdomains (often used to hide real domain)
 SUBDOMAIN_COUNT=$(echo "$DOMAIN" | tr '.' '\n' | wc -l)
 if [ "$SUBDOMAIN_COUNT" -gt 4 ]; then
-    echo "⚠️  Excessive subdomains ($SUBDOMAIN_COUNT levels)"
+    echo_yellow "[!]  Excessive subdomains ($SUBDOMAIN_COUNT levels)"
 fi
 
 # ponytail: Homograph detection (mixed scripts in domain)
 if echo "$DOMAIN" | grep -qP '[^\x00-\x7F]'; then
-    echo "⚠️  Homograph attack: non-ASCII characters in domain"
+    echo_yellow "[!]  Homograph attack: non-ASCII characters in domain"
 fi
 
 # ponytail: Random-looking domain (high entropy)
 DOMAIN_BASE=$(echo "$DOMAIN" | sed 's/\.[^.]*$//' | tr -d '.-')
 if [ ${#DOMAIN_BASE} -gt 8 ] && echo "$DOMAIN_BASE" | grep -qE '^[a-z0-9]+$' && echo "$DOMAIN_BASE" | grep -qE '[0-9].*[0-9]'; then
-    echo "⚠️  Random-looking domain: $DOMAIN_BASE"
+    echo_yellow "[!]  Random-looking domain: $DOMAIN_BASE"
 fi
 
 # === Domain Info Lookup ===
+# ponytail: IP/geo, domain age, SSL and DNS are cached in meta.env so re-scans and the
+# model benchmark skip these network round-trips. -r refreshes.
+if [ -f "$CACHE_DIR/meta.env" ]; then
+    source "$CACHE_DIR/meta.env"
+    echo "--- Domain Info (cached) ---"
+    echo "IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
+    [ -n "$AGE_DAYS" ] && echo "Domain age: $AGE_DAYS days"
+    [ -n "$CERT_AGE_DAYS" ] && echo "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
+    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && echo_yellow "[!]  Fast-flux: $A_RECORDS A records"
+    echo ""
+else
 echo "--- Domain Info ---"
 
 # Get apex domain (last 2 parts for most TLDs)
@@ -124,9 +166,9 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
             NOW_TS=$(date +%s)
             AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
             if [ "$AGE_DAYS" -lt 30 ]; then
-                echo "⚠️  Domain age: $AGE_DAYS days (VERY NEW - high risk)"
+                echo_yellow "[!]  Domain age: $AGE_DAYS days (VERY NEW - high risk)"
             elif [ "$AGE_DAYS" -lt 90 ]; then
-                echo "⚠️  Domain age: $AGE_DAYS days (new)"
+                echo_yellow "[!]  Domain age: $AGE_DAYS days (new)"
             else
                 echo "Domain age: $AGE_DAYS days (created $CREATED_DATE)"
             fi
@@ -147,7 +189,7 @@ if echo "$URL" | grep -q "^https://"; then
             if [ -n "$CERT_TS" ]; then
                 CERT_AGE_DAYS=$(( ($(date +%s) - CERT_TS) / 86400 ))
                 if [ "$CERT_AGE_DAYS" -lt 7 ]; then
-                    echo "⚠️  SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
+                    echo_yellow "[!]  SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
                 elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
                     echo "SSL cert age: $CERT_AGE_DAYS days (recent)"
                 else
@@ -161,26 +203,43 @@ fi
 # === DNS Records Check ===
 A_RECORDS=$(dig +short "$DOMAIN" A 2>/dev/null | grep -E '^[0-9]+\.' | wc -l)
 if [ "$A_RECORDS" -gt 5 ]; then
-    echo "⚠️  Fast-flux: $A_RECORDS A records (suspicious)"
+    echo_yellow "[!]  Fast-flux: $A_RECORDS A records (suspicious)"
 fi
 
 TTL=$(dig +noall +answer "$DOMAIN" A 2>/dev/null | awk '{print $2}' | head -1)
 if [ -n "$TTL" ] && [ "$TTL" -lt 300 ]; then
-    echo "⚠️  Low TTL: ${TTL}s (fast-flux indicator)"
+    echo_yellow "[!]  Low TTL: ${TTL}s (fast-flux indicator)"
 fi
 
 echo ""
 
+# Persist the lookups for re-scans (only once we actually resolved something).
+# printf %q keeps org names with spaces/quotes shell-safe when sourced back.
+if [ -n "$IP" ]; then
+    { printf 'IP=%q\n' "$IP";               printf 'COUNTRY=%q\n' "$COUNTRY"
+      printf 'ORG=%q\n' "$ORG";             printf 'AGE_DAYS=%q\n' "$AGE_DAYS"
+      printf 'CERT_AGE_DAYS=%q\n' "$CERT_AGE_DAYS"; printf 'CERT_ISSUER=%q\n' "$CERT_ISSUER"
+      printf 'A_RECORDS=%q\n' "$A_RECORDS"; printf 'TTL=%q\n' "$TTL"; } > "$CACHE_DIR/meta.env"
+fi
+fi
+
 # === PHASE 2: Page Fetch (dynamic signals) ===
 if [ -z "$SKIP_FETCH" ]; then
-    echo "Fetching page content..."
-    # Capture a screenshot too, for the vision escalation in Phase 3 (see below).
-    # Keep it alive until the script exits so the user can open it for manual review.
-    [ -z "$NO_VISION" ] && SHOT="$(mktemp -d)/page.jpg" && trap 'rm -rf "$(dirname "$SHOT")"' EXIT
-    PAGE_DATA=$(PAGE_SHOT="$SHOT" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
+    # Screenshot + page content live in the cache dir, so re-scans and the benchmark reuse
+    # one fetch. The screenshot also feeds the Phase 3 vision escalation.
+    [ -z "$NO_VISION" ] && SHOT="$CACHE_DIR/page.jpg"
+    if [ -f "$CACHE_DIR/page.json" ]; then
+        echo "Using cached page content ($CACHE_DIR)"
+        PAGE_DATA=$(cat "$CACHE_DIR/page.json")
+    else
+        echo "Fetching page content..."
+        PAGE_DATA=$(PAGE_SHOT="$SHOT" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
+        # cache only a successful fetch, never an error stub
+        echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1 || echo "$PAGE_DATA" > "$CACHE_DIR/page.json"
+    fi
 
     if echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1; then
-        echo "⚠️  Page unreachable or timeout"
+        echo_yellow "[!]  Page unreachable or timeout"
         PAGE_DATA="{}"
     else
         # Extract signals
@@ -191,18 +250,18 @@ if [ -z "$SKIP_FETCH" ]; then
         THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
 
         if [ "$FINAL_URL" != "$URL" ] && [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ]; then
-            echo "↪️  Redirects to: $FINAL_URL"
+            echo_cyan "->  Redirects to: $FINAL_URL"
         fi
 
         if [ "$HAS_LOGIN" = "true" ]; then
-            echo "🔐 Login form detected"
+            echo_cyan "[login] Login form detected"
         fi
 
         if [ -n "$SMELLS" ]; then
             echo ""
-            echo "🚨 Phishing signals detected:"
+            echo_red "[!!] Phishing signals detected:"
             echo "$SMELLS" | while read -r smell; do
-                echo "   • $smell"
+                echo "    $smell"
             done
         fi
 
@@ -216,34 +275,8 @@ fi
 
 echo ""
 
-# === PHASE 3: LLM Analysis ===
-ensure_ollama || exit 1
-
-if [ -z "$MODEL" ]; then
-    echo "Available models:"
-    MODELS=($(docker exec llm-spam-test ollama list 2>/dev/null | awk 'NR>1 {print $1}'))
-    if [ ${#MODELS[@]} -eq 0 ]; then
-        echo "  No models available (is llm-spam-test container running?)"
-        exit 1
-    fi
-    for i in "${!MODELS[@]}"; do
-        echo "  $((i+1)): ${MODELS[$i]}"
-    done
-    echo ""
-    read -p "Select model (1-${#MODELS[@]}), or Enter to skip LLM: " SEL
-    if [ -z "$SEL" ]; then
-        echo ""
-        echo "=== Summary (static analysis only) ==="
-        exit 0
-    fi
-    MODEL="${MODELS[$((SEL-1))]}"
-    if [ -z "$MODEL" ]; then
-        echo "Invalid selection."
-        exit 1
-    fi
-fi
-
-# Extract explicit, pre-computed signals so the LLM reasons from facts (not raw JSON)
+# Extract explicit, pre-computed signals so the verdict logic (and the LLM) reason from
+# facts, not raw JSON. Needed by classify_verdict below in BOTH LLM and heuristic modes.
 HAS_LOGIN=$(echo "$PAGE_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)
 FORMS=$(echo "$PAGE_DATA" | jq -r '.counts.forms // 0' 2>/dev/null)
 LOGIN_FORMS=$(echo "$PAGE_DATA" | jq -r '.counts.loginForms // 0' 2>/dev/null)
@@ -252,6 +285,55 @@ TITLE=$(echo "$PAGE_DATA" | jq -r '.title // ""' 2>/dev/null)
 THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
 SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
 SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
+
+# === PHASE 3: LLM Analysis (skipped entirely in -H heuristic-only mode) ===
+if [ -z "$HEURISTIC" ]; then
+ensure_ollama || exit 1
+
+# -m auto -> best benchmarked model (falls back to gemma2:2b if no benchmark data yet).
+# Guard: if that model isn't actually installed, drop to the first installed one.
+if [ "$MODEL" = auto ]; then
+    MODEL=$(best_model)
+    [ -z "$MODEL" ] && MODEL="gemma2:2b"
+    INSTALLED=($(docker exec llm-spam-test ollama list 2>/dev/null | awk 'NR>1 {print $1}'))
+    if ! printf '%s\n' "${INSTALLED[@]}" | grep -qxF "$MODEL"; then
+        [ ${#INSTALLED[@]} -eq 0 ] && { echo "auto: no models installed (is llm-spam-test running?)"; exit 1; }
+        echo "auto: best model '$MODEL' not installed -> using '${INSTALLED[0]}'"
+        MODEL="${INSTALLED[0]}"
+    fi
+    echo "auto -> model: $MODEL"
+fi
+
+if [ -z "$MODEL" ]; then
+    MODELS=($(docker exec llm-spam-test ollama list 2>/dev/null | awk 'NR>1 {print $1}'))
+    if [ ${#MODELS[@]} -eq 0 ]; then
+        echo "  No models available (is llm-spam-test container running?)"
+        exit 1
+    fi
+    # Default = best benchmarked model if it's installed, else the first one. Enter picks it.
+    DEFAULT=$(best_model); [ -z "$DEFAULT" ] && DEFAULT="gemma2:2b"
+    printf '%s\n' "${MODELS[@]}" | grep -qxF "$DEFAULT" || DEFAULT="${MODELS[0]}"
+    echo "Available models:"
+    for i in "${!MODELS[@]}"; do
+        [ "${MODELS[$i]}" = "$DEFAULT" ] && tag=" (best )" || tag=""
+        echo "  $((i+1)): ${MODELS[$i]}$tag"
+    done
+    echo ""
+    read -p "Select model (1-${#MODELS[@]}) [Enter = $DEFAULT], or 's' to skip LLM: " SEL
+    if [ "$SEL" = s ] || [ "$SEL" = skip ]; then
+        echo ""
+        echo "=== Summary (static analysis only) ==="
+        exit 0
+    elif [ -z "$SEL" ]; then
+        MODEL="$DEFAULT"
+    else
+        MODEL="${MODELS[$((SEL-1))]}"
+    fi
+    if [ -z "$MODEL" ]; then
+        echo "Invalid selection."
+        exit 1
+    fi
+fi
 
 # === Vision escalation ===
 # A login form is where a visual brand-clone is both most likely and most costly to
@@ -267,22 +349,22 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
     # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
     LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
     LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-    echo "👁️  Login form present — visual brand check via $VISION_MODEL (~1min on CPU)..."
+    echo "[vision]  Login form present  visual brand check via $VISION_MODEL (~1min on CPU)..."
     VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
-    # think:false — we want a crisp brand verdict, not a reasoning essay. Without it the
+    # think:false  we want a crisp brand verdict, not a reasoning essay. Without it the
     # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
     VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
         '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
         | curl -s --max-time 180 http://localhost:11434/api/generate -d @- | jq -r '.response // ""')
     # belt-and-braces: strip a <think> block if the model emits one anyway
     VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
-    [ -n "$VISION_NOTE" ] && echo "   → $VISION_NOTE"
+    [ -n "$VISION_NOTE" ] && echo "   -> $VISION_NOTE"
 fi
 
 # Offer to open the screenshot for human validation (interactive terminal + GUI only).
 # The EXIT trap deletes it on exit; the viewer has loaded it by then.
 if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
-    read -r -p "🖼️  Open page screenshot for manual review? [y/N] " _ans
+    read -r -p " Open page screenshot for manual review? [y/N] " _ans
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
 fi
 
@@ -351,6 +433,7 @@ RULE 4: NO login form, established legitimate domain, zero red flags.
 Be concise (2-3 sentences), state whether a login form was present and how many red flags you counted, name which RULE fired, then end with exactly one line:
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
+LLM_START=$(date +%s.%N)
 curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
     --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json &
 CURL_PID=$!
@@ -358,6 +441,7 @@ CURL_PID=$!
 spinner $CURL_PID "LLM analyzing..."
 
 wait $CURL_PID 2>/dev/null
+LLM_SECS=$(echo "$(date +%s.%N) - $LLM_START" | bc)
 
 RESPONSE=$(jq -r '.response // "Error: No response from model"' /tmp/url_analyze_response.json 2>/dev/null)
 rm -f /tmp/url_analyze_response.json
@@ -370,41 +454,32 @@ echo ""
 THINK=$(echo "$RESPONSE" | sed -n '/<think>/,/<\/think>/p' | sed '1d;$d')
 BODY=$(echo "$RESPONSE" | sed '/<think>/,/<\/think>/d')
 if [ -n "$THINK" ]; then
-    echo "=== 🧠 Model Reasoning ==="
+    echo "=== [reasoning] Model Reasoning ==="
     echo "$THINK"
     echo ""
 fi
-echo "=== LLM Analysis ==="
+printf "=== LLM Analysis (%s, %.1fs) ===\n" "$MODEL" "$LLM_SECS"
 echo "$BODY" | sed '/^VERDICT:/d'
 echo ""
 
 VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
+else
+    # -H heuristic-only: no LLM ran; the verdict comes purely from the decision table.
+    VERDICT=""
+fi
 
 # === Deterministic verdict (classify_verdict in verdict.sh) ===
 # Signals are extracted deterministically upstream, so the final verdict is
 # decided by the decision table in verdict.sh -- it escalates over the LLM's
-# verdict but never downgrades. The "⚙️ Safety floor" notice goes to stderr.
+# verdict but never downgrades. The "[floor] Safety floor" notice goes to stderr.
 VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$VERDICT")
 
 case "$VERDICT" in
-    SAFE)
-        echo "=============================================="
-        echo "  ✅ VERDICT: SAFE"
-        echo "=============================================="
-        ;;
-    SUSPICIOUS)
-        echo "=============================================="
-        echo "  ⚠️  VERDICT: SUSPICIOUS"
-        echo "=============================================="
-        ;;
-    DANGEROUS)
-        echo "=============================================="
-        echo "  🚨 VERDICT: DANGEROUS"
-        echo "=============================================="
-        ;;
-    *)
-        echo "=============================================="
-        echo "  ⚡ VERDICT: UNCLEAR"
-        echo "=============================================="
-        ;;
+    SAFE)       VC="$GREEN";  VLINE="  [+] VERDICT: SAFE" ;;
+    SUSPICIOUS) VC="$YELLOW"; VLINE="  [!]  VERDICT: SUSPICIOUS" ;;
+    DANGEROUS)  VC="$RED";    VLINE="  [!!] VERDICT: DANGEROUS" ;;
+    *)          VC="$CYAN";   VLINE="  [?] VERDICT: UNCLEAR" ;;
 esac
+echo "${VC}${BOLD}=============================================="
+echo "$VLINE"
+echo "==============================================${RESET}"

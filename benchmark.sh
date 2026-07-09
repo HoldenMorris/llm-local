@@ -1,18 +1,21 @@
 #!/bin/bash
 
 # ==============================================================================
-# 🤖 LLM Spam Detection Benchmark
+# LLM Spam Detection Benchmark
 # Tests model against a corpus of labeled .eml files
 # Usage: ./benchmark.sh [model] [prompt_file]
 # ==============================================================================
 
 CORPUS_DIR="./test-corpus"
+# -c mono disables color (see colors.sh); strip it before the positional args.
+[ "$1" = "-c" ] && { [ "$2" = mono ] && MONO=1; shift 2; }
 MODEL="${1:-qwen2.5:0.5b}"
 PROMPT_FILE="${2:-prompts/default.txt}"
 CONTAINER_NAME="llm-spam-test"
 KEEP_ALIVE="5m"
 THREADS=$(nproc)
 RESULTS_DIR="./results"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/colors.sh"
 
 if [ ! -f "$PROMPT_FILE" ]; then
     echo "Error: Prompt file '$PROMPT_FILE' not found"
@@ -48,9 +51,9 @@ run_inference() {
     echo "$RESPONSE" | jq -r '(.response // empty) | gsub("(?s)<think>.*?</think>";"")' | tr -d '[:punct:]' | trim
 }
 
-echo "=============================================="
-echo "🧪 LLM SPAM DETECTION BENCHMARK"
-echo "=============================================="
+echo "${BOLD}${CYAN}=============================================="
+echo "LLM SPAM DETECTION BENCHMARK"
+echo "==============================================${RESET}"
 echo "Model:      $MODEL"
 echo "Prompt:     $PROMPT_FILE"
 echo "Corpus:     $CORPUS_DIR"
@@ -69,53 +72,53 @@ for CATEGORY in "${CATEGORIES[@]}"; do
     CATEGORY_CORRECT=0
     CATEGORY_TOTAL=0
     CATEGORY_TIME=0
-    
-    echo "📂 Testing: $CATEGORY (expect: $CATEGORY_EXPECTED)"
-    
+
+    echo_bold "Testing: $CATEGORY (expect: $CATEGORY_EXPECTED)"
+
     for eml in "$CORPUS_DIR/$CATEGORY"/*.eml; do
         [ -f "$eml" ] || continue
-        
+
         BODY=$(extract_body "$eml")
         if [ -z "$BODY" ]; then
             BODY=$(grep -A100 "^From:" "$eml" | tail -n +2 | tr '\n' ' ' | xargs)
         fi
-        
+
         START=$(date +%s.%N)
         DETECTED=$(run_inference "$BODY")
         END=$(date +%s.%N)
         DURATION=$(echo "$END - $START" | bc)
-        
+
         if [ "$DETECTED" = "$CATEGORY_EXPECTED" ]; then
-            RESULT="✅"
+            RESULT="${GREEN}[+]${RESET}"
             ((CORRECT++))
             ((CATEGORY_CORRECT++))
         else
-            RESULT="❌"
+            RESULT="${RED}[-]${RESET}"
         fi
-        
+
         ((TOTAL++))
         ((CATEGORY_TOTAL++))
         TOTAL_TIME=$(echo "$TOTAL_TIME + $DURATION" | bc)
         CATEGORY_TIME=$(echo "$CATEGORY_TIME + $DURATION" | bc)
         RESULTS["$eml"]="$DETECTED|$CATEGORY_EXPECTED|$DURATION"
-        
-        printf "   %s %-45s → %-6s (%.2fs)\n" "$RESULT" "$(basename "$eml")" "$DETECTED" "$DURATION"
+
+        printf "   %s %-45s -> %-6s (%.2fs)\n" "$RESULT" "$(basename "$eml")" "$DETECTED" "$DURATION"
     done
-    
+
     if [ "$CATEGORY_TOTAL" -gt 0 ]; then
         CAT_AVG=$(echo "scale=2; $CATEGORY_TIME / $CATEGORY_TOTAL" | bc)
         CATEGORY_TIMES["$CATEGORY"]="$CAT_AVG"
     fi
-    
+
     echo ""
 done
 
 AVG_TIME=$(echo "scale=2; $TOTAL_TIME / $TOTAL" | bc)
 ACCURACY=$(echo "scale=1; $CORRECT * 100 / $TOTAL" | bc)
 
-echo "=============================================="
-echo "📊 SUMMARY"
-echo "=============================================="
+echo "${BOLD}${CYAN}=============================================="
+echo "SUMMARY"
+echo "==============================================${RESET}"
 echo "Total tests:  $TOTAL"
 echo "Correct:      $CORRECT"
 echo "Accuracy:     ${ACCURACY}%"
@@ -153,4 +156,4 @@ fi
 
 echo "$TIMESTAMP,$MODEL,$PROMPT_NAME,$TOTAL,$CORRECT,${ACCURACY}%,${AVG_TIME}s" >> "$RESULTS_FILE"
 echo ""
-echo "📁 Results saved to: $RESULTS_FILE"
+echo "Results saved to: $RESULTS_FILE"

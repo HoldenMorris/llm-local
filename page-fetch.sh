@@ -42,7 +42,7 @@ const { URL } = require('url');
 
   const page = await browser.newPage();
 
-  // ponytail: mobile UA when requested — many phishing cloakers only forward mobile victims
+  // ponytail: mobile UA when requested  many phishing cloakers only forward mobile victims
   const uaMode = process.argv[3] || 'desktop';
   const UAS = {
     desktop: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
@@ -52,7 +52,7 @@ const { URL } = require('url');
   if (uaMode === 'mobile') await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
   else await page.setViewport({ width: 1920, height: 1080 });
 
-  // ponytail: realistic headers — cloakers 403 bare (curl-style) requests missing these
+  // ponytail: realistic headers  cloakers 403 bare (curl-style) requests missing these
   await page.setExtraHTTPHeaders({
     'Accept-Language': 'en-US,en;q=0.9',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -81,7 +81,7 @@ const { URL } = require('url');
     req.continue();
   });
 
-  // Initial navigation — tolerate mid-flight JS redirects that destroy the JS context
+  // Initial navigation  tolerate mid-flight JS redirects that destroy the JS context
   let resp = await page.goto(targetUrl, {
     waitUntil: 'domcontentloaded',
     timeout: 30000
@@ -212,7 +212,7 @@ const { URL } = require('url');
 
   // Iframes
   if (features.iframes.length > 2)
-    smells.push(`${features.iframes.length} iframes — possible clickjacking`);
+    smells.push(`${features.iframes.length} iframes - possible clickjacking`);
 
   // Redirects
   if (redirects.length > 2)

@@ -1,0 +1,16 @@
+# URL benchmark corpus for url-benchmark.sh
+# Format:  EXPECTED_VERDICT<space>URL      (one per line, # = comment)
+# EXPECTED is one of: SAFE  SUSPICIOUS  DANGEROUS
+#
+# Phishing URLs die within hours, so this file ships only stable SAFE anchors.
+# Add live SUSPICIOUS/DANGEROUS samples yourself (e.g. from urlhaus / phishtank)
+# and re-run the benchmark — the first scan caches each page so re-runs are cheap.
+
+SAFE https://www.google.com
+SAFE https://github.com/login
+SAFE https://www.wikipedia.org
+SAFE https://www.paypal.com
+
+# --- add your threat samples below ---
+# DANGEROUS https://some-fresh-phish.cfd/login
+# SUSPICIOUS https://newsletter.example.top/unsubscribe?e=...
