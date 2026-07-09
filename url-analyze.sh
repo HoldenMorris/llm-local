@@ -26,7 +26,7 @@ Usage: $(basename "$0") [options] <url>
 Analyze a URL for phishing signals (static + DNS + page fetch + optional LLM verdict).
 
 Options:
-  -m <model>  verdict LLM (-m auto = best benchmarked model; -m heuristic = no LLM)
+  -m <model>  verdict LLM (-m auto = best benchmarked model; -m none = no LLM)
   -H          heuristic only: no LLM, verdict from the decision table
   -s          skip the page fetch (static + DNS only)
   -V          no vision (skip the login-form screenshot brand-check)
@@ -70,8 +70,8 @@ while getopts "m:sVHrc:Dh" opt; do
 done
 shift $((OPTIND-1))
 
-# -m heuristic is an alias for -H (pure heuristic: no LLM, verdict from the decision table)
-[ "$MODEL" = heuristic ] && { HEURISTIC=1; MODEL=""; }
+# -m none is an alias for -H (pure heuristic: no LLM, verdict from the decision table)
+[ "$MODEL" = none ] && { HEURISTIC=1; MODEL=""; }
 
 # Now that -c mono is known, load the shared color helpers.
 source "$SCRIPT_DIR/colors.sh"
@@ -369,14 +369,14 @@ if [ -z "$MODEL" ]; then
     DEFAULT=$(best_model); [ -z "$DEFAULT" ] && DEFAULT="gemma2:2b"
     printf '%s\n' "${MODELS[@]}" | grep -qxF "$DEFAULT" || DEFAULT="${MODELS[0]}"
     echo "Available models:"
-    echo "  0: [Pure Heuristic] (no LLM, decision-table verdict)"
+    echo "  0: none (pure heuristic, no LLM)"
     for i in "${!MODELS[@]}"; do
         [ "${MODELS[$i]}" = "$DEFAULT" ] && tag=" (best)" || tag=""
         echo "  $((i+1)): ${MODELS[$i]}$tag"
     done
     echo ""
     read -p "${CYAN}Select model (0-${#MODELS[@]}) [Enter = $DEFAULT]: ${RESET}" SEL
-    if [ "$SEL" = 0 ] || [ "$SEL" = s ] || [ "$SEL" = skip ]; then
+    if [ "$SEL" = 0 ]; then
         HEURISTIC=1        # pure heuristic: no LLM, verdict from the decision table
     elif [ -z "$SEL" ]; then
         MODEL="$DEFAULT"

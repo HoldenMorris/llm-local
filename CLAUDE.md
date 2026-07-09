@@ -69,10 +69,10 @@ accept `-c mono` as a leading flag.
 benchmark reuse one fetch instead of re-hitting Docker/the network. `-r` forces a refresh.
 
 Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
-back to gemma2:2b; `-m heuristic` = same as `-H`), `-s` skip page fetch, `-V` no vision,
+back to gemma2:2b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
 `-H` heuristic-only (no LLM — verdict straight from `verdict.sh`'s decision table), `-r`
 ignore cache, `-c mono` no color, `-D` skip JS deobfuscation. With no URL arg it prompts
-for one; the interactive model menu lists `0: [Pure Heuristic]` plus the installed models
+for one; the interactive model menu lists `0: none (pure heuristic)` plus the installed models
 and defaults to the best (press Enter). The LLM analysis line prints which model ran and
 how long it took.
 
