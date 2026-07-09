@@ -400,14 +400,29 @@ const { URL } = require('url');
   if (/\batob\b/.test(allJs) && /\bfetch\s*\(|XMLHttpRequest|\.open\s*\(|sendBeacon/.test(allJs))
     smells.push('Obfuscated network call: JS atob-decodes then makes a request (likely credential exfil)');
 
-  // Decode base64 string literals from the JS and flag any off-domain endpoint they reveal.
-  const b64decoded = (allJs.match(/[A-Za-z0-9+/]{16,}={0,2}/g) || [])
-    .map(s => { try { return Buffer.from(s, 'base64').toString('utf8'); } catch { return ''; } })
-    .filter(d => /^[\x09\x0A\x0D\x20-\x7E]+$/.test(d)).join(' ');
-  const offB64 = [...new Set([...b64decoded.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase()))]
-    .filter(h => h.split('.').slice(-2).join('.') !== apexDomain);
-  if (offB64.length)
-    smells.push(`Off-domain endpoint (base64-decoded from JS): ${offB64.slice(0,3).join(', ')}`);
+  // Decode base64 string literals -- try BOTH raw and with '+' removed, since a common
+  // evasion inserts a '+' the kit strips at runtime (`atob('aa+bb').replace('+','')`).
+  const b64parts = [];
+  for (const s of (allJs.match(/[A-Za-z0-9+/]{12,}={0,2}/g) || [])) {
+    for (const v of [s, s.replace(/\+/g, '')]) {
+      try { const d = Buffer.from(v, 'base64').toString('utf8');
+            if (/^[\x09\x0A\x0D\x20-\x7E]{4,}$/.test(d)) b64parts.push(d); } catch {}
+    }
+  }
+  const b64decoded = b64parts.join(' ');
+
+  // Off-apex domains the page could send data to: form actions + hosts in plain JS + hosts
+  // in base64-decoded JS. Excludes CDNs/analytics. Listed for the verdict and for triage.
+  const apexOf = h => (h || '').toLowerCase().split('.').slice(-2).join('.');
+  const hostsIn = (t) => [...String(t).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase());
+  const cdnRe = /(googleapis|gstatic|cloudflare|jsdelivr|unpkg|cdnjs|jquery|bootstrapcdn|google-analytics|googletagmanager|fontawesome|recaptcha|hcaptcha|gravatar|w3\.org|schema\.org)/i;
+  const exfilDomains = [...new Set([
+    ...features.forms.map(f => { try { return new URL(f.action).hostname.toLowerCase(); } catch { return ''; } }),
+    ...hostsIn(allJs),
+    ...hostsIn(b64decoded),
+  ])].filter(h => h && apexOf(h) !== apexDomain && !cdnRe.test(h));
+  if (exfilDomains.length)
+    smells.push(`Off-domain exfil endpoint(s) in page code: ${exfilDomains.slice(0,4).join(', ')}`);
 
   // ponytail: IP fingerprinting services used to track victims (also seen base64-encoded in JS)
   const ipFingerprinters = ['api.ipify.org','ipinfo.io','ip-api.com','ipapi.co','checkip.amazonaws.com',
@@ -478,6 +493,7 @@ const { URL } = require('url');
       thirdPartyDomains: thirdPartyDomains.length,
     },
     thirdPartyDomains,
+    exfilDomains,
     suspiciousJs: jsSmells,
     phishingSmells: smells,
     console: consoleLogs,

@@ -407,14 +407,18 @@ fi
 if [ -z "$HEURISTIC" ]; then
 
 # === Vision escalation ===
-# A login form is where a visual brand-clone is both most likely and most costly to
-# miss. Only there do we spend the ~1min VLM call: it "sees" the rendered page (logo,
-# colours, layout) and catches clones that text/DOM scraping can't. Its answer feeds
-# the LLM below as another signal. Gated on -V, a captured screenshot, and the model
-# being installed. ponytail: login-form trigger only; widen to conflicting-signal
-# cases if it proves worth the minute.
+# The VLM "sees" the rendered page: it catches (a) visual brand-clones that DOM scraping
+# can't, and (b) a credential input the DOM missed (kits use non-password inputs / shadow
+# DOM to dodge detection). Trigger on a detected login form OR when a form is present with a
+# login-ish / exfil context. Gated on -V, a screenshot, and the model being installed.
 VISION_NOTE=""
-if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ]; then
+VISION_TRIGGER=""
+[ "$HAS_LOGIN" = "true" ] && VISION_TRIGGER=1
+if [ -z "$VISION_TRIGGER" ] && [ "${FORMS:-0}" -gt 0 ] \
+   && printf '%s %s %s' "$TITLE" "$URL" "$SMELLS" | grep -qiE 'log[ -]?in|sign[ -]?in|password|account|webmail|secure|verif|credential|exfil|obfuscated network|excel|office|outlook|microsoft|onedrive'; then
+    VISION_TRIGGER=1
+fi
+if [ -z "$NO_VISION" ] && [ -n "$VISION_TRIGGER" ]; then
     if [ -f "$CACHE_DIR/vision.txt" ]; then
         # Reuse the cached VLM verdict (the ~1min call is the single most expensive step).
         VISION_NOTE=$(cat "$CACHE_DIR/vision.txt")
@@ -423,9 +427,11 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ]; then
         # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
         LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
         LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-        echo "${CYAN}[vision] Login form present - visual brand check via $VISION_MODEL (~1min on CPU)...${RESET}"
-        VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
-        # think:false  we want a crisp brand verdict, not a reasoning essay. Without it the
+        echo "${CYAN}[vision] visual check (brand + credential input) via $VISION_MODEL (~1min on CPU)...${RESET}"
+        VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. Answer concisely in two lines:
+BRAND: what brand/company does its visual design (logo, colours, layout) imitate, and does it match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so.
+PASSWORD: is a password or login/credential input field visible on the page? Reply exactly 'PASSWORD: yes' or 'PASSWORD: no'."
+        # think:false  we want a crisp verdict, not a reasoning essay. Without it the
         # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
         VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
             '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
@@ -434,7 +440,15 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ]; then
         VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
         printf '%s' "$VISION_NOTE" > "$CACHE_DIR/vision.txt"
     fi
-    [ -n "$VISION_NOTE" ] && echo "   -> $VISION_NOTE"
+    if [ -n "$VISION_NOTE" ]; then
+        echo "   -> $VISION_NOTE"
+        # Double-check: if the VLM sees a credential field the DOM missed, treat it as a login
+        # page so the verdict floor (login + red flag) can fire. Match only 'PASSWORD: yes'.
+        if [ "$HAS_LOGIN" != "true" ] && echo "$VISION_NOTE" | grep -qiE 'PASSWORD:?[[:space:]]*yes'; then
+            add_signal "Vision: credential input visible (DOM detection missed it)"
+            HAS_LOGIN=true
+        fi
+    fi
 fi
 
 # Did the page actually redirect? (only true if final URL differs from the requested one)

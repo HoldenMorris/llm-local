@@ -65,26 +65,27 @@ _severity() {
 #   overrides the LLM, an explanatory notice is written to stderr.
 classify_verdict() {
     local has_login="$1" tld="$2" age="$3" final_url="$4" url="$5" smells="$6" susp_js="$7" deobfus="$8" llm="$9"
-    local flags unsub=""
+    local flags unsub="" exfil=""
     flags=$(count_red_flags "$tld" "$age" "$final_url" "$smells" "$susp_js" "$deobfus")
     is_unsub_url "$url" && unsub=1
+    # Active data exfil -- an obfuscated network call, or an off-domain exfil URL revealed by
+    # deobfuscation -- IS credential/data harvesting on its own, even if no <input
+    # type=password> was detected (kits use non-password inputs to dodge that check).
+    printf '%s' "$smells" | grep -qiE 'exfil|obfuscated network call' && exfil=1
+    printf '%s' "$deobfus" | grep -qiE 'off-domain URL' && exfil=1
 
     # Floor: the minimum severity the signals demand. Empty = impose nothing.
-    local floor=""
-    if [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
-        # login form + any red flag = credential harvesting
-        floor=DANGEROUS
+    local floor="" reason=""
+    if [ -n "$exfil" ]; then
+        floor=DANGEROUS; reason="data exfil (obfuscated / off-domain network call)"
+    elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
+        floor=DANGEROUS; reason="login form + $flags red flag(s)"
     elif [ "$flags" -ge 1 ] || [ -n "$unsub" ]; then
-        # red flags / list-validation without a login form
-        floor=SUSPICIOUS
+        floor=SUSPICIOUS; reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then
-        if [ "$floor" = DANGEROUS ]; then
-            echo "${CYAN:-}[floor] Safety floor: login form + $flags red flag(s) -> forcing DANGEROUS (LLM said ${llm:-UNCLEAR})${RESET:-}" >&2
-        else
-            echo "${CYAN:-}[floor] Safety floor: $flags red flag(s)${unsub:+ + unsubscribe endpoint} -> forcing SUSPICIOUS (LLM said ${llm:-UNCLEAR})${RESET:-}" >&2
-        fi
+        echo "${CYAN:-}[floor] Safety floor: $reason -> forcing $floor (LLM said ${llm:-UNCLEAR})${RESET:-}" >&2
         printf '%s' "$floor"
     else
         printf '%s' "$llm"
