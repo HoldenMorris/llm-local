@@ -41,7 +41,7 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 | Script | Purpose |
 |--------|---------|
 | `url-analyze.sh` | Full URL analysis (static + dynamic + LLM) |
-| `url-benchmark.sh` | Compare models (+ heuristic baseline) on a labeled URL corpus |
+| `url-benchmark.sh` | Compare models (+ `none` no-model baseline) on a labeled URL corpus |
 | `page-fetch.sh` | Sandboxed page scraper with phishing signals |
 | `js-deobfuscate.sh` | Sandboxed webcrack runner: obfuscated JS in -> cleartext out |
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
@@ -79,11 +79,11 @@ how long it took.
 ### url-benchmark.sh
 
 Runs `url-corpus.txt` (labeled `VERDICT URL` lines) through each engine and prints an
-accuracy-vs-time matrix + `results/url_benchmark.csv`. `heuristic` = the no-model
+accuracy-vs-time matrix + `results/url_benchmark.csv`. `none` = the no-model
 if-then decision table baseline (empty/UNCLEAR normalized to a SAFE guess).
 
 ```bash
-./url-benchmark.sh                      # heuristic + gemma2:2b (default)
+./url-benchmark.sh                      # none + gemma2:2b (default)
 ./url-benchmark.sh gemma2:2b minicpm4.1:8b
 CORPUS=my-urls.txt ./url-benchmark.sh
 ```

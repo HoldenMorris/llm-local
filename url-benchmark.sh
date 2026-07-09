@@ -3,7 +3,7 @@
 # ==============================================================================
 # URL Verdict Benchmark
 # Runs a labeled corpus of URLs through url-analyze.sh for each engine and
-# compares accuracy vs speed. "heuristic" = no model, just the verdict.sh
+# compares accuracy vs speed. "none" = no model, just the verdict.sh
 # decision table (the "good-guess if-then matrix"). Every other engine is an
 # Ollama model. The page is fetched once per URL and cached, so comparing N
 # models costs one fetch, not N.
@@ -24,8 +24,8 @@ source "$SCRIPT_DIR/colors.sh"
 
 [ -f "$CORPUS" ] || { echo "Corpus not found: $CORPUS"; exit 1; }
 
-# Engines: heuristic baseline first, then the models given (default gemma2:2b).
-ENGINES=("heuristic" "${@:-gemma2:2b}")
+# Engines: "none" (heuristic baseline) first, then the models given (default gemma2:2b).
+ENGINES=("none" "${@:-gemma2:2b}")
 
 # Read corpus into parallel arrays (skip blanks/comments).
 EXP=() URLS=()
@@ -44,7 +44,7 @@ echo "Date:     $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=============================================="
 
 # Pull the final banner verdict; normalize empty/UNCLEAR to a SAFE guess so the
-# heuristic competes as a real 3-way classifier (nothing fired -> guess SAFE).
+# the baseline competes as a real 3-way classifier (nothing fired -> guess SAFE).
 parse_verdict() {
     local v
     v=$(grep -oE 'VERDICT:[[:space:]]*(SAFE|SUSPICIOUS|DANGEROUS|UNCLEAR)' | tail -1 | grep -oE '(SAFE|SUSPICIOUS|DANGEROUS|UNCLEAR)')
@@ -64,7 +64,7 @@ for i in "${!URLS[@]}"; do
     "$ANALYZE" -H "$url" </dev/null >/dev/null 2>&1
 
     for e in "${ENGINES[@]}"; do
-        [ "$e" = heuristic ] && FLAGS=(-H) || FLAGS=(-m "$e")
+        [ "$e" = none ] && FLAGS=(-H) || FLAGS=(-m "$e")
         START=$(date +%s.%N)
         OUT=$("$ANALYZE" "${FLAGS[@]}" "$url" </dev/null 2>/dev/null)
         DUR=$(echo "$(date +%s.%N) - $START" | bc)

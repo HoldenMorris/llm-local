@@ -13,7 +13,7 @@ source "$SCRIPT_DIR/js-signals.sh"
 best_model() {
     local csv="$SCRIPT_DIR/results/url_benchmark.csv"
     [ -f "$csv" ] || return 0
-    awk -F, 'NR>1 && $2!="heuristic" {
+    awk -F, 'NR>1 && $2!="none" && $2!="heuristic" {
         acc=$5; sub(/%/,"",acc); t=$7; sub(/s/,"",t)
         if (acc+0>ba || (acc+0==ba && t+0<bt)) { ba=acc+0; bt=t+0; bm=$2 }
     } END { print bm }' "$csv"
