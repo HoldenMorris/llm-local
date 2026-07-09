@@ -130,14 +130,14 @@ fi
 # model benchmark skip these network round-trips. -r refreshes.
 if [ -f "$CACHE_DIR/meta.env" ]; then
     source "$CACHE_DIR/meta.env"
-    echo_grey "--- Domain Info (cached) ---"
+    echo "${BOLD}Domain Info (cached)${RESET}"
     echo_grey "IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
     [ -n "$AGE_DAYS" ] && echo_grey "Domain age: $AGE_DAYS days"
     [ -n "$CERT_AGE_DAYS" ] && echo_grey "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
     [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records"
     echo ""
 else
-echo_grey "--- Domain Info ---"
+echo "${BOLD}Domain Info${RESET}"
 
 # Get apex domain (last 2 parts for most TLDs)
 APEX_DOMAIN=$(echo "$DOMAIN" | grep -oE '[^.]+\.[^.]+$')
@@ -229,7 +229,6 @@ if [ -z "$SKIP_FETCH" ]; then
     # one fetch. The screenshot also feeds the Phase 3 vision escalation.
     [ -z "$NO_VISION" ] && SHOT="$CACHE_DIR/page.jpg"
     if [ -f "$CACHE_DIR/page.json" ]; then
-        echo_grey "Using cached page content ($CACHE_DIR)"
         PAGE_DATA=$(cat "$CACHE_DIR/page.json")
     else
         echo_grey "Fetching page content..."
