@@ -86,7 +86,7 @@ TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 
 # ponytail: High-risk TLDs (list lives in verdict.sh, single source of truth)
 if is_risky_tld "$TLD"; then
-    echo_yellow "[!]  High-risk TLD: .$TLD"
+    echo_yellow "[!] High-risk TLD: .$TLD"
 fi
 
 # ponytail: Typosquatting detection (brand in subdomain but not apex)
@@ -108,24 +108,24 @@ APAC_BANKS="dbs|ocbc|uob|maybank|cimb|icici|hdfc|sbi|kotak|axis|commonwealth|anz
 BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|$APAC_BANKS"
 if echo "$DOMAIN" | grep -qiE "($BRANDS)" && ! echo "$DOMAIN" | grep -qiE "^(www\.)?($BRANDS)\.(com|org|net|io)$"; then
     MATCHED=$(echo "$DOMAIN" | grep -oiE "($BRANDS)" | head -1)
-    echo_yellow "[!]  Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
+    echo_yellow "[!] Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
 fi
 
 # ponytail: Excessive subdomains (often used to hide real domain)
 SUBDOMAIN_COUNT=$(echo "$DOMAIN" | tr '.' '\n' | wc -l)
 if [ "$SUBDOMAIN_COUNT" -gt 4 ]; then
-    echo_yellow "[!]  Excessive subdomains ($SUBDOMAIN_COUNT levels)"
+    echo_yellow "[!] Excessive subdomains ($SUBDOMAIN_COUNT levels)"
 fi
 
 # ponytail: Homograph detection (mixed scripts in domain)
 if echo "$DOMAIN" | grep -qP '[^\x00-\x7F]'; then
-    echo_yellow "[!]  Homograph attack: non-ASCII characters in domain"
+    echo_yellow "[!] Homograph attack: non-ASCII characters in domain"
 fi
 
 # ponytail: Random-looking domain (high entropy)
 DOMAIN_BASE=$(echo "$DOMAIN" | sed 's/\.[^.]*$//' | tr -d '.-')
 if [ ${#DOMAIN_BASE} -gt 8 ] && echo "$DOMAIN_BASE" | grep -qE '^[a-z0-9]+$' && echo "$DOMAIN_BASE" | grep -qE '[0-9].*[0-9]'; then
-    echo_yellow "[!]  Random-looking domain: $DOMAIN_BASE"
+    echo_yellow "[!] Random-looking domain: $DOMAIN_BASE"
 fi
 
 # === Domain Info Lookup ===
@@ -137,7 +137,7 @@ if [ -f "$CACHE_DIR/meta.env" ]; then
     echo_grey "IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
     [ -n "$AGE_DAYS" ] && echo_grey "Domain age: $AGE_DAYS days"
     [ -n "$CERT_AGE_DAYS" ] && echo_grey "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
-    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && echo_yellow "[!]  Fast-flux: $A_RECORDS A records"
+    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && echo_yellow "[!] Fast-flux: $A_RECORDS A records"
     echo ""
 else
 echo_grey "--- Domain Info ---"
@@ -169,9 +169,9 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
             NOW_TS=$(date +%s)
             AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
             if [ "$AGE_DAYS" -lt 30 ]; then
-                echo_yellow "[!]  Domain age: $AGE_DAYS days (VERY NEW - high risk)"
+                echo_yellow "[!] Domain age: $AGE_DAYS days (VERY NEW - high risk)"
             elif [ "$AGE_DAYS" -lt 90 ]; then
-                echo_yellow "[!]  Domain age: $AGE_DAYS days (new)"
+                echo_yellow "[!] Domain age: $AGE_DAYS days (new)"
             else
                 echo_grey "Domain age: $AGE_DAYS days (created $CREATED_DATE)"
             fi
@@ -192,7 +192,7 @@ if echo "$URL" | grep -q "^https://"; then
             if [ -n "$CERT_TS" ]; then
                 CERT_AGE_DAYS=$(( ($(date +%s) - CERT_TS) / 86400 ))
                 if [ "$CERT_AGE_DAYS" -lt 7 ]; then
-                    echo_yellow "[!]  SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
+                    echo_yellow "[!] SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
                 elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
                     echo_grey "SSL cert age: $CERT_AGE_DAYS days (recent)"
                 else
@@ -206,12 +206,12 @@ fi
 # === DNS Records Check ===
 A_RECORDS=$(dig +short "$DOMAIN" A 2>/dev/null | grep -E '^[0-9]+\.' | wc -l)
 if [ "$A_RECORDS" -gt 5 ]; then
-    echo_yellow "[!]  Fast-flux: $A_RECORDS A records (suspicious)"
+    echo_yellow "[!] Fast-flux: $A_RECORDS A records (suspicious)"
 fi
 
 TTL=$(dig +noall +answer "$DOMAIN" A 2>/dev/null | awk '{print $2}' | head -1)
 if [ -n "$TTL" ] && [ "$TTL" -lt 300 ]; then
-    echo_yellow "[!]  Low TTL: ${TTL}s (fast-flux indicator)"
+    echo_yellow "[!] Low TTL: ${TTL}s (fast-flux indicator)"
 fi
 
 echo ""
@@ -244,7 +244,7 @@ if [ -z "$SKIP_FETCH" ]; then
     fi
 
     if echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1; then
-        echo_yellow "[!]  Page unreachable or timeout"
+        echo_yellow "[!] Page unreachable or timeout"
         PAGE_DATA="{}"
     else
         # Extract signals
@@ -255,7 +255,7 @@ if [ -z "$SKIP_FETCH" ]; then
         THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
 
         if [ "$FINAL_URL" != "$URL" ] && [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ]; then
-            echo_cyan "->  Redirects to: $FINAL_URL"
+            echo_cyan "-> Redirects to: $FINAL_URL"
         fi
 
         if [ "$HAS_LOGIN" = "true" ]; then
@@ -311,7 +311,7 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
         done
         printf '%s' "$DEOBFUS_SIGNALS" > "$CACHE_DIR/deob-signals.txt"
     fi
-    [ -n "$DEOBFUS_SIGNALS" ] && echo_yellow "[!]  Deobfuscated JS signals: $DEOBFUS_SIGNALS"
+    [ -n "$DEOBFUS_SIGNALS" ] && echo_yellow "[!] Deobfuscated JS signals: $DEOBFUS_SIGNALS"
 fi
 
 # === PHASE 3: LLM Analysis (skipped entirely in -H heuristic-only mode) ===
@@ -377,7 +377,7 @@ if [ -z "$NO_VISION" ] && [ "$HAS_LOGIN" = "true" ] && [ -f "$SHOT" ] \
     # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
     LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
     LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-    echo "${CYAN}[vision]  Login form present - visual brand check via $VISION_MODEL (~1min on CPU)...${RESET}"
+    echo "${CYAN}[vision] Login form present - visual brand check via $VISION_MODEL (~1min on CPU)...${RESET}"
     VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. What brand/company does its visual design (logo, colours, layout) imitate? Does that brand match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so. Be concise."
     # think:false  we want a crisp brand verdict, not a reasoning essay. Without it the
     # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
@@ -506,7 +506,7 @@ VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL"
 
 case "$VERDICT" in
     SAFE)       VC="$GREEN";  VLINE="  [+] VERDICT: SAFE" ;;
-    SUSPICIOUS) VC="$YELLOW"; VLINE="  [!]  VERDICT: SUSPICIOUS" ;;
+    SUSPICIOUS) VC="$YELLOW"; VLINE="  [!] VERDICT: SUSPICIOUS" ;;
     DANGEROUS)  VC="$RED";    VLINE="  [!!] VERDICT: DANGEROUS" ;;
     *)          VC="$CYAN";   VLINE="  [?] VERDICT: UNCLEAR" ;;
 esac

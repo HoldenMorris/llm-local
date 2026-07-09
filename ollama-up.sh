@@ -23,7 +23,7 @@ ensure_ollama() {
             echo "${GREEN:-}[+] GPU: NVIDIA detected. Enabling hardware acceleration.${RESET:-}"
             gpu_flag="--gpus all"
         else
-            echo "${CYAN:-}[i]  GPU: none. Running on CPU.${RESET:-}"
+            echo "${CYAN:-}[i] GPU: none. Running on CPU.${RESET:-}"
         fi
         docker run -d $gpu_flag --name "$name" -p 11434:11434 \
             -e OLLAMA_KEEP_ALIVE="$keep_alive" \
