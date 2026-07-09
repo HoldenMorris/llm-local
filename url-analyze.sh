@@ -153,9 +153,9 @@ fi
 if [ -f "$CACHE_DIR/meta.env" ]; then
     source "$CACHE_DIR/meta.env"
     echo "${BOLD}Domain Info (cached)${RESET}"
-    echo_grey "  - IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
-    [ -n "$AGE_DAYS" ] && echo_grey "  - Domain age: $AGE_DAYS days"
-    [ -n "$CERT_AGE_DAYS" ] && echo_grey "  - SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
+    echo_grey "- IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
+    [ -n "$AGE_DAYS" ] && echo_grey "- Domain age: $AGE_DAYS days"
+    [ -n "$CERT_AGE_DAYS" ] && echo_grey "- SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
     [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records"
 else
 echo "${BOLD}Domain Info${RESET}"
@@ -169,9 +169,9 @@ if [ -n "$IP" ]; then
     IP_INFO=$(curl -s --max-time 5 "http://ip-api.com/json/$IP?fields=country,org,isp" 2>/dev/null)
     COUNTRY=$(echo "$IP_INFO" | jq -r '.country // "?"')
     ORG=$(echo "$IP_INFO" | jq -r '.org // .isp // "?"')
-    echo_grey "  - IP: $IP ($COUNTRY, $ORG)"
+    echo_grey "- IP: $IP ($COUNTRY, $ORG)"
 else
-    echo_grey "  - IP: (unresolvable)"
+    echo_grey "- IP: (unresolvable)"
 fi
 
 # Domain age via RDAP (works for .com, .net, .org)
@@ -191,10 +191,10 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
             elif [ "$AGE_DAYS" -lt 90 ]; then
                 add_signal "Domain age: $AGE_DAYS days (new)"
             else
-                echo_grey "  - Domain age: $AGE_DAYS days (created $CREATED_DATE)"
+                echo_grey "- Domain age: $AGE_DAYS days (created $CREATED_DATE)"
             fi
         else
-            echo_grey "  - Domain created: $CREATED_DATE"
+            echo_grey "- Domain created: $CREATED_DATE"
         fi
     fi
 fi
@@ -212,9 +212,9 @@ if echo "$URL" | grep -q "^https://"; then
                 if [ "$CERT_AGE_DAYS" -lt 7 ]; then
                     add_signal "SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
                 elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
-                    echo_grey "  - SSL cert age: $CERT_AGE_DAYS days (recent)"
+                    echo_grey "- SSL cert age: $CERT_AGE_DAYS days (recent)"
                 else
-                    echo_grey "  - SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
+                    echo_grey "- SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
                 fi
             fi
         fi
@@ -257,7 +257,7 @@ if [ -z "$SKIP_FETCH" ]; then
     if [ -f "$CACHE_DIR/page.json" ]; then
         PAGE_DATA=$(cat "$CACHE_DIR/page.json")
     else
-        echo_grey "  - Fetching page content..."
+        echo_grey "- Fetching page content..."
         # Cache full inline scripts too (page-fetch only dumps them when obfuscation fires),
         # so the JS-deobfuscation escalation can reuse them.
         PAGE_DATA=$(PAGE_SHOT="$SHOT" PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
@@ -290,11 +290,11 @@ if [ -z "$SKIP_FETCH" ]; then
             done <<< "$SMELLS"
         fi
 
-        echo_grey "  - Third-party domains: $THIRD_PARTY"
+        echo_grey "- Third-party domains: $THIRD_PARTY"
     fi
 else
     PAGE_DATA="{}"
-    echo_grey "  - (page fetch skipped)"
+    echo_grey "- (page fetch skipped)"
 fi
 
 echo ""
@@ -526,7 +526,7 @@ if [ -n "$THINK" ]; then
 fi
 printf "${BOLD}LLM Analysis (%s, %s)${RESET}\n" "$MODEL" "$LLM_LABEL"
 echo "$BODY" | sed '/^VERDICT:/d' | while IFS= read -r _l; do
-    [ -n "$_l" ] && echo_grey "  - $_l"
+    [ -n "$_l" ] && echo_grey "- $_l"
 done
 echo ""
 
@@ -539,9 +539,9 @@ fi   # end PHASE 3 (outer heuristic guard)
 # of sprinkled through the output. Gray detail; the colored verdict banner carries severity.
 echo "${BOLD}Signals (${#SIGNALS[@]}):${RESET}"
 if [ ${#SIGNALS[@]} -gt 0 ]; then
-    for _s in "${SIGNALS[@]}"; do echo_grey "  - $_s"; done
+    for _s in "${SIGNALS[@]}"; do echo_grey "- $_s"; done
 else
-    echo_grey "  - none detected"
+    echo_grey "- none detected"
 fi
 echo ""
 
