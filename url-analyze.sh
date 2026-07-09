@@ -299,8 +299,6 @@ else
     echo_grey "- (page fetch skipped)"
 fi
 
-echo ""
-
 # Extract explicit, pre-computed signals so the verdict logic (and the LLM) reason from
 # facts, not raw JSON. Needed by classify_verdict below in BOTH LLM and heuristic modes.
 HAS_LOGIN=$(echo "$PAGE_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)
@@ -332,7 +330,7 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
     if [ -f "$CACHE_DIR/deob-signals.txt" ]; then
         DEOBFUS_SIGNALS=$(cat "$CACHE_DIR/deob-signals.txt")
     else
-        _deob_printed=1
+        echo ""
         echo "${BOLD}Deobfuscation${RESET}"
         echo_grey "- obfuscated JS detected; deobfuscating with webcrack (sandboxed)..."
         LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
@@ -352,12 +350,11 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
         done < <(printf '%s\n' "$DEOBFUS_SIGNALS" | sed 's/; /\n/g; s/, /\n/g')
     fi
 fi
-# Separate the Deobfuscation section from what follows (only when it actually printed).
-[ -n "$_deob_printed" ] && echo ""
 
 # === PHASE 3: LLM Analysis (skipped in heuristic mode: -H, -m heuristic, or menu option 0) ===
 VERDICT=""   # default; only a real LLM run overrides it. Heuristic modes leave it empty.
 if [ -z "$HEURISTIC" ]; then
+echo ""
 echo "${BOLD}Model${RESET}"
 ensure_ollama || exit 1
 
@@ -551,7 +548,6 @@ else
     # Terse models (e.g. qwen2.5:1.5b) often emit only the VERDICT line, no prose.
     echo_grey "- (verdict only, no explanation from the model)"
 fi
-echo ""
 
 VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
 fi   # end real-LLM path (inner heuristic guard)
@@ -560,18 +556,19 @@ fi   # end PHASE 3 (outer heuristic guard)
 # === Consolidated signal list ===
 # Every signal gathered across the phases, printed together as one bullet list instead
 # of sprinkled through the output. Gray detail; the colored verdict banner carries severity.
+echo ""
 echo "${BOLD}Signals (${#SIGNALS[@]}):${RESET}"
 if [ ${#SIGNALS[@]} -gt 0 ]; then
     for _s in "${SIGNALS[@]}"; do echo_grey "- $_s"; done
 else
     echo_grey "- none detected"
 fi
-echo ""
 
 # Offer to open the page screenshot for human validation (interactive terminal + GUI only).
 # After the signals list; outside the LLM guard so heuristic mode offers it too. The
 # screenshot persists in the cache dir.
 if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
+    echo ""
     read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
 fi
@@ -588,6 +585,7 @@ case "$VERDICT" in
     DANGEROUS)  VC="$RED";    VLINE="[!!] VERDICT: DANGEROUS" ;;
     *)          VC="$CYAN";   VLINE="[?] VERDICT: UNCLEAR" ;;
 esac
+echo ""
 echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
 echo "==============================================${RESET}"
