@@ -130,7 +130,6 @@ if [ -f "$CACHE_DIR/meta.env" ]; then
     [ -n "$AGE_DAYS" ] && echo_grey "Domain age: $AGE_DAYS days"
     [ -n "$CERT_AGE_DAYS" ] && echo_grey "SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
     [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records"
-    echo ""
 else
 echo "${BOLD}Domain Info${RESET}"
 
@@ -205,8 +204,6 @@ TTL=$(dig +noall +answer "$DOMAIN" A 2>/dev/null | awk '{print $2}' | head -1)
 if [ -n "$TTL" ] && [ "$TTL" -lt 300 ]; then
     add_signal "Low TTL: ${TTL}s (fast-flux indicator)"
 fi
-
-echo ""
 
 # Persist the lookups for re-scans (only once we actually resolved something).
 # printf %q keeps org names with spaces/quotes shell-safe when sourced back.
