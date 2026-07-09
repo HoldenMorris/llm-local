@@ -677,3 +677,14 @@ echo ""
 echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
 echo "==============================================${RESET}"
+
+# If a Cloudflare/Turnstile challenge blocked the scraper from the real page, offer to open it
+# in the analyst's browser -- a residential IP + real browser usually passes the challenge.
+# ponytail: opening a live phishing URL is risky; explicit opt-in, default No, shown AFTER the
+# verdict so the analyst decides with full context.
+if [ -t 0 ] && command -v xdg-open >/dev/null 2>&1 \
+   && printf '%s' "$SMELLS" | grep -qi 'Cloudflare bot challenge'; then
+    echo ""
+    read -r -p "${CYAN}Cloudflare challenge blocked the scanner. Open ${FINAL_URL:-$URL} in YOUR browser to inspect? (risky) [y/N] ${RESET}" _ans
+    [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "${FINAL_URL:-$URL}" >/dev/null 2>&1 & }
+fi
