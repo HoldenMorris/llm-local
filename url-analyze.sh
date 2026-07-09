@@ -19,6 +19,30 @@ best_model() {
     } END { print bm }' "$csv"
 }
 
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options] <url>
+
+Analyze a URL for phishing signals (static + DNS + page fetch + optional LLM verdict).
+
+Options:
+  -m <model>  verdict LLM (-m auto = best benchmarked model; -m heuristic = no LLM)
+  -H          heuristic only: no LLM, verdict from the decision table
+  -s          skip the page fetch (static + DNS only)
+  -V          no vision (skip the login-form screenshot brand-check)
+  -D          skip JS deobfuscation
+  -r          ignore cache, re-fetch
+  -c mono     disable color output
+  -h, --help  show this help
+
+Examples:
+  $(basename "$0") -m auto https://example.com
+  $(basename "$0") -H https://suspicious.example
+
+With no URL it prompts for one; the interactive menu lists 0: [Pure Heuristic] plus models.
+EOF
+}
+
 MODEL=""
 URL=""
 SKIP_FETCH=""
@@ -28,7 +52,10 @@ REFRESH=""
 NO_DEOBFUS=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
-while getopts "m:sVHrc:D" opt; do
+# Help as the first arg (getopts won't catch bare `help` or long `--help`).
+case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
+
+while getopts "m:sVHrc:Dh" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
@@ -37,7 +64,8 @@ while getopts "m:sVHrc:D" opt; do
         r) REFRESH=1 ;;       # ignore any cached page/screenshot/metadata and re-fetch
         c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
         D) NO_DEOBFUS=1 ;;    # skip JS deobfuscation escalation
-        *) echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] [-D no-deobfuscate] <url>"; exit 1 ;;
+        h) usage; exit 0 ;;
+        *) usage >&2; exit 1 ;;
     esac
 done
 shift $((OPTIND-1))
@@ -55,8 +83,7 @@ if [ -z "$URL" ] && [ -t 0 ]; then
     read -r -p "${CYAN}Enter URL to analyze: ${RESET}" URL
 fi
 if [ -z "$URL" ]; then
-    echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] [-D no-deobfuscate] <url>"
-    echo "       $0 -m gemma2:2b https://example.com   (-m auto = best model; -m heuristic / -H = no LLM)"
+    usage >&2
     exit 1
 fi
 
@@ -213,6 +240,13 @@ if [ -n "$IP" ]; then
       printf 'CERT_AGE_DAYS=%q\n' "$CERT_AGE_DAYS"; printf 'CERT_ISSUER=%q\n' "$CERT_ISSUER"
       printf 'A_RECORDS=%q\n' "$A_RECORDS"; printf 'TTL=%q\n' "$TTL"; } > "$CACHE_DIR/meta.env"
 fi
+fi
+
+# Don't spin up the fetch container if the domain has no DNS A record -- it would just
+# time out. Static + DNS info above still stands. (data: URLs need no DNS, so exempt them.)
+if [ -z "$SKIP_FETCH" ] && [ -z "$IP" ] && ! printf '%s' "$URL" | grep -q '^data:'; then
+    add_signal "Domain does not resolve (no DNS A record)"
+    SKIP_FETCH=1
 fi
 
 # === PHASE 2: Page Fetch (dynamic signals) ===
