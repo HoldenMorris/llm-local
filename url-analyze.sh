@@ -68,17 +68,18 @@ CACHE_DIR="$SCRIPT_DIR/.cache/$(printf '%s' "$URL" | sha256sum | cut -c1-16)"
 mkdir -p "$CACHE_DIR"
 
 # === PHASE 1: Static URL Analysis (zero-day signals) ===
-echo "${BOLD}=== URL Analysis: $URL ===${RESET}"
+# Extract domain/TLD first so the header shows the short domain, not the full URL --
+# long tracking URLs turned the header into a wall of text repeating the command line.
+DOMAIN=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
+TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
+
+echo "${BOLD}=== URL Analysis: $DOMAIN ===${RESET}"
 echo ""
 
 # All signals collect here and print as one bullet list before the verdict, instead of
-# being sprinkled through the phases. add_signal appends; render_signals prints them.
+# being sprinkled through the phases. add_signal appends.
 SIGNALS=()
 add_signal() { SIGNALS+=("$1"); }
-
-# Extract domain info
-DOMAIN=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
-TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 
 # ponytail: High-risk TLDs (list lives in verdict.sh, single source of truth)
 if is_risky_tld "$TLD"; then
