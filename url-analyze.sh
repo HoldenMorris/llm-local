@@ -6,16 +6,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ollama-up.sh"
 source "$SCRIPT_DIR/verdict.sh"
 source "$SCRIPT_DIR/js-signals.sh"
+source "$SCRIPT_DIR/machine.sh"
 # colors.sh is sourced further down, after args are parsed (so -c mono can disable color)
 
-# best_model -> the top-scoring model from the url-benchmark.sh CSV (highest accuracy,
-# then fastest). Excludes the heuristic baseline. Empty if there is no benchmark data.
+# best_model -> the top-scoring model from the url-benchmark.sh CSV, FOR THIS MACHINE
+# (highest accuracy, then fastest). Excludes the "none" baseline and other machines'
+# rows -- timings only compare within one hardware fingerprint. Empty if no data.
 best_model() {
     local csv="$SCRIPT_DIR/results/url_benchmark.csv"
     [ -f "$csv" ] || return 0
-    awk -F, 'NR>1 && $2!="none" && $2!="heuristic" {
-        acc=$5; sub(/%/,"",acc); t=$7; sub(/s/,"",t)
-        if (acc+0>ba || (acc+0==ba && t+0<bt)) { ba=acc+0; bt=t+0; bm=$2 }
+    awk -F, -v m="$(machine_id)" 'NR>1 && $2==m && $3!="none" && $3!="heuristic" {
+        acc=$6; sub(/%/,"",acc); t=$7; sub(/s/,"",t)
+        if (acc+0>ba || (acc+0==ba && t+0<bt)) { ba=acc+0; bt=t+0; bm=$3 }
     } END { print bm }' "$csv"
 }
 

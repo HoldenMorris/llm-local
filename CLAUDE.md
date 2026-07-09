@@ -42,6 +42,8 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 |--------|---------|
 | `url-analyze.sh` | Full URL analysis (static + dynamic + LLM) |
 | `url-benchmark.sh` | Compare models (+ `none` no-model baseline) on a labeled URL corpus |
+| `model-scout.sh` | Find small GGUF model contenders on Hugging Face (prints `ollama pull` cmds) |
+| `machine.sh` | Shared hardware fingerprint (cores/RAM/GPU) so benchmark timings group by machine |
 | `page-fetch.sh` | Sandboxed page scraper with phishing signals |
 | `js-deobfuscate.sh` | Sandboxed webcrack runner: obfuscated JS in -> cleartext out |
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
@@ -83,12 +85,27 @@ how long it took.
 
 Runs `url-corpus.txt` (labeled `VERDICT URL` lines) through each engine and prints an
 accuracy-vs-time matrix + `results/url_benchmark.csv`. `none` = the no-model
-if-then decision table baseline (empty/UNCLEAR normalized to a SAFE guess).
+if-then decision table baseline (empty/UNCLEAR normalized to a SAFE guess). Each row is
+tagged with a `machine` fingerprint (`machine.sh`, e.g. `14c-30g-cpu`) — timings only
+compare within one machine, and `-m auto` / `best_model` only picks from **this**
+machine's rows.
 
 ```bash
 ./url-benchmark.sh                      # none + gemma2:2b (default)
 ./url-benchmark.sh gemma2:2b minicpm4.1:8b
 CORPUS=my-urls.txt ./url-benchmark.sh
+```
+
+### model-scout.sh — find new contenders
+
+Queries the Hugging Face API for small GGUF text-generation models and prints an
+`ollama pull hf.co/<repo>:Q4_K_M` for each, so you can throw new models into the ring.
+Filters by param size from the repo name (MoE `35B-A3B` counts as 35B, not 3B).
+
+```bash
+./model-scout.sh                # top small instruct GGUF models by downloads
+./model-scout.sh qwen 4         # search "qwen", <= 4B params
+# then: ollama pull hf.co/...   &&   ./url-benchmark.sh <model>
 ```
 
 ## url-analyze.sh - 3-Phase Analysis

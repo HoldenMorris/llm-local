@@ -21,6 +21,8 @@ ANALYZE="$SCRIPT_DIR/url-analyze.sh"
 # -c mono disables color (see colors.sh); strip it before the rest become model names.
 [ "$1" = "-c" ] && { [ "$2" = mono ] && MONO=1; shift 2; }
 source "$SCRIPT_DIR/colors.sh"
+source "$SCRIPT_DIR/machine.sh"
+MACHINE=$(machine_id)   # timings only comparable within the same hardware fingerprint
 
 [ -f "$CORPUS" ] || { echo "Corpus not found: $CORPUS"; exit 1; }
 
@@ -40,6 +42,7 @@ echo "URL VERDICT BENCHMARK"
 echo "==============================================${RESET}"
 echo "Corpus:   $CORPUS  (${#URLS[@]} urls)"
 echo "Engines:  ${ENGINES[*]}"
+echo "Machine:  $MACHINE"
 echo "Date:     $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=============================================="
 
@@ -80,7 +83,7 @@ N=${#URLS[@]}
 TS=$(date '+%Y-%m-%d %H:%M:%S')
 CSV="$RESULTS_DIR/url_benchmark.csv"
 mkdir -p "$RESULTS_DIR"
-[ -f "$CSV" ] || echo "timestamp,engine,total,correct,accuracy,avg_time" > "$CSV"
+[ -f "$CSV" ] || echo "timestamp,machine,engine,total,correct,accuracy,avg_time" > "$CSV"
 
 echo ""
 echo "${BOLD}${CYAN}=============================================="
@@ -92,7 +95,7 @@ for e in "${ENGINES[@]}"; do
     acc=$(echo "scale=0; $c * 100 / $N" | bc)
     avg=$(echo "scale=2; ${TIME[$e]} / $N" | bc)
     printf "   %-22s %-8s %-9s %ss\n" "$e" "${acc}%" "$c/$N" "$avg"
-    echo "$TS,$e,$N,$c,${acc}%,${avg}s" >> "$CSV"
+    echo "$TS,$MACHINE,$e,$N,$c,${acc}%,${avg}s" >> "$CSV"
 done
 echo "=============================================="
 echo "Saved to: $CSV"
