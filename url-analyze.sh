@@ -233,7 +233,9 @@ if [ -z "$SKIP_FETCH" ]; then
         PAGE_DATA=$(cat "$CACHE_DIR/page.json")
     else
         echo "Fetching page content..."
-        PAGE_DATA=$(PAGE_SHOT="$SHOT" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
+        # Cache full inline scripts too (page-fetch only dumps them when obfuscation fires),
+        # so the JS-deobfuscation escalation can reuse them.
+        PAGE_DATA=$(PAGE_SHOT="$SHOT" PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
         # cache only a successful fetch, never an error stub
         echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1 || echo "$PAGE_DATA" > "$CACHE_DIR/page.json"
     fi

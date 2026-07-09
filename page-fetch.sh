@@ -15,6 +15,10 @@ URL="${1:?Usage: $0 [-m|--mobile] <url>}"
 # the vision-model escalation step. Unset = no screenshot, no output change.
 SHOT="${PAGE_SHOT:-}"
 
+# ponytail: PAGE_SCRIPTS_DIR=<host dir> dumps FULL inline script bodies there, but only
+# when obfuscation markers fire, for the JS-deobfuscation escalation. Unset = no dump.
+SCRIPTS_DIR="${PAGE_SCRIPTS_DIR:-}"
+
 CONTAINER_NAME="llm-page-fetch-$$"
 IMAGE="ghcr.io/puppeteer/puppeteer:latest"
 
@@ -143,10 +147,15 @@ const { URL } = require('url');
       if (k) meta[k] = m.getAttribute('content') || '';
     });
 
+    // Full, untruncated inline script bodies -- used only for obfuscation detection and the
+    // deobfuscation dump below; kept OUT of the stdout JSON so output stays small.
+    const inlineScripts = Array.from(document.querySelectorAll('script'))
+      .filter(s => !s.src).map(s => s.textContent || '');
+
     return {
       title: document.title,
       text: (document.body ? document.body.innerText : '').slice(0, 4000),
-      links, forms, scripts, iframes, images, meta,
+      links, forms, scripts, inlineScripts, iframes, images, meta,
       hasLoginForm: !!document.querySelector('input[type="password"]'),
     };
   });
@@ -222,8 +231,8 @@ const { URL } = require('url');
   if (targetUrl.startsWith('http:'))
     smells.push('Served over HTTP (no TLS)');
 
-  // Suspicious JS
-  const allJs = features.scripts.filter(s => s.src === 'inline').map(s => s.text).join('\n');
+  // Suspicious JS -- scan FULL inline bodies, not the 1000-char preview
+  const allJs = features.inlineScripts.join('\n');
   const jsSmells = [];
   if (/eval\s*\(/.test(allJs)) jsSmells.push('eval()');
   if (/atob\s*\(/.test(allJs)) jsSmells.push('atob()');
@@ -310,6 +319,16 @@ const { URL } = require('url');
     await page.screenshot({ path: shotPath, ...(isJpeg ? { quality: 70 } : {}) }).catch(() => {});
   }
 
+  // ponytail: dump full inline scripts for the deobfuscation escalation (argv[5] = container dir),
+  // but ONLY when obfuscation markers fired -- clean pages don't spill script files.
+  const scriptsDir = process.argv[5];
+  if (scriptsDir && jsSmells.length) {
+    const fs = require('fs');
+    features.inlineScripts.forEach((body, i) => {
+      if (body.trim()) fs.writeFileSync(`${scriptsDir}/${String(i).padStart(2,'0')}.js`, body);
+    });
+  }
+
   console.log(JSON.stringify(result));
   await browser.close();
 })();
@@ -330,6 +349,14 @@ if [ -n "$SHOT" ]; then
   SHOT_ARG="/out/$(basename "$SHOT")"
 fi
 
+# Same pattern for the inline-script dump (only when PAGE_SCRIPTS_DIR is set)
+SCRIPTS_MOUNT=() SCRIPTS_ARG=""
+if [ -n "$SCRIPTS_DIR" ]; then
+  mkdir -p "$SCRIPTS_DIR" && chmod 777 "$SCRIPTS_DIR"
+  SCRIPTS_MOUNT=(-v "$SCRIPTS_DIR":/scripts)
+  SCRIPTS_ARG="/scripts"
+fi
+
 docker run --rm --name "$CONTAINER_NAME" \
   --cap-drop ALL \
   --cap-add SYS_ADMIN \
@@ -340,7 +367,8 @@ docker run --rm --name "$CONTAINER_NAME" \
   --cpus 1 \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
   "${SHOT_MOUNT[@]}" \
+  "${SCRIPTS_MOUNT[@]}" \
   "$IMAGE" \
-  node /home/pptruser/script.js "$URL" "$UA_MODE" "$SHOT_ARG" 2>/dev/null
+  node /home/pptruser/script.js "$URL" "$UA_MODE" "$SHOT_ARG" "$SCRIPTS_ARG" 2>/dev/null
 
 rm -f /tmp/page-fetch.js
