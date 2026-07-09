@@ -361,6 +361,39 @@ if [ -n "$EXFIL_DOMAINS" ]; then
     done < "$CACHE_DIR/exfil.txt"
 fi
 
+# Redirect chain: phishing bounces a legit host (Azure static, shorteners) through throwaway
+# domains. DNS-profile each off-domain hop and flag risky-TLD ones -- the chain infra is the
+# signal even when the final hop is dead (404) or CF-gated. Cached in redirect.txt.
+ORIG_APEX=$(printf '%s' "$DOMAIN" | grep -oE '[^.]+\.[^.]+$')
+CHAIN_HOSTS=$(echo "$PAGE_DATA" | jq -r '(.redirects // []) | .[].url' 2>/dev/null \
+    | sed -E 's|https?://([^/]+).*|\1|' | awk 'NF && !seen[$0]++')
+if [ "$(printf '%s\n' "$CHAIN_HOSTS" | grep -c .)" -gt 1 ]; then
+    echo ""
+    echo "${BOLD}Redirect Chain${RESET}"
+    if [ ! -f "$CACHE_DIR/redirect.txt" ]; then
+        while IFS= read -r _h; do
+            [ -z "$_h" ] && continue
+            if [ "$(printf '%s' "$_h" | grep -oE '[^.]+\.[^.]+$')" = "$ORIG_APEX" ]; then
+                printf '%s (origin)\n' "$_h"
+            else
+                domain_dns "$_h"
+            fi
+        done <<< "$CHAIN_HOSTS" > "$CACHE_DIR/redirect.txt"
+    fi
+    while IFS= read -r _line; do [ -n "$_line" ] && echo_grey "- $_line"; done < "$CACHE_DIR/redirect.txt"
+    # Flag off-domain hops on a risky TLD or freshly registered (here-string -> current shell).
+    while IFS= read -r _h; do
+        [ -z "$_h" ] && continue
+        [ "$(printf '%s' "$_h" | grep -oE '[^.]+\.[^.]+$')" = "$ORIG_APEX" ] && continue
+        _t=$(printf '%s' "$_h" | grep -oE '\.[a-z]+$' | tr -d '.')
+        if is_risky_tld "$_t"; then
+            add_signal "Redirect to risky TLD: $_h (.$_t)"
+            # also feed the verdict (SMELLS is counted by count_red_flags; SIGNALS is display-only)
+            SMELLS="${SMELLS:+$SMELLS, }redirect to risky TLD .$_t"
+        fi
+    done <<< "$CHAIN_HOSTS"
+fi
+
 # === JS deobfuscation escalation ===
 # When the scraper flagged obfuscation markers, deobfuscate the cached inline scripts
 # (webcrack, sandboxed) and scan the CLEARTEXT for signals the obfuscation was hiding

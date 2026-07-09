@@ -44,7 +44,8 @@ const { URL } = require('url');
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-gpu',
-      '--no-first-run'
+      '--no-first-run',
+      '--disable-blink-features=AutomationControlled'   // one more automation tell CF checks
     ]
   });
 
@@ -153,6 +154,20 @@ const { URL } = require('url');
 
   // Let the landing page settle so dynamically-injected forms/scripts are captured
   await page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {});
+
+  // Cloudflare Turnstile / interstitial: managed challenges often auto-pass in a few seconds
+  // for a clean-looking browser. If one is present, wait it out and re-settle, then keep
+  // following any redirect it releases us to. Best-effort -- hard challenges won't pass.
+  const cfChallenge = () => requests.some(r => /challenges\.cloudflare\.com|__cf_chl|cdn-cgi\/challenge/i.test(r.url));
+  if (cfChallenge()) {
+    for (let i = 0; i < 3; i++) {
+      await new Promise(r => setTimeout(r, 5000));
+      const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => null);
+      if (nav) resp = nav;
+      if (!/challenge|just a moment|checking your browser/i.test((await page.title().catch(() => '')))) break;
+    }
+    await page.waitForNetworkIdle({ idleTime: 1500, timeout: 10000 }).catch(() => {});
+  }
 
   const landedUrl = page.url();
   if (!landedUrl || landedUrl === 'about:blank') {
@@ -365,6 +380,11 @@ const { URL } = require('url');
   // Redirects
   if (redirects.length > 2)
     smells.push(`${redirects.length}-hop redirect chain`);
+
+  // Cloudflare Turnstile / bot challenge gating the real page from the scraper. On a
+  // redirect-chain phish this is deliberate cloaking; also explains a "dead" (404/empty) land.
+  if (cfChallenge())
+    smells.push('Cloudflare bot challenge (Turnstile) - real page gated from the scraper');
 
   // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
   // gates that bounce victims without a visible 3xx Location. Flag when a url= target exists.
