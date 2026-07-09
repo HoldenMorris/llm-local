@@ -484,7 +484,6 @@ fi   # end PHASE 3 (outer heuristic guard)
 # === Consolidated signal list ===
 # Every signal gathered across the phases, printed together as one bullet list instead
 # of sprinkled through the output. Gray detail; the colored verdict banner carries severity.
-echo ""
 if [ ${#SIGNALS[@]} -gt 0 ]; then
     echo "${BOLD}Signals (${#SIGNALS[@]}):${RESET}"
     for _s in "${SIGNALS[@]}"; do echo_grey "  - $_s"; done
