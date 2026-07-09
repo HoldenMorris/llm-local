@@ -42,6 +42,9 @@ while getopts "m:sVHrc:D" opt; do
 done
 shift $((OPTIND-1))
 
+# -m heuristic is an alias for -H (pure heuristic: no LLM, verdict from the decision table)
+[ "$MODEL" = heuristic ] && { HEURISTIC=1; MODEL=""; }
+
 # Now that -c mono is known, load the shared color helpers.
 source "$SCRIPT_DIR/colors.sh"
 
@@ -53,7 +56,7 @@ if [ -z "$URL" ] && [ -t 0 ]; then
 fi
 if [ -z "$URL" ]; then
     echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] [-D no-deobfuscate] <url>"
-    echo "       $0 -m gemma2:2b https://example.com   (-m auto = best benchmarked model)"
+    echo "       $0 -m gemma2:2b https://example.com   (-m auto = best model; -m heuristic / -H = no LLM)"
     exit 1
 fi
 
@@ -302,7 +305,8 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
     [ -n "$DEOBFUS_SIGNALS" ] && echo_yellow "[!] Deobfuscated JS signals: $DEOBFUS_SIGNALS"
 fi
 
-# === PHASE 3: LLM Analysis (skipped entirely in -H heuristic-only mode) ===
+# === PHASE 3: LLM Analysis (skipped in heuristic mode: -H, -m heuristic, or menu option 0) ===
+VERDICT=""   # default; only a real LLM run overrides it. Heuristic modes leave it empty.
 if [ -z "$HEURISTIC" ]; then
 ensure_ollama || exit 1
 
@@ -330,26 +334,29 @@ if [ -z "$MODEL" ]; then
     DEFAULT=$(best_model); [ -z "$DEFAULT" ] && DEFAULT="gemma2:2b"
     printf '%s\n' "${MODELS[@]}" | grep -qxF "$DEFAULT" || DEFAULT="${MODELS[0]}"
     echo "Available models:"
+    echo "  0: [Pure Heuristic] (no LLM, decision-table verdict)"
     for i in "${!MODELS[@]}"; do
-        [ "${MODELS[$i]}" = "$DEFAULT" ] && tag=" (best )" || tag=""
+        [ "${MODELS[$i]}" = "$DEFAULT" ] && tag=" (best)" || tag=""
         echo "  $((i+1)): ${MODELS[$i]}$tag"
     done
     echo ""
-    read -p "${CYAN}Select model (1-${#MODELS[@]}) [Enter = $DEFAULT], or 's' to skip LLM: ${RESET}" SEL
-    if [ "$SEL" = s ] || [ "$SEL" = skip ]; then
-        echo ""
-        echo "=== Summary (static analysis only) ==="
-        exit 0
+    read -p "${CYAN}Select model (0-${#MODELS[@]}) [Enter = $DEFAULT], 0/s = pure heuristic: ${RESET}" SEL
+    if [ "$SEL" = 0 ] || [ "$SEL" = s ] || [ "$SEL" = skip ]; then
+        HEURISTIC=1        # pure heuristic: no LLM, verdict from the decision table
     elif [ -z "$SEL" ]; then
         MODEL="$DEFAULT"
     else
         MODEL="${MODELS[$((SEL-1))]}"
     fi
-    if [ -z "$MODEL" ]; then
+    if [ -z "$MODEL" ] && [ -z "$HEURISTIC" ]; then
         echo "Invalid selection."
         exit 1
     fi
 fi
+
+# Everything below runs only for a real model pick -- the menu (option 0) may have just
+# switched us to heuristic mode, so re-check before spending the vision/LLM calls.
+if [ -z "$HEURISTIC" ]; then
 
 # === Vision escalation ===
 # A login form is where a visual brand-clone is both most likely and most costly to
@@ -477,10 +484,8 @@ echo "$BODY" | sed '/^VERDICT:/d'
 echo ""
 
 VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
-else
-    # -H heuristic-only: no LLM ran; the verdict comes purely from the decision table.
-    VERDICT=""
-fi
+fi   # end real-LLM path (inner heuristic guard)
+fi   # end PHASE 3 (outer heuristic guard)
 
 # === Deterministic verdict (classify_verdict in verdict.sh) ===
 # Signals are extracted deterministically upstream, so the final verdict is
