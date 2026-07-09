@@ -494,7 +494,9 @@ VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 # Cache the LLM answer keyed by model + full request (system+context). Same URL + same
 # model -> same signals -> same answer, so re-scans reuse it. -r wipes the cache dir.
 LLM_CACHE="$CACHE_DIR/llm-$(printf '%s' "$MODEL|$SYSTEM_PROMPT|$CONTEXT" | sha256sum | cut -c1-16).txt"
-if [ -f "$LLM_CACHE" ]; then
+# NO_LLM_CACHE=1 forces a real inference (still writes the cache) -- the benchmark sets it
+# so its timings measure the model, not a cache hit.
+if [ -z "${NO_LLM_CACHE:-}" ] && [ -f "$LLM_CACHE" ]; then
     RESPONSE=$(cat "$LLM_CACHE")
     LLM_LABEL="cached"
 else

@@ -66,7 +66,8 @@ for i in "${!URLS[@]}"; do
     for e in "${ENGINES[@]}"; do
         [ "$e" = none ] && FLAGS=(-H) || FLAGS=(-m "$e")
         START=$(date +%s.%N)
-        OUT=$("$ANALYZE" "${FLAGS[@]}" "$url" </dev/null 2>/dev/null)
+        # NO_LLM_CACHE=1 -> real inference every run, so timings aren't cache hits.
+        OUT=$(NO_LLM_CACHE=1 "$ANALYZE" "${FLAGS[@]}" "$url" </dev/null 2>/dev/null)
         DUR=$(echo "$(date +%s.%N) - $START" | bc)
         got=$(printf '%s' "$OUT" | parse_verdict)
         if [ "$got" = "$expected" ]; then mark="${GREEN}[+]${RESET}"; ((CORRECT["$e"]++)); else mark="${RED}[-]${RESET}"; fi
