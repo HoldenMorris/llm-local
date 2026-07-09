@@ -7,7 +7,18 @@ analyzes it** or **honestly flags that it could not**, without pretending a reli
 bypass exists. Improves recall on CF-fronted phishing (Azure static -> throwaway -> Turnstile
 -> login.php) while staying defensive-use only.
 
-## Open questions (answered by RESEARCH.md — deep research in progress)
+## DECISION (post-research — see RESEARCH.md)
+Build **operator attach mode** next: CDP-connect to the analyst's already-cleared Brave tab and
+analyse the uncloaked DOM. The research confirms automated Turnstile bypass is unreliable + high-
+maintenance (even nodriver, the best tool, only hit 28/31 with a residential IP + headed; our
+JS-stealth Puppeteer is the weakest tier). The operator's real Brave on a residential IP is the
+reliable "clean browser". Defer patched drivers (patchright/nodriver) and headful+xvfb unless
+attach mode proves insufficient. Skip proxies-alone / puppeteer-extra-stealth / API solvers.
+
+Environment verified: `/snap/bin/brave` present; Docker `--network host` available (Linux), so a
+container Puppeteer can `puppeteer.connect({browserURL:'http://localhost:9222'})`.
+
+## Open questions (answered by RESEARCH.md)
 1. Does **headful Chromium under xvfb** meaningfully pass more Turnstile/managed challenges
    than `headless:'new'` in 2026? At what cost (deps, RAM, speed) in the container?
 2. Which **stealth/patched drivers** are still effective and worth adopting vs detected:
