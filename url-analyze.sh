@@ -323,7 +323,8 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
     if [ -f "$CACHE_DIR/deob-signals.txt" ]; then
         DEOBFUS_SIGNALS=$(cat "$CACHE_DIR/deob-signals.txt")
     else
-        echo "Obfuscated JS detected -> deobfuscating (webcrack, sandboxed)..."
+        echo "${BOLD}Deobfuscation${RESET}"
+        echo_grey "- obfuscated JS detected; deobfuscating with webcrack (sandboxed)..."
         LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
         LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
         for f in "$CACHE_DIR/scripts"/*.js; do
@@ -491,7 +492,8 @@ RULE 3: NO login form, but it is a mailing-list / unsubscribe endpoint on a youn
 RULE 4: NO login form, established legitimate domain, zero red flags.
    -> VERDICT: SAFE.
 
-Be concise (2-3 sentences), state whether a login form was present and how many red flags you counted, name which RULE fired, then end with exactly one line:
+Reply with EXACTLY these two lines and nothing else:
+REASON: one short sentence -- was a login form present, how many red flags, and which RULE fired
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
 # Cache the LLM answer keyed by model + full request (system+context). Same URL + same
@@ -528,7 +530,7 @@ if [ -n "$THINK" ]; then
     echo ""
 fi
 printf "${BOLD}LLM Analysis (%s, %s)${RESET}\n" "$MODEL" "$LLM_LABEL"
-_llm_body=$(echo "$BODY" | sed '/^VERDICT:/d')
+_llm_body=$(echo "$BODY" | sed '/^VERDICT:/d; s/^REASON:[[:space:]]*//')
 if [ -n "$(printf '%s' "$_llm_body" | tr -d '[:space:]')" ]; then
     while IFS= read -r _l; do
         [ -n "$_l" ] && echo_grey "- $_l"
