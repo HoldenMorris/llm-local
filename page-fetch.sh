@@ -239,6 +239,10 @@ const { URL } = require('url');
   if (/document\.write/.test(allJs)) jsSmells.push('document.write()');
   if (/(?:\\x[0-9a-f]{2}){3,}/i.test(allJs)) jsSmells.push('hex-encoded strings');
   if (/window\.location\s*=/.test(allJs)) jsSmells.push('location redirect');
+  // obfuscator.io hallmarks (the obfuscator most phishing kits use, and what webcrack cracks):
+  // hex-named identifiers like _0x4c8c82 in quantity, and String.fromCharCode string-building.
+  if ((allJs.match(/_0x[0-9a-f]{4,}/gi) || []).length >= 5) jsSmells.push('obfuscated identifiers (_0x)');
+  if (/String\.fromCharCode\s*\(/.test(allJs)) jsSmells.push('String.fromCharCode');
 
   // ponytail: IP fingerprinting services used to track victims
   const ipFingerprinters = ['api.ipify.org','ipinfo.io','ip-api.com','ipapi.co','checkip.amazonaws.com',

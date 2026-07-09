@@ -5,6 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ollama-up.sh"
 source "$SCRIPT_DIR/verdict.sh"
+source "$SCRIPT_DIR/js-signals.sh"
 # colors.sh is sourced further down, after args are parsed (so -c mono can disable color)
 
 spinner() {
@@ -36,9 +37,10 @@ SKIP_FETCH=""
 NO_VISION=""
 HEURISTIC=""
 REFRESH=""
+NO_DEOBFUS=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
-while getopts "m:sVHrc:" opt; do
+while getopts "m:sVHrc:D" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
@@ -46,7 +48,8 @@ while getopts "m:sVHrc:" opt; do
         H) HEURISTIC=1 ;;     # heuristic-only: no LLM, verdict from verdict.sh decision table
         r) REFRESH=1 ;;       # ignore any cached page/screenshot/metadata and re-fetch
         c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
-        *) echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] <url>"; exit 1 ;;
+        D) NO_DEOBFUS=1 ;;    # skip JS deobfuscation escalation
+        *) echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] [-D no-deobfuscate] <url>"; exit 1 ;;
     esac
 done
 shift $((OPTIND-1))
@@ -61,7 +64,7 @@ if [ -z "$URL" ] && [ -t 0 ]; then
     read -r -p "Enter URL to analyze: " URL
 fi
 if [ -z "$URL" ]; then
-    echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] <url>"
+    echo "Usage: $0 [-m model] [-s skip-fetch] [-V no-vision] [-H heuristic-only] [-r refresh-cache] [-c mono] [-D no-deobfuscate] <url>"
     echo "       $0 -m gemma2:2b https://example.com   (-m auto = best benchmarked model)"
     exit 1
 fi
@@ -288,6 +291,29 @@ THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/nul
 SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
 SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
 
+# === JS deobfuscation escalation ===
+# When the scraper flagged obfuscation markers, deobfuscate the cached inline scripts
+# (webcrack, sandboxed) and scan the CLEARTEXT for signals the obfuscation was hiding
+# (exfil URLs, redirects, cookie theft, crypto). Deterministic, so it runs in both LLM
+# and heuristic mode; cached per URL. Gated on -D and on scripts actually being present.
+DEOBFUS_SIGNALS=""
+if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/dev/null 2>&1; then
+    if [ -f "$CACHE_DIR/deob-signals.txt" ]; then
+        DEOBFUS_SIGNALS=$(cat "$CACHE_DIR/deob-signals.txt")
+    else
+        echo "Obfuscated JS detected -> deobfuscating (webcrack, sandboxed)..."
+        LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
+        LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
+        for f in "$CACHE_DIR/scripts"/*.js; do
+            _clean=$("$SCRIPT_DIR/js-deobfuscate.sh" "$f" 2>/dev/null)
+            _s=$(LANDED_DOMAIN="$LANDED_DOMAIN" js_signals <<< "$_clean")
+            [ -n "$_s" ] && DEOBFUS_SIGNALS+="${DEOBFUS_SIGNALS:+; }$_s"
+        done
+        printf '%s' "$DEOBFUS_SIGNALS" > "$CACHE_DIR/deob-signals.txt"
+    fi
+    [ -n "$DEOBFUS_SIGNALS" ] && echo_yellow "[!]  Deobfuscated JS signals: $DEOBFUS_SIGNALS"
+fi
+
 # === PHASE 3: LLM Analysis (skipped entirely in -H heuristic-only mode) ===
 if [ -z "$HEURISTIC" ]; then
 ensure_ollama || exit 1
@@ -397,6 +423,7 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Total forms on page: $FORMS  (login forms: $LOGIN_FORMS)
 - Redirected to a different URL: $IS_REDIRECT
 - Suspicious JS: ${SUSP_JS:-none}
+- Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
 - Phishing smells flagged by scraper: ${SMELLS:-none}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
 - Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
@@ -415,6 +442,7 @@ RED FLAGS (count how many are present in the signals):
 - sensitive field names (ssn, cvv, routing, etc.)
 - domain age under 90 days
 - suspicious JS (eval, atob, hex-encoded, document.write)
+- deobfuscated JS that reveals an off-domain exfil URL, a JS redirect, or cookie/credential theft
 - redirect to wp-content / wp-include / random path
 - any phishing smell flagged by the scraper
 
