@@ -358,7 +358,7 @@ if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
     else
         # Always confirm before opening a browser window, and ring the terminal bell for attention.
         _bell
-        read -r -p "${CYAN}${_gate} gate blocked the scanner. Open it in Brave so YOU can clear it, then analyze the real page? [Y/n] ${RESET}" _a
+        read -r -p "${CYAN}- ${_gate} gate blocked the scanner. Open it in Brave so YOU can clear it, then analyze the real page? [Y/n] ${RESET}" _a
         if [[ ! "$_a" =~ ^[Nn] ]]; then
             _prof=$(mktemp -d "${TMPDIR:-/tmp}/brave-attach.XXXXXX")
             _port=9222
@@ -380,7 +380,7 @@ if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
             else
                 echo_grey "- opened a Brave window at $_target"
                 echo_grey "- solve the challenge / gate, land on the REAL page, then press Enter below"
-                read -r -p "${CYAN}press Enter here to analyze the uncloaked page... ${RESET}" _
+                read -r -p "${CYAN}- press Enter here to analyze the uncloaked page... ${RESET}" _
                 echo_grey "- re-scanning via CDP attach to your cleared tab..."
                 _new=$(PAGE_ATTACH="http://127.0.0.1:$_port" PAGE_SHOT="$CACHE_DIR/page.jpg" \
                        PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" "$_target" 2>&1 | tail -1)
