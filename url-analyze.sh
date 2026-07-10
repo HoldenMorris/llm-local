@@ -57,6 +57,8 @@ Options:
   -V          no vision (skip the login-form screenshot brand-check)
   -D          skip JS deobfuscation
   -t          third-party reputation (VirusTotal + urlscan.io); off by default, needs .env
+  -p <tor>    route the scanner's egress through Tor (free geo-target / blacklist-dodge)
+  -g <cc>     Tor exit country (ISO code: us, gb, de, ...); use with -p tor
   -r          ignore cache, re-fetch
   -c mono     disable color output
   -h, --help  show this help
@@ -77,12 +79,14 @@ HEURISTIC=""
 REFRESH=""
 NO_DEOBFUS=""
 VT=""
+PROXY=""
+EXIT_CC=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
 # Help as the first arg (getopts won't catch bare `help` or long `--help`).
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
-while getopts "m:sVHrc:Dht" opt; do
+while getopts "m:sVHrc:Dhtp:g:" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
@@ -92,6 +96,8 @@ while getopts "m:sVHrc:Dht" opt; do
         c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
         D) NO_DEOBFUS=1 ;;    # skip JS deobfuscation escalation
         t) VT=1 ;;            # opt-in third-party reputation (VirusTotal + urlscan.io)
+        p) PROXY="$OPTARG" ;; # scanner egress: tor (or none). Geo-target / dodge blacklists.
+        g) EXIT_CC="$OPTARG" ;; # Tor exit country (ISO code, e.g. us, gb) -- only with -p tor
         h) usage; exit 0 ;;
         *) usage >&2; exit 1 ;;
     esac
@@ -297,10 +303,15 @@ if [ -z "$SKIP_FETCH" ]; then
     if [ -f "$CACHE_DIR/page.json" ]; then
         PAGE_DATA=$(cat "$CACHE_DIR/page.json")
     else
-        echo_grey "- Fetching page content..."
+        echo_grey "- Fetching page content...${PROXY:+ (egress via $PROXY${EXIT_CC:+ /$EXIT_CC})}"
         # Cache full inline scripts too (page-fetch only dumps them when obfuscation fires),
-        # so the JS-deobfuscation escalation can reuse them.
-        PAGE_DATA=$(PAGE_SHOT="$SHOT" PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" "$URL" 2>&1 | tail -1)
+        # so the JS-deobfuscation escalation can reuse them. -p/-g route the scanner's egress.
+        _pf_out=$(PAGE_SHOT="$SHOT" PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" \
+            ${PROXY:+-p "$PROXY"} ${EXIT_CC:+-g "$EXIT_CC"} "$URL" 2>&1)
+        PAGE_DATA=$(printf '%s\n' "$_pf_out" | tail -1)
+        # show the actual exit IP/geo the page saw (EGRESS line emitted by page-fetch when -p tor)
+        _eg=$(printf '%s\n' "$_pf_out" | grep -m1 '^EGRESS ')
+        [ -n "$_eg" ] && { read -r _ _eip _ecc _eorg <<< "$_eg"; echo_grey "- egress: $_eip ($_ecc, ${_eorg:-?})"; }
         # cache only a successful fetch, never an error stub
         echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1 || echo "$PAGE_DATA" > "$CACHE_DIR/page.json"
     fi

@@ -5,11 +5,21 @@
 # Outputs JSON with page features for LLM analysis
 
 set -e
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ponytail: -m/--mobile swaps to a mobile UA to defeat mobile-only cloakers
-UA_MODE="desktop"
-[[ "$1" == "-m" || "$1" == "--mobile" ]] && { UA_MODE="mobile"; shift; }
-URL="${1:?Usage: $0 [-m|--mobile] <url>}"
+# Leading flags: -m/--mobile (mobile UA vs mobile-only cloakers), -p <tor|none> egress proxy,
+# -g <cc> Tor exit country (ISO code). See .planning/phases/ip-routing.
+UA_MODE="desktop"; PROXY="none"; EXIT_CC=""
+while [[ "${1:-}" == -* ]]; do
+  case "$1" in
+    -m|--mobile) UA_MODE="mobile"; shift ;;
+    -p) PROXY="$2"; shift 2 ;;
+    -g) EXIT_CC="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+URL="${1:?Usage: $0 [-m|--mobile] [-p tor|none] [-g <cc>] <url>}"
 
 # ponytail: PAGE_SHOT=<host .png/.jpg> also saves a viewport screenshot there, for
 # the vision-model escalation step. Unset = no screenshot, no output change.
@@ -42,6 +52,7 @@ const { URL } = require('url');
   // stealth -- we just read the live, uncloaked DOM the human is looking at. See url-analyze.sh
   // and .planning/phases/anti-bot-rendering.
   const attach = process.env.PAGE_ATTACH || '';
+  const proxy = process.env.PAGE_PROXY || '';   // e.g. socks5://llm-tor:9050 (Tor egress)
   const uaMode = process.argv[3] || 'desktop';
   let browser, page;
   if (attach) {
@@ -59,7 +70,9 @@ const { URL } = require('url');
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--no-first-run',
-        '--disable-blink-features=AutomationControlled'   // one more automation tell CF checks
+        '--disable-blink-features=AutomationControlled',  // one more automation tell CF checks
+        // Egress proxy (Tor). Chrome SOCKS5 resolves target DNS remotely -> no DNS leak.
+        ...(proxy ? [`--proxy-server=${proxy}`] : []),
       ]
     });
 
@@ -610,6 +623,17 @@ fi
 ATTACH_ARGS=()
 [ -n "${PAGE_ATTACH:-}" ] && ATTACH_ARGS=(--network host -e PAGE_ATTACH="$PAGE_ATTACH")
 
+# -p tor: route the scanner's egress through the Tor sidecar (llm-tor on the llm-net docker net)
+# for geo-targeting / blacklist-dodging / attribution hygiene. Prints the actual exit IP+geo the
+# kit will see (EGRESS line, before the JSON) and fails loud rather than silently going direct.
+PROXY_ARGS=()
+if [ "$PROXY" = tor ]; then
+  "$SCRIPT_DIR/tor-up.sh" ${EXIT_CC:+-g "$EXIT_CC"} >&2 || { echo '{"error":"tor egress unavailable"}'; exit 0; }
+  _eg=$(curl -s --max-time 20 --socks5-hostname 127.0.0.1:9050 http://ip-api.com/json 2>/dev/null)
+  echo "EGRESS $(echo "$_eg" | jq -r '.query // "?"') $(echo "$_eg" | jq -r '.countryCode // "?"') $(echo "$_eg" | jq -r 'if (.org // "") != "" then .org elif (.isp // "") != "" then .isp else "?" end')"
+  PROXY_ARGS=(--network llm-net -e PAGE_PROXY="socks5://llm-tor:9050")
+fi
+
 docker run --rm --name "$CONTAINER_NAME" \
   --cap-drop ALL \
   --cap-add SYS_ADMIN \
@@ -620,6 +644,7 @@ docker run --rm --name "$CONTAINER_NAME" \
   --cpus 1 \
   -e BRAND_MATCH="$BRAND_MATCH" \
   "${ATTACH_ARGS[@]}" \
+  "${PROXY_ARGS[@]}" \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
   "${SHOT_MOUNT[@]}" \
   "${SCRIPTS_MOUNT[@]}" \

@@ -50,6 +50,7 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests pinning the deterministic verdict core (`verdict.sh`); pure, no LLM/network |
+| `tor-up.sh` | Ensure the Tor sidecar (`llm-tor`) for scanner egress: exit-country + circuit rotation. `--down` to stop |
 | `llm-test.sh` | Single email test |
 | `colors.sh` | Shared ANSI colors — `source` it, use `${RED}..${RESET}` or `cecho` |
 
@@ -79,7 +80,8 @@ Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`,
 back to qwen2.5:1.5b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
 `-H` heuristic-only (no LLM — verdict straight from `verdict.sh`'s decision table), `-r`
 ignore cache, `-c mono` no color, `-D` skip JS deobfuscation, `-t` third-party reputation
-(VirusTotal + urlscan.io — off by default, opt-in, not in benchmarks; see below). On a bot gate it
+(VirusTotal + urlscan.io — off by default, opt-in, not in benchmarks; see below), `-p tor` route the
+scanner's egress through Tor with `-g <cc>` exit country (see below). On a bot gate it
 offers operator attach (see below). With no URL arg it prompts
 for one; the interactive model menu lists `0: none (pure heuristic)` plus the installed models
 and defaults to the best (press Enter). The LLM analysis line prints which model ran and
@@ -119,6 +121,32 @@ launcher's process group). Interactive-only (`[ -t 0 ]`) so it never fires in be
 Brave isn't found or attach is declined/fails. Signal:
 `Operator attach: analyzed the uncloaked page past the <gate> gate`. Automated bypass (patched
 drivers / xvfb / proxies / solvers) is deferred — research showed it unreliable + high-maintenance.
+
+### Scanner egress routing (`-p tor`, Wave 1)
+
+Some kits only fire for in-zone (target-country) IPs and cloak to a benign page otherwise; others
+blacklist datacenter/scanner IPs. `-p tor` routes the **headless scanner's** egress through a free
+**Tor sidecar** for geo-targeting, blacklist-dodging, and attribution hygiene:
+
+```bash
+./url-analyze.sh -p tor -g us <url>   # scan as if from a US IP
+./tor-up.sh -g gb                     # (called automatically) set exit country live
+./tor-up.sh --rotate                  # fresh circuit / new exit IP
+./tor-up.sh --down                    # stop the sidecar
+```
+
+`tor-up.sh` auto-builds a tiny `alpine+tor` image (`local-llm-tor`) and runs `llm-tor` on the
+`llm-net` docker network (SOCKS 9050, control 9051 in-container only). `page-fetch.sh -p tor [-g cc]`
+joins `llm-net` and launches Chrome with `--proxy-server=socks5://llm-tor:9050` (SOCKS5 → remote DNS,
+no leak). Exit country is set live via the control port (`SETCONF ExitNodes`); rotation via `NEWNYM`.
+The tool prints the **actual exit IP + geo the page saw** (`- egress: <ip> (<cc>, <org>)`).
+
+**Honest ceiling (by design, see `.planning/phases/ip-routing`):** Tor exits are datacenter-repped and
+widely blocked/challenged (Cloudflare) and many kits block Tor outright — good for naive geo/blacklist
+gates + opsec, useless vs Tor-aware/residential-only kits. No free tool gives residential reputation;
+for that, **operator attach** (your real residential IP, your geo) is the reliable path. **Security:**
+only Tor/your-own-VPN egress is supported — never public proxy lists (MITM risk on live malware).
+Default is direct (no `-p`), so benchmarks are unaffected.
 
 ### url-benchmark.sh
 
