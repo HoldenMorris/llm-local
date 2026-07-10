@@ -407,10 +407,19 @@ const { URL } = require('url');
   if (redirects.length > 2)
     smells.push(`${redirects.length}-hop redirect chain`);
 
-  // Cloudflare Turnstile / bot challenge gating the real page from the scraper. On a
-  // redirect-chain phish this is deliberate cloaking; also explains a "dead" (404/empty) land.
-  if (cfChallenge())
-    smells.push('Cloudflare bot challenge (Turnstile) - real page gated from the scraper');
+  // Bot / human-verification gates cloaking the real page from the scraper. Detect the major
+  // providers by the scripts they load -- fires whether the challenge is invisible or an
+  // interactive click. On a redirect-chain phish this is deliberate cloaking; it also explains a
+  // "dead" (404/empty) land. Each smell ends with "gated from the scraper" so url-analyze's
+  // operator-attach trigger can match any provider with one test.
+  const gateProviders = [
+    { re: /challenges\.cloudflare\.com|__cf_chl|cdn-cgi\/challenge/i, name: 'Cloudflare Turnstile' },
+    { re: /\bhcaptcha\.com|newassets\.hcaptcha\.com/i, name: 'hCaptcha' },
+    { re: /google\.com\/recaptcha|gstatic\.com\/recaptcha|recaptcha\/api\.js/i, name: 'reCAPTCHA' },
+  ];
+  for (const g of gateProviders)
+    if (requests.some(r => g.re.test(r.url)))
+      smells.push(`${g.name} challenge - real page gated from the scraper`);
 
   // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
   // gates that bounce victims without a visible 3xx Location. Flag when a url= target exists.

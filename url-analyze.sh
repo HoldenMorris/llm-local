@@ -57,7 +57,6 @@ Options:
   -V          no vision (skip the login-form screenshot brand-check)
   -D          skip JS deobfuscation
   -t          third-party reputation (VirusTotal + urlscan.io); off by default, needs .env
-  -A          auto-accept operator attach on a bot gate (else you're prompted); opens/closes Brave
   -r          ignore cache, re-fetch
   -c mono     disable color output
   -h, --help  show this help
@@ -78,13 +77,12 @@ HEURISTIC=""
 REFRESH=""
 NO_DEOBFUS=""
 VT=""
-ATTACH=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
 # Help as the first arg (getopts won't catch bare `help` or long `--help`).
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
-while getopts "m:sVHrc:DhtA" opt; do
+while getopts "m:sVHrc:Dht" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
@@ -94,7 +92,6 @@ while getopts "m:sVHrc:DhtA" opt; do
         c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
         D) NO_DEOBFUS=1 ;;    # skip JS deobfuscation escalation
         t) VT=1 ;;            # opt-in third-party reputation (VirusTotal + urlscan.io)
-        A) ATTACH=1 ;;        # auto-accept operator attach when a bot gate is detected
         h) usage; exit 0 ;;
         *) usage >&2; exit 1 ;;
     esac
@@ -106,6 +103,18 @@ shift $((OPTIND-1))
 
 # Now that -c mono is known, load the shared color helpers.
 source "$SCRIPT_DIR/colors.sh"
+
+# ponytail: attention ping before we open a window / ask a risky prompt. `\a` to the terminal is
+# the portable bell, but its audibility depends on the terminal's bell setting (often off), so if a
+# desktop sound player is present we also play a real system sound. Best-effort, never blocks.
+_bell() {
+    printf '\a' > /dev/tty 2>/dev/null
+    if command -v canberra-gtk-play >/dev/null 2>&1; then
+        canberra-gtk-play -i bell >/dev/null 2>&1 &
+    elif command -v paplay >/dev/null 2>&1 && [ -f /usr/share/sounds/freedesktop/stereo/bell.oga ]; then
+        paplay /usr/share/sounds/freedesktop/stereo/bell.oga >/dev/null 2>&1 &
+    fi
+}
 
 URL="${1:-$URL}"
 
@@ -329,27 +338,28 @@ else
 fi
 
 # === Operator attach mode: clear the bot gate in a real browser, analyze the uncloaked DOM ===
-# ponytail: our headless container is the weakest tier vs Cloudflare (see .planning/phases/
-# anti-bot-rendering). When a CF/Turnstile challenge gated the scraper, the reliable path is the
-# operator's OWN Brave on their residential IP: the tool opens a visible Brave, the human clears
-# the gate and lands on the real page, then we re-scan by CDP-attaching to that cleared tab. The
-# tool opens AND closes the browser; the operator just solves + presses Enter.
+# ponytail: our headless container is the weakest tier vs bot gates (see .planning/phases/
+# anti-bot-rendering). When a Turnstile/hCaptcha/reCAPTCHA challenge gated the scraper, the
+# reliable path is the operator's OWN Brave on their residential IP: the tool opens a visible
+# Brave, the human clears the gate and lands on the real page, then we re-scan by CDP-attaching to
+# that cleared tab. The tool opens AND closes the browser; the operator just solves + presses Enter.
+# All gate smells end with "gated from the scraper", so one match covers every provider.
 if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
-   && printf '%s' "$PAGE_DATA" | jq -e '(.phishingSmells // []) | any(test("Cloudflare bot challenge"))' >/dev/null 2>&1; then
+   && printf '%s' "$PAGE_DATA" | jq -e '(.phishingSmells // []) | any(test("gated from the scraper"))' >/dev/null 2>&1; then
     _brave=""
     for _b in /snap/bin/brave brave brave-browser; do
         command -v "$_b" >/dev/null 2>&1 && { _brave=$(command -v "$_b"); break; }
     done
     _target=$(echo "$PAGE_DATA" | jq -r '.finalUrl // empty' 2>/dev/null); _target="${_target:-$URL}"
+    # Name the gate for the prompt (e.g. "Cloudflare Turnstile", "hCaptcha", "reCAPTCHA").
+    _gate=$(echo "$PAGE_DATA" | jq -r 'first(.phishingSmells[]? | select(test("gated from the scraper"))) // "Bot"' 2>/dev/null | sed 's/ challenge.*//')
     if [ -z "$_brave" ]; then
-        echo_grey "- Cloudflare gate hit; no Brave found for operator attach (install Brave or open it manually)"
+        echo_grey "- ${_gate} gate hit; no Brave found for operator attach (install Brave or open it manually)"
     else
-        _go=""
-        if [ -n "$ATTACH" ]; then _go=1; else
-            read -r -p "${CYAN}Cloudflare gate blocked the scanner. Open it in Brave so YOU can clear it, then analyze the real page? [Y/n] ${RESET}" _a
-            [[ ! "$_a" =~ ^[Nn] ]] && _go=1
-        fi
-        if [ -n "$_go" ]; then
+        # Always confirm before opening a browser window, and ring the terminal bell for attention.
+        _bell
+        read -r -p "${CYAN}${_gate} gate blocked the scanner. Open it in Brave so YOU can clear it, then analyze the real page? [Y/n] ${RESET}" _a
+        if [[ ! "$_a" =~ ^[Nn] ]]; then
             _prof=$(mktemp -d "${TMPDIR:-/tmp}/brave-attach.XXXXXX")
             _port=9222
             # unique throwaway profile forces a fresh instance that actually exposes the debug port
@@ -368,8 +378,8 @@ if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
             if [ -z "$_ready" ]; then
                 echo_grey "- attach: Brave debug port never came up on $_port -- skipping"
             else
-                echo_yellow "A Brave window opened at $_target."
-                echo_grey "  Solve the challenge, land on the REAL page, then --"
+                echo_grey "- opened a Brave window at $_target"
+                echo_grey "- solve the challenge / gate, land on the REAL page, then press Enter below"
                 read -r -p "${CYAN}press Enter here to analyze the uncloaked page... ${RESET}" _
                 echo_grey "- re-scanning via CDP attach to your cleared tab..."
                 _new=$(PAGE_ATTACH="http://127.0.0.1:$_port" PAGE_SHOT="$CACHE_DIR/page.jpg" \
@@ -377,7 +387,7 @@ if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
                 if echo "$_new" | jq -e 'has("title") or has("hasLoginForm")' >/dev/null 2>&1; then
                     PAGE_DATA="$_new"
                     echo "$PAGE_DATA" > "$CACHE_DIR/page.json"   # cache the uncloaked page for re-scans
-                    add_signal "Operator attach: analyzed the uncloaked page past the Cloudflare gate"
+                    add_signal "Operator attach: analyzed the uncloaked page past the ${_gate} gate"
                 else
                     echo_grey "- attach: re-scan returned no usable page ($(echo "$_new" | jq -r '.error // "unknown"' 2>/dev/null)) -- keeping the gated result"
                 fi
@@ -814,13 +824,15 @@ echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
 echo "==============================================${RESET}"
 
-# If a Cloudflare/Turnstile challenge blocked the scraper from the real page, offer to open it
-# in the analyst's browser -- a residential IP + real browser usually passes the challenge.
+# Last-resort fallback: a bot gate (Turnstile/hCaptcha/reCAPTCHA) still blocks the real page
+# (operator attach was declined, unavailable, or failed). Offer to just open it in the analyst's
+# browser -- a residential IP + real browser usually passes the gate.
 # ponytail: opening a live phishing URL is risky; explicit opt-in, default No, shown AFTER the
-# verdict so the analyst decides with full context.
+# verdict so the analyst decides with full context. Rings the bell before the prompt.
 if [ -t 0 ] && command -v xdg-open >/dev/null 2>&1 \
-   && printf '%s' "$SMELLS" | grep -qi 'Cloudflare bot challenge'; then
+   && printf '%s' "$SMELLS" | grep -qi 'gated from the scraper'; then
     echo ""
-    read -r -p "${CYAN}Cloudflare challenge blocked the scanner. Open ${FINAL_URL:-$URL} in YOUR browser to inspect? (risky) [y/N] ${RESET}" _ans
+    _bell
+    read -r -p "${CYAN}Bot gate still blocking. Open ${FINAL_URL:-$URL} in YOUR browser to inspect? (risky) [y/N] ${RESET}" _ans
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "${FINAL_URL:-$URL}" >/dev/null 2>&1 & }
 fi

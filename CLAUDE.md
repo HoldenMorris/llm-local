@@ -78,8 +78,8 @@ Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`,
 back to qwen2.5:1.5b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
 `-H` heuristic-only (no LLM — verdict straight from `verdict.sh`'s decision table), `-r`
 ignore cache, `-c mono` no color, `-D` skip JS deobfuscation, `-t` third-party reputation
-(VirusTotal + urlscan.io — off by default, opt-in, not in benchmarks; see below), `-A` auto-accept
-operator attach on a Cloudflare gate (see below). With no URL arg it prompts
+(VirusTotal + urlscan.io — off by default, opt-in, not in benchmarks; see below). On a bot gate it
+offers operator attach (see below). With no URL arg it prompts
 for one; the interactive model menu lists `0: none (pure heuristic)` plus the installed models
 and defaults to the best (press Enter). The LLM analysis line prints which model ran and
 how long it took.
@@ -98,23 +98,26 @@ deterministic safety floor as a red flag (appended to `SMELLS`), and both summar
 LLM context. **Rate limits:** VT free tier is 4 req/min · 500/day; the per-URL cache means a
 re-scan costs zero API calls.
 
-### Operator attach mode (Cloudflare/Turnstile gates)
+### Operator attach mode (bot gates: Turnstile / hCaptcha / reCAPTCHA)
 
-Our headless container is the weakest tier against Cloudflare (see
-`.planning/phases/anti-bot-rendering`). When `page-fetch.sh` flags `Cloudflare bot challenge`,
-`url-analyze.sh` offers **operator attach**: it opens a visible **Brave** (`/snap/bin/brave`) with
-a throwaway profile + `--remote-debugging-port=9222` pointed at the gated URL. You (residential
-IP, real browser) clear the challenge and land on the real page, then press Enter; the tool
-re-scans by CDP-**attaching** to your cleared tab — `page-fetch.sh` runs with `PAGE_ATTACH=<url>`,
-which `puppeteer.connect`s over Docker `--network host` and reads the live uncloaked DOM (no
+Our headless container is the weakest tier against bot gates (see
+`.planning/phases/anti-bot-rendering`). `page-fetch.sh` detects the major providers by the scripts
+they load — **Cloudflare Turnstile**, **hCaptcha**, **reCAPTCHA** — and pushes a smell ending
+`... - real page gated from the scraper` (fires whether the challenge is invisible or an
+interactive click). On any such smell `url-analyze.sh` offers **operator attach**: after a terminal
+**bell** it always asks first `[Y/n]`, then opens a visible **Brave** (`/snap/bin/brave`) with a
+throwaway profile + `--remote-debugging-port=9222` at the gated URL. You (residential IP, real
+browser) clear the gate and land on the real page, then press Enter; the tool re-scans by
+CDP-**attaching** to your cleared tab — `page-fetch.sh` runs with `PAGE_ATTACH=<url>`, which
+`puppeteer.connect`s over Docker `--network host` and reads the live uncloaked DOM (no
 launch/navigation/stealth). The uncloaked `page.json` + screenshot overwrite the cache, so a
 re-scan reuses them and the verdict/vision run on the real page. The tool **opens and closes**
-Brave (kills it via `pkill -f <profile>` on exit — snap Brave daemonizes out of the launcher's
-process group). Interactive-only (`[ -t 0 ]`) so it never fires in benchmarks; `-A` auto-accepts
-the prompt. Falls back to the plain "open in your browser" offer if Brave isn't found or the
-scan is declined. Signal: `Operator attach: analyzed the uncloaked page past the Cloudflare gate`.
-Automated bypass (patched drivers / xvfb / proxies / solvers) is deferred — research showed it
-unreliable + high-maintenance.
+Brave (kills it via `pkill -f <profile>` on exit/INT/TERM — snap Brave daemonizes out of the
+launcher's process group). Interactive-only (`[ -t 0 ]`) so it never fires in benchmarks; you're
+**always prompted before a window opens**. Falls back to the plain "open in your browser" offer if
+Brave isn't found or attach is declined/fails. Signal:
+`Operator attach: analyzed the uncloaked page past the <gate> gate`. Automated bypass (patched
+drivers / xvfb / proxies / solvers) is deferred — research showed it unreliable + high-maintenance.
 
 ### url-benchmark.sh
 
