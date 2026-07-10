@@ -49,6 +49,7 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 | `js-deobfuscate.sh` | Sandboxed webcrack runner: obfuscated JS in -> cleartext out |
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
+| `test-verdict.sh` | Golden tests pinning the deterministic verdict core (`verdict.sh`); pure, no LLM/network |
 | `llm-test.sh` | Single email test |
 | `colors.sh` | Shared ANSI colors — `source` it, use `${RED}..${RESET}` or `cecho` |
 
