@@ -141,7 +141,11 @@ CACHE_DIR="$SCRIPT_DIR/.cache/$(printf '%s' "$URL" | sha256sum | cut -c1-16)"
 mkdir -p "$CACHE_DIR"
 
 # === PHASE 1: Static URL Analysis (zero-day signals) ===
-DOMAIN=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
+# Split host from an explicit :port -- a port glued to DOMAIN breaks dig/openssl (the non-standard
+# high port is itself a tunneling/phishing signal, e.g. portmap.io:46801). PORT feeds the cert check.
+AUTHORITY=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
+DOMAIN=${AUTHORITY%%:*}
+PORT=${AUTHORITY##*:}; [ "$PORT" = "$AUTHORITY" ] && PORT=443
 TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 
 # All signals collect here and print as one bullet list before the verdict, instead of
@@ -191,6 +195,17 @@ fi
 DOMAIN_BASE=$(echo "$DOMAIN" | sed 's/\.[^.]*$//' | tr -d '.-')
 if [ ${#DOMAIN_BASE} -gt 8 ] && echo "$DOMAIN_BASE" | grep -qE '^[a-z0-9]+$' && echo "$DOMAIN_BASE" | grep -qE '[0-9].*[0-9]'; then
     add_signal "Random-looking domain: $DOMAIN_BASE"
+fi
+
+# ponytail: Abuse-prone tunneling / port-forwarding services. A random subdomain on one of these
+# means the real operator is hidden behind a free tunnel -- classic phishing/C2 hosting. Counts as a
+# red flag (appended to SMELLS after the fetch) so a tunnel URL reads SUSPICIOUS even when the tunnel
+# is down and the page can't be fetched. (^|\.) boundary so 'notngrok.io' does not match ngrok.io.
+TUNNEL_SERVICES='ngrok\.io|ngrok-free\.app|ngrok\.app|ngrok\.dev|trycloudflare\.com|portmap\.io|serveo\.net|loca\.lt|lhr\.life|localhost\.run|pagekite\.me|telebit\.io|bore\.pub|tunnelto\.dev'
+TUNNEL_SVC=""
+if echo "$DOMAIN" | grep -qiE "(^|\.)($TUNNEL_SERVICES)\$"; then
+    TUNNEL_SVC=$(echo "$DOMAIN" | grep -oiE "($TUNNEL_SERVICES)\$" | head -1)
+    add_signal "Hosted on tunneling service: $TUNNEL_SVC (real operator hidden behind a free tunnel)"
 fi
 
 # === Domain Info Lookup ===
@@ -247,7 +262,7 @@ fi
 
 # === SSL Certificate Check (openssl) ===
 if echo "$URL" | grep -q "^https://"; then
-    SSL_INFO=$(echo | timeout 5 openssl s_client -connect "$DOMAIN:443" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -dates -issuer 2>/dev/null)
+    SSL_INFO=$(echo | timeout 5 openssl s_client -connect "$DOMAIN:$PORT" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -dates -issuer 2>/dev/null)
     if [ -n "$SSL_INFO" ]; then
         CERT_START=$(echo "$SSL_INFO" | grep "notBefore" | cut -d= -f2)
         CERT_ISSUER=$(echo "$SSL_INFO" | grep "issuer" | sed 's/.*CN = //' | cut -d',' -f1)
@@ -419,6 +434,9 @@ TITLE=$(echo "$PAGE_DATA" | jq -r '.title // ""' 2>/dev/null)
 THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
 SUSP_JS=$(echo "$PAGE_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
 SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
+# Tunneling-service host (detected in Phase 1) is a deterministic red flag, whether or not the page
+# fetched -- append here so count_red_flags scores it (1 flag -> SUSPICIOUS floor on its own).
+[ -n "$TUNNEL_SVC" ] && SMELLS="${SMELLS:+$SMELLS, }hosted on tunneling service $TUNNEL_SVC"
 [ -n "$SUSP_JS" ] && add_signal "Suspicious JS: $SUSP_JS"
 
 # Surface notable page console output (errors / failed requests) -- diagnoses blank SPAs

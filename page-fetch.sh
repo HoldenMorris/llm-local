@@ -443,8 +443,8 @@ const { URL } = require('url');
   if (metaRefreshFound && /url=/i.test(metaRefreshFound))
     smells.push(`Meta-refresh redirect: ${metaRefreshFound.slice(0,120)}`);
 
-  // HTTPS
-  if (targetUrl.startsWith('http:'))
+  // HTTPS -- judge the landed URL, not the typed one (HTTP->HTTPS redirect is secure)
+  if ((redirects.at(-1)?.url || targetUrl).startsWith('http:'))
     smells.push('Served over HTTP (no TLS)');
 
   // Suspicious JS -- scan FULL inline bodies, not the 1000-char preview
@@ -484,13 +484,27 @@ const { URL } = require('url');
   const apexOf = h => (h || '').toLowerCase().split('.').slice(-2).join('.');
   const hostsIn = (t) => [...String(t).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase());
   const cdnRe = /(googleapis|gstatic|cloudflare|jsdelivr|unpkg|cdnjs|jquery|bootstrapcdn|google-analytics|googletagmanager|fontawesome|recaptcha|hcaptcha|gravatar|w3\.org|schema\.org)/i;
+  // Only covert exfil vectors count: an off-domain FORM ACTION (posts data cross-domain) or a
+  // host HIDDEN in an obfuscated/base64 blob. A host sitting in plain, readable JS is auditable
+  // and overwhelmingly analytics/RUM/CDN -- not covert theft -- so it is NOT treated as exfil.
   const exfilDomains = [...new Set([
     ...features.forms.map(f => { try { return new URL(f.action).hostname.toLowerCase(); } catch { return ''; } }),
-    ...hostsIn(allJs),
     ...hostsIn(b64decoded),
   ])].filter(h => h && apexOf(h) !== apexDomain && !cdnRe.test(h));
   if (exfilDomains.length)
     smells.push(`Off-domain exfil endpoint(s) in page code: ${exfilDomains.slice(0,4).join(', ')}`);
+
+  // Off-domain hosts the page pulls resources from (scripts, iframes, images) or names in plain
+  // JS. NOT exfil on its own -- context for triage: a hotlinked brand logo, a tracking pixel, a
+  // sketchy third party. Surfaced to the operator + LLM; excluded from the deterministic red-flag
+  // count (verdict.sh) so it can't floor the verdict by itself -- the LLM judges whether it smells.
+  const thirdPartyHosts = [...new Set([
+    ...features.scripts.map(s => s.src), ...features.iframes, ...features.images,
+  ].map(u => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } })
+   .concat(hostsIn(allJs)))]
+    .filter(h => h && apexOf(h) !== apexDomain && !cdnRe.test(h) && !exfilDomains.includes(h));
+  if (thirdPartyHosts.length)  // space-joined (no commas) so verdict.sh's comma-split count excludes it whole
+    smells.push(`Third-party hosts referenced (scripts/iframes/images/JS): ${thirdPartyHosts.slice(0,6).join(' ')}`);
 
   // ponytail: IP fingerprinting services used to track victims (also seen base64-encoded in JS)
   const ipFingerprinters = ['api.ipify.org','ipinfo.io','ip-api.com','ipapi.co','checkip.amazonaws.com',

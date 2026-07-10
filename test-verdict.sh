@@ -40,6 +40,8 @@ expect "normal login url"  no  is_unsub_url "https://x.com/login"
 
 echo "== count_red_flags <tld> <age> <final_url> <smells> <susp_js> <deobfus> =="
 check "hidden-field smell not counted"  0 "$(count_red_flags com '' '' '3 hidden form fields' '' '')"
+check "third-party hosts not counted"   0 "$(count_red_flags com '' '' 'Third-party hosts referenced (scripts/iframes/images/JS): a.com b.com' '' '')"
+check "third-party hosts don't mask a real smell" 1 "$(count_red_flags com '' '' 'Urgency language detected, Third-party hosts referenced (scripts/iframes/images/JS): a.com b.com' '' '')"
 check "one real smell counts"           1 "$(count_red_flags com '' '' 'Urgency language detected' '' '')"
 check "two smells count"                2 "$(count_red_flags com '' '' 'Urgency language detected, IP fingerprinting: x' '' '')"
 check "suspicious JS counts"            1 "$(count_red_flags com '' '' '' 'eval(), atob()' '')"

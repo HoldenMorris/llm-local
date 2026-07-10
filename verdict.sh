@@ -30,7 +30,7 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -vi 'hidden form field' | grep -c .) ))
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced' | grep -c .) ))
     # suspicious JS present
     [ -n "$susp_js" ] && n=$(( n + 1 ))
     # deobfuscated JS revealed real malicious intent: off-domain exfil, JS redirect, or

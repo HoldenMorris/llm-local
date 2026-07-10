@@ -186,6 +186,7 @@ Filters by param size from the repo name (MoE `35B-A3B` counts as 35B, not 3B).
 | Excessive subdomains | >4 levels (hiding real domain) |
 | Homograph attack | Non-ASCII characters in domain |
 | Random domain | High-entropy alphanumeric strings |
+| Tunneling service | Host on a free tunnel/port-forwarder (`ngrok`, `trycloudflare`, `portmap.io`, `serveo`, `loca.lt`, …) — operator hidden behind a tunnel. Deterministic red flag, so it reads SUSPICIOUS even when the tunnel is down and the page can't be fetched. |
 
 ### Phase 2: Domain Info Lookup
 
