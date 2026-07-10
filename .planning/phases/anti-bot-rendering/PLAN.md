@@ -7,6 +7,15 @@ analyzes it** or **honestly flags that it could not**, without pretending a reli
 bypass exists. Improves recall on CF-fronted phishing (Azure static -> throwaway -> Turnstile
 -> login.php) while staying defensive-use only.
 
+## STATUS: operator attach mode SHIPPED (2026-07-10)
+`url-analyze.sh -A` / auto-offer: on a `Cloudflare bot challenge` smell the tool opens a visible
+Brave (throwaway profile + `--remote-debugging-port=9222`), the operator clears the gate + presses
+Enter, then `page-fetch.sh` re-scans with `PAGE_ATTACH` (puppeteer.connect over Docker
+`--network host`) and reads the uncloaked DOM. Tool opens AND closes Brave (`pkill -f <profile>`,
+since snap Brave daemonizes out of the launcher's PGID). Uncloaked page.json+screenshot overwrite
+the cache. Verified end-to-end: container→host CDP attach returns the real DOM; cleanup clears the
+port. Patched drivers / xvfb / proxies / solvers remain deferred.
+
 ## DECISION (post-research — see RESEARCH.md)
 Build **operator attach mode** next: CDP-connect to the analyst's already-cleared Brave tab and
 analyse the uncloaked DOM. The research confirms automated Turnstile bypass is unreliable + high-

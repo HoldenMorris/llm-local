@@ -56,6 +56,8 @@ Options:
   -s          skip the page fetch (static + DNS only)
   -V          no vision (skip the login-form screenshot brand-check)
   -D          skip JS deobfuscation
+  -t          third-party reputation (VirusTotal + urlscan.io); off by default, needs .env
+  -A          auto-accept operator attach on a bot gate (else you're prompted); opens/closes Brave
   -r          ignore cache, re-fetch
   -c mono     disable color output
   -h, --help  show this help
@@ -75,12 +77,14 @@ NO_VISION=""
 HEURISTIC=""
 REFRESH=""
 NO_DEOBFUS=""
+VT=""
+ATTACH=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
 # Help as the first arg (getopts won't catch bare `help` or long `--help`).
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
-while getopts "m:sVHrc:Dh" opt; do
+while getopts "m:sVHrc:DhtA" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
@@ -89,6 +93,8 @@ while getopts "m:sVHrc:Dh" opt; do
         r) REFRESH=1 ;;       # ignore any cached page/screenshot/metadata and re-fetch
         c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
         D) NO_DEOBFUS=1 ;;    # skip JS deobfuscation escalation
+        t) VT=1 ;;            # opt-in third-party reputation (VirusTotal + urlscan.io)
+        A) ATTACH=1 ;;        # auto-accept operator attach when a bot gate is detected
         h) usage; exit 0 ;;
         *) usage >&2; exit 1 ;;
     esac
@@ -322,6 +328,66 @@ else
     echo_grey "- (page fetch skipped)"
 fi
 
+# === Operator attach mode: clear the bot gate in a real browser, analyze the uncloaked DOM ===
+# ponytail: our headless container is the weakest tier vs Cloudflare (see .planning/phases/
+# anti-bot-rendering). When a CF/Turnstile challenge gated the scraper, the reliable path is the
+# operator's OWN Brave on their residential IP: the tool opens a visible Brave, the human clears
+# the gate and lands on the real page, then we re-scan by CDP-attaching to that cleared tab. The
+# tool opens AND closes the browser; the operator just solves + presses Enter.
+if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
+   && printf '%s' "$PAGE_DATA" | jq -e '(.phishingSmells // []) | any(test("Cloudflare bot challenge"))' >/dev/null 2>&1; then
+    _brave=""
+    for _b in /snap/bin/brave brave brave-browser; do
+        command -v "$_b" >/dev/null 2>&1 && { _brave=$(command -v "$_b"); break; }
+    done
+    _target=$(echo "$PAGE_DATA" | jq -r '.finalUrl // empty' 2>/dev/null); _target="${_target:-$URL}"
+    if [ -z "$_brave" ]; then
+        echo_grey "- Cloudflare gate hit; no Brave found for operator attach (install Brave or open it manually)"
+    else
+        _go=""
+        if [ -n "$ATTACH" ]; then _go=1; else
+            read -r -p "${CYAN}Cloudflare gate blocked the scanner. Open it in Brave so YOU can clear it, then analyze the real page? [Y/n] ${RESET}" _a
+            [[ ! "$_a" =~ ^[Nn] ]] && _go=1
+        fi
+        if [ -n "$_go" ]; then
+            _prof=$(mktemp -d "${TMPDIR:-/tmp}/brave-attach.XXXXXX")
+            _port=9222
+            # unique throwaway profile forces a fresh instance that actually exposes the debug port
+            "$_brave" --remote-debugging-port=$_port --user-data-dir="$_prof" \
+                --no-first-run --no-default-browser-check --new-window "$_target" >/dev/null 2>&1 &
+            _bpid=$!
+            # the browser + temp profile die with us no matter how we exit (pkill by the unique
+            # profile path is the reliable way to kill snap-wrapped Brave)
+            _cleanup='kill '"$_bpid"' 2>/dev/null; pkill -f "'"$_prof"'" 2>/dev/null; rm -rf "'"$_prof"'"'
+            trap "$_cleanup" EXIT INT TERM
+            _ready=""
+            for _i in $(seq 1 24); do
+                curl -sf "http://127.0.0.1:$_port/json/version" >/dev/null 2>&1 && { _ready=1; break; }
+                sleep 0.5
+            done
+            if [ -z "$_ready" ]; then
+                echo_grey "- attach: Brave debug port never came up on $_port -- skipping"
+            else
+                echo_yellow "A Brave window opened at $_target."
+                echo_grey "  Solve the challenge, land on the REAL page, then --"
+                read -r -p "${CYAN}press Enter here to analyze the uncloaked page... ${RESET}" _
+                echo_grey "- re-scanning via CDP attach to your cleared tab..."
+                _new=$(PAGE_ATTACH="http://127.0.0.1:$_port" PAGE_SHOT="$CACHE_DIR/page.jpg" \
+                       PAGE_SCRIPTS_DIR="$CACHE_DIR/scripts" "$SCRIPT_DIR/page-fetch.sh" "$_target" 2>&1 | tail -1)
+                if echo "$_new" | jq -e 'has("title") or has("hasLoginForm")' >/dev/null 2>&1; then
+                    PAGE_DATA="$_new"
+                    echo "$PAGE_DATA" > "$CACHE_DIR/page.json"   # cache the uncloaked page for re-scans
+                    add_signal "Operator attach: analyzed the uncloaked page past the Cloudflare gate"
+                else
+                    echo_grey "- attach: re-scan returned no usable page ($(echo "$_new" | jq -r '.error // "unknown"' 2>/dev/null)) -- keeping the gated result"
+                fi
+            fi
+            # close the operator's browser + wipe the throwaway profile, then drop the trap
+            eval "$_cleanup"; trap - EXIT INT TERM
+        fi
+    fi
+fi
+
 # Extract explicit, pre-computed signals so the verdict logic (and the LLM) reason from
 # facts, not raw JSON. Needed by classify_verdict below in BOTH LLM and heuristic modes.
 HAS_LOGIN=$(echo "$PAGE_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)
@@ -422,6 +488,74 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
         while IFS= read -r _sig; do
             [ -n "$_sig" ] && add_signal "deobfuscated JS: $_sig"
         done < <(printf '%s\n' "$DEOBFUS_SIGNALS" | sed 's/; /\n/g; s/, /\n/g')
+    fi
+fi
+
+# === Third-party reputation (opt-in: -t) ===
+# ponytail: OFF by default and absent from benchmarks (they never pass -t). Extra external
+# verification for manual scans. Needs only the URL, so it runs even with -s. Cached per URL
+# (respects -r) like every other network lookup. A confirmed-malicious hit feeds the
+# deterministic floor via SMELLS, exactly like the redirect-to-risky-TLD signal above.
+VT_SUMMARY=""; URLSCAN_SUMMARY=""
+if [ -n "$VT" ]; then
+    echo ""
+    # "cached" when a prior -t run already populated either provider's cache (mirrors Domain Info)
+    _rep_tag="third-party"
+    { [ -s "$CACHE_DIR/virustotal.json" ] || [ -s "$CACHE_DIR/urlscan.json" ]; } && _rep_tag="third-party, cached"
+    echo "${BOLD}Reputation ($_rep_tag)${RESET}"
+    # Load API keys from .env (see .env.sample). set -a so sourced KEY=val lines export.
+    [ -f "$SCRIPT_DIR/.env" ] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }
+
+    # display signal + feed the safety floor. Detail must stay comma-free (count_red_flags
+    # splits SMELLS on commas and counts each non-empty piece as one red flag).
+    rep_redflag() {  # <provider> <detail-no-commas>
+        add_signal "$1 flagged this URL malicious: $2"
+        SMELLS="${SMELLS:+$SMELLS, }$1 flagged malicious ($2)"
+    }
+
+    # --- VirusTotal (needs VT_API_KEY; https://docs.virustotal.com/reference/overview) ---
+    if [ -z "${VT_API_KEY:-}" ]; then
+        echo_grey "- VirusTotal: no VT_API_KEY (add it to $SCRIPT_DIR/.env) -- skipped"
+    else
+        if [ ! -s "$CACHE_DIR/virustotal.json" ]; then
+            # v3 URL id = base64url(url) without '=' padding.
+            _vtid=$(printf '%s' "$URL" | base64 -w0 | tr '+/' '-_' | tr -d '=')
+            curl -s --max-time 20 -H "x-apikey: $VT_API_KEY" \
+                "https://www.virustotal.com/api/v3/urls/$_vtid" > "$CACHE_DIR/virustotal.json" 2>/dev/null
+        fi
+        _vtstats=$(jq -r '.data.attributes.last_analysis_stats // empty' "$CACHE_DIR/virustotal.json" 2>/dev/null)
+        if [ -z "$_vtstats" ]; then
+            echo_grey "- VirusTotal: $(jq -r '.error.message // "URL not in VirusTotal (never submitted)"' "$CACHE_DIR/virustotal.json" 2>/dev/null)"
+            rm -f "$CACHE_DIR/virustotal.json"   # a miss/error is not a result -> don't cache it
+        else
+            _vm=$(jq -r '.data.attributes.last_analysis_stats.malicious // 0' "$CACHE_DIR/virustotal.json")
+            _vs=$(jq -r '.data.attributes.last_analysis_stats.suspicious // 0' "$CACHE_DIR/virustotal.json")
+            _vt=$(jq -r '.data.attributes.last_analysis_stats | add // 0' "$CACHE_DIR/virustotal.json")
+            VT_SUMMARY="$_vm/$_vt engines malicious, $_vs suspicious"
+            echo_grey "- VirusTotal: $VT_SUMMARY  (https://www.virustotal.com/gui/url/$(printf '%s' "$URL" | sha256sum | cut -d' ' -f1))"
+            [ "${_vm:-0}" -gt 0 ] 2>/dev/null && rep_redflag VirusTotal "$_vm vendors"
+        fi
+    fi
+
+    # --- urlscan.io (public search only; URLSCAN_API_KEY optional, raises rate limits) ---
+    _uhdr=(); [ -n "${URLSCAN_API_KEY:-}" ] && _uhdr=(-H "API-Key: ${URLSCAN_API_KEY}")
+    if [ ! -s "$CACHE_DIR/urlscan.json" ]; then
+        # Search existing public scans for this exact URL; take the most recent one's verdict.
+        _uuid=$(curl -s --max-time 15 "${_uhdr[@]}" -G "https://urlscan.io/api/v1/search/" \
+            --data-urlencode "q=page.url:\"$URL\"" 2>/dev/null | jq -r '.results[0]._id // empty' 2>/dev/null)
+        [ -n "$_uuid" ] && curl -s --max-time 15 "${_uhdr[@]}" \
+            "https://urlscan.io/api/v1/result/$_uuid/" > "$CACHE_DIR/urlscan.json" 2>/dev/null
+    fi
+    if [ -z "$(jq -r '.verdicts.overall // empty' "$CACHE_DIR/urlscan.json" 2>/dev/null)" ]; then
+        echo_grey "- urlscan.io: no prior public scan for this URL"
+        rm -f "$CACHE_DIR/urlscan.json"
+    else
+        _um=$(jq -r '.verdicts.overall.malicious // false' "$CACHE_DIR/urlscan.json")
+        _usc=$(jq -r '.verdicts.overall.score // 0' "$CACHE_DIR/urlscan.json")
+        _utime=$(jq -r '.task.time // "?"' "$CACHE_DIR/urlscan.json" | cut -dT -f1)
+        URLSCAN_SUMMARY="malicious=$_um, score $_usc (last scan $_utime)"
+        echo_grey "- urlscan.io: $URLSCAN_SUMMARY  (https://urlscan.io/search/#page.url:%22$URL%22)"
+        [ "$_um" = "true" ] && rep_redflag urlscan.io "score $_usc"
     fi
 fi
 
@@ -554,6 +688,8 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Suspicious JS: ${SUSP_JS:-none}
 - Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
 - Phishing smells flagged by scraper: ${SMELLS:-none}
+- VirusTotal reputation: ${VT_SUMMARY:-not checked}
+- urlscan.io reputation: ${URLSCAN_SUMMARY:-not checked}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
 - Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
 - Page title: \"$TITLE\""

@@ -37,48 +37,65 @@ const { URL } = require('url');
   let domain = parsed.hostname;
   let apexDomain = domain.split('.').slice(-2).join('.');
 
-  const browser = await puppeteer.launch({
-    headless: 'new',
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-first-run',
-      '--disable-blink-features=AutomationControlled'   // one more automation tell CF checks
-    ]
-  });
-
-  const page = await browser.newPage();
-
-  // Stealth: some SPAs (and anti-bot layers) refuse to render for headless Chrome, checking
-  // navigator.webdriver / missing chrome object / empty plugins. Mask those before any
-  // navigation so client-rendered login pages (e.g. Securemail) actually mount.
-  await page.evaluateOnNewDocument(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    window.chrome = window.chrome || { runtime: {} };
-    const origQuery = window.navigator.permissions && window.navigator.permissions.query;
-    if (origQuery) window.navigator.permissions.query = (p) =>
-      p && p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : origQuery(p);
-  });
-
-  // ponytail: mobile UA when requested  many phishing cloakers only forward mobile victims
+  // Operator attach mode (PAGE_ATTACH=<CDP browserURL>): connect to the analyst's OWN browser,
+  // which already walked past the bot gate on a residential IP. No launch, no navigation, no
+  // stealth -- we just read the live, uncloaked DOM the human is looking at. See url-analyze.sh
+  // and .planning/phases/anti-bot-rendering.
+  const attach = process.env.PAGE_ATTACH || '';
   const uaMode = process.argv[3] || 'desktop';
-  const UAS = {
-    desktop: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    mobile: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-  };
-  await page.setUserAgent(UAS[uaMode] || UAS.desktop);
-  if (uaMode === 'mobile') await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
-  else await page.setViewport({ width: 1920, height: 1080 });
+  let browser, page;
+  if (attach) {
+    browser = await puppeteer.connect({ browserURL: attach, defaultViewport: null });
+    const tabs = await browser.pages();
+    // The tab the operator left on the real page: last non-blank, non-devtools tab.
+    page = tabs.filter(p => { const u = p.url(); return u && u !== 'about:blank' && !u.startsWith('devtools://'); }).at(-1) || tabs.at(-1);
+    if (!page) { console.log(JSON.stringify({ error: 'attach: no open tab found' })); await browser.disconnect(); process.exit(0); }
+  } else {
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-first-run',
+        '--disable-blink-features=AutomationControlled'   // one more automation tell CF checks
+      ]
+    });
 
-  // ponytail: realistic headers  cloakers 403 bare (curl-style) requests missing these
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  });
+    page = await browser.newPage();
+
+    // Stealth: some SPAs (and anti-bot layers) refuse to render for headless Chrome, checking
+    // navigator.webdriver / missing chrome object / empty plugins. Mask those before any
+    // navigation so client-rendered login pages (e.g. Securemail) actually mount.
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+      window.chrome = window.chrome || { runtime: {} };
+      const origQuery = window.navigator.permissions && window.navigator.permissions.query;
+      if (origQuery) window.navigator.permissions.query = (p) =>
+        p && p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : origQuery(p);
+    });
+
+    // ponytail: mobile UA when requested  many phishing cloakers only forward mobile victims
+    const UAS = {
+      desktop: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      mobile: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    };
+    await page.setUserAgent(UAS[uaMode] || UAS.desktop);
+    if (uaMode === 'mobile') await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+    else await page.setViewport({ width: 1920, height: 1080 });
+
+    // ponytail: realistic headers  cloakers 403 bare (curl-style) requests missing these
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    });
+  }
+  // Attach: don't tear down the operator's browser at the end (the shell owns its PID); headless:
+  // close the disposable one.
+  const shutdown = () => attach ? browser.disconnect() : browser.close();
 
   // Track every main-frame navigation (captures JS/meta/cookie redirects, not just HTTP 3xx)
   const hops = [];
@@ -130,49 +147,58 @@ const { URL } = require('url');
     } catch {}
   });
 
-  // Initial navigation  tolerate mid-flight JS redirects that destroy the JS context
-  let resp = await page.goto(targetUrl, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30000
-  }).catch(() => null);
-
-  // Grab any <meta refresh> on the FIRST document before we follow it away -- an auto-
-  // refresh navigates and the tag is gone from the landed DOM. Best-effort (racy for 0-sec).
-  let metaRefreshSeen = await page.evaluate(() => {
-    const m = Array.from(document.querySelectorAll('meta'))
-      .find(x => (x.getAttribute('http-equiv') || '').toLowerCase() === 'refresh');
-    return m ? (m.getAttribute('content') || '') : '';
-  }).catch(() => '');
-
-  // Follow JS/meta/cookie redirects (cloaker gates) until the URL stops changing
-  let prevUrl = null;
-  for (let i = 0; i < 6 && page.url() !== prevUrl; i++) {
-    prevUrl = page.url();
-    const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 8000 }).catch(() => null);
-    if (nav) resp = nav;
-  }
-
-  // Let the landing page settle so dynamically-injected forms/scripts are captured
-  await page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {});
-
-  // Cloudflare Turnstile / interstitial: managed challenges often auto-pass in a few seconds
-  // for a clean-looking browser. If one is present, wait it out and re-settle, then keep
-  // following any redirect it releases us to. Best-effort -- hard challenges won't pass.
+  let resp = null;
+  let metaRefreshSeen = '';
   const cfChallenge = () => requests.some(r => /challenges\.cloudflare\.com|__cf_chl|cdn-cgi\/challenge/i.test(r.url));
-  if (cfChallenge()) {
-    for (let i = 0; i < 3; i++) {
-      await new Promise(r => setTimeout(r, 5000));
-      const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => null);
+
+  if (attach) {
+    // The operator already cleared the gate and landed on the real page. Don't navigate --
+    // just let any late-mounted forms/scripts settle before we read the uncloaked DOM.
+    await page.waitForNetworkIdle({ idleTime: 1000, timeout: 8000 }).catch(() => {});
+  } else {
+    // Initial navigation  tolerate mid-flight JS redirects that destroy the JS context
+    resp = await page.goto(targetUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    }).catch(() => null);
+
+    // Grab any <meta refresh> on the FIRST document before we follow it away -- an auto-
+    // refresh navigates and the tag is gone from the landed DOM. Best-effort (racy for 0-sec).
+    metaRefreshSeen = await page.evaluate(() => {
+      const m = Array.from(document.querySelectorAll('meta'))
+        .find(x => (x.getAttribute('http-equiv') || '').toLowerCase() === 'refresh');
+      return m ? (m.getAttribute('content') || '') : '';
+    }).catch(() => '');
+
+    // Follow JS/meta/cookie redirects (cloaker gates) until the URL stops changing
+    let prevUrl = null;
+    for (let i = 0; i < 6 && page.url() !== prevUrl; i++) {
+      prevUrl = page.url();
+      const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 8000 }).catch(() => null);
       if (nav) resp = nav;
-      if (!/challenge|just a moment|checking your browser/i.test((await page.title().catch(() => '')))) break;
     }
-    await page.waitForNetworkIdle({ idleTime: 1500, timeout: 10000 }).catch(() => {});
+
+    // Let the landing page settle so dynamically-injected forms/scripts are captured
+    await page.waitForNetworkIdle({ idleTime: 1500, timeout: 15000 }).catch(() => {});
+
+    // Cloudflare Turnstile / interstitial: managed challenges often auto-pass in a few seconds
+    // for a clean-looking browser. If one is present, wait it out and re-settle, then keep
+    // following any redirect it releases us to. Best-effort -- hard challenges won't pass.
+    if (cfChallenge()) {
+      for (let i = 0; i < 3; i++) {
+        await new Promise(r => setTimeout(r, 5000));
+        const nav = await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 6000 }).catch(() => null);
+        if (nav) resp = nav;
+        if (!/challenge|just a moment|checking your browser/i.test((await page.title().catch(() => '')))) break;
+      }
+      await page.waitForNetworkIdle({ idleTime: 1500, timeout: 10000 }).catch(() => {});
+    }
   }
 
   const landedUrl = page.url();
   if (!landedUrl || landedUrl === 'about:blank') {
     console.log(JSON.stringify({ error: 'timeout or unreachable' }));
-    await browser.close();
+    await shutdown();
     process.exit(0);
   }
 
@@ -543,7 +569,7 @@ const { URL } = require('url');
   }
 
   console.log(JSON.stringify(result));
-  await browser.close();
+  await shutdown();
 })();
 SCRIPT
 
@@ -570,6 +596,11 @@ if [ -n "$SCRIPTS_DIR" ]; then
   SCRIPTS_ARG="/scripts"
 fi
 
+# Operator attach mode: reach the analyst's real browser (CDP on the host's 127.0.0.1) from
+# inside the container -- Linux host networking shares the host loopback. Off unless PAGE_ATTACH set.
+ATTACH_ARGS=()
+[ -n "${PAGE_ATTACH:-}" ] && ATTACH_ARGS=(--network host -e PAGE_ATTACH="$PAGE_ATTACH")
+
 docker run --rm --name "$CONTAINER_NAME" \
   --cap-drop ALL \
   --cap-add SYS_ADMIN \
@@ -579,6 +610,7 @@ docker run --rm --name "$CONTAINER_NAME" \
   --memory 1g \
   --cpus 1 \
   -e BRAND_MATCH="$BRAND_MATCH" \
+  "${ATTACH_ARGS[@]}" \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
   "${SHOT_MOUNT[@]}" \
   "${SCRIPTS_MOUNT[@]}" \

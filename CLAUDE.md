@@ -77,10 +77,44 @@ re-computing. `-r` forces a full refresh.
 Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
 back to qwen2.5:1.5b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
 `-H` heuristic-only (no LLM — verdict straight from `verdict.sh`'s decision table), `-r`
-ignore cache, `-c mono` no color, `-D` skip JS deobfuscation. With no URL arg it prompts
+ignore cache, `-c mono` no color, `-D` skip JS deobfuscation, `-t` third-party reputation
+(VirusTotal + urlscan.io — off by default, opt-in, not in benchmarks; see below), `-A` auto-accept
+operator attach on a Cloudflare gate (see below). With no URL arg it prompts
 for one; the interactive model menu lists `0: none (pure heuristic)` plus the installed models
 and defaults to the best (press Enter). The LLM analysis line prints which model ran and
 how long it took.
+
+### Third-party reputation (`-t`, opt-in)
+
+`-t` adds external verification from **VirusTotal** and **urlscan.io**. Off by default and
+never triggered by the benchmarks (they don't pass `-t`). Results cache per URL in
+`.cache/<hash>/{virustotal,urlscan}.json` (respect `-r`); a miss/error is not cached.
+Keys live in a gitignored `.env` (copy `.env.sample`): `VT_API_KEY` (required — free key,
+[docs](https://docs.virustotal.com/reference/overview)) and `URLSCAN_API_KEY` (optional;
+urlscan search is a public API, the key only raises rate limits). VT = `last_analysis_stats`
+lookup by base64url URL id; urlscan = **search existing public scans only** (no submission),
+reading the latest scan's `verdicts.overall`. A confirmed-malicious hit from either feeds the
+deterministic safety floor as a red flag (appended to `SMELLS`), and both summaries go into the
+LLM context. **Rate limits:** VT free tier is 4 req/min · 500/day; the per-URL cache means a
+re-scan costs zero API calls.
+
+### Operator attach mode (Cloudflare/Turnstile gates)
+
+Our headless container is the weakest tier against Cloudflare (see
+`.planning/phases/anti-bot-rendering`). When `page-fetch.sh` flags `Cloudflare bot challenge`,
+`url-analyze.sh` offers **operator attach**: it opens a visible **Brave** (`/snap/bin/brave`) with
+a throwaway profile + `--remote-debugging-port=9222` pointed at the gated URL. You (residential
+IP, real browser) clear the challenge and land on the real page, then press Enter; the tool
+re-scans by CDP-**attaching** to your cleared tab — `page-fetch.sh` runs with `PAGE_ATTACH=<url>`,
+which `puppeteer.connect`s over Docker `--network host` and reads the live uncloaked DOM (no
+launch/navigation/stealth). The uncloaked `page.json` + screenshot overwrite the cache, so a
+re-scan reuses them and the verdict/vision run on the real page. The tool **opens and closes**
+Brave (kills it via `pkill -f <profile>` on exit — snap Brave daemonizes out of the launcher's
+process group). Interactive-only (`[ -t 0 ]`) so it never fires in benchmarks; `-A` auto-accepts
+the prompt. Falls back to the plain "open in your browser" offer if Brave isn't found or the
+scan is declined. Signal: `Operator attach: analyzed the uncloaked page past the Cloudflare gate`.
+Automated bypass (patched drivers / xvfb / proxies / solvers) is deferred — research showed it
+unreliable + high-maintenance.
 
 ### url-benchmark.sh
 
@@ -210,6 +244,8 @@ Gated (only runs on obfuscation markers), cached per URL, `-D` to skip. Scripts:
 | `BRAND_MATCH` | `strict` | Brand impersonation match scope: `strict` = title/form-action; `body` = also body text |
 | `VISION_MODEL` | `openbmb/minicpm-v4.6:q4_K_M` | VLM for the login-form visual brand check |
 | `NO_COLOR` | (unset) | Disable ANSI color (also `-c mono`) |
+| `VT_API_KEY` | (unset) | VirusTotal key for `-t` (in `.env`; required for the VT lookup) |
+| `URLSCAN_API_KEY` | (unset) | urlscan.io key for `-t` (in `.env`; optional — raises rate limits) |
 
 ## Dependencies
 

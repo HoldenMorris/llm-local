@@ -4,6 +4,9 @@ ollama_storage/
 # Hashed URL scan cache (page content, screenshots, domain metadata)
 .cache/
 
+# Third-party reputation API keys (VirusTotal, urlscan.io) -- .env.sample is committed
+.env
+
 # Results (optional - commit if you want history)
 results/*.csv
 
