@@ -747,6 +747,14 @@ else
     URL_KIND="general web page"
 fi
 
+# The weak 1.5b LLM counts every item under "Phishing smells" as a red flag even when the prompt
+# says not to, so hand it a filtered list that drops the two smells verdict.sh:33 excludes --
+# hidden-field COUNT and the third-party-hosts note (both normal on legit sites). The deterministic
+# core and the display signals still get the full SMELLS; this only removes the LLM's miscount fuel.
+SMELLS_LLM=$(printf '%s' "$SMELLS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
+    | grep -viE 'hidden form field|third-party hosts referenced' \
+    | awk 'NF{a[n++]=$0} END{for(i=0;i<n;i++)printf "%s%s",(i?", ":""),a[i]}')
+
 CONTEXT="URL: $URL
 Domain: $DOMAIN
 TLD: $TLD
@@ -761,7 +769,7 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Redirected to a different URL: $IS_REDIRECT
 - Suspicious JS: ${SUSP_JS:-none}${JS_CLEARED:+ (deobfuscated to same-domain assets only - NOT a red flag)}
 - Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
-- Phishing smells flagged by scraper: ${SMELLS:-none}
+- Phishing smells flagged by scraper: ${SMELLS_LLM:-none}
 - VirusTotal reputation: ${VT_SUMMARY:-not checked}
 - urlscan.io reputation: ${URLSCAN_SUMMARY:-not checked}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
@@ -783,7 +791,11 @@ RED FLAGS (count how many are present in the signals):
 - suspicious JS (eval, atob, hex-encoded, document.write) -- but do NOT count it if the Suspicious JS line says it was deobfuscated to same-domain assets
 - deobfuscated JS that reveals an off-domain exfil URL, a JS redirect, or cookie/credential theft
 - redirect to wp-content / wp-include / random path
-- any phishing smell flagged by the scraper
+- any phishing smell flagged by the scraper, EXCEPT the two below
+
+NOT red flags (do NOT count these, no matter how many -- legitimate sites routinely have them):
+- hidden form fields / 'N hidden form fields' (CSRF and tracking tokens; GitHub has 40+). The COUNT is never a red flag; only 'sensitive field names' above counts.
+- third-party hosts / domains loaded (analytics, ads, CDNs -- e.g. Google Tag Manager, DoubleClick, Microsoft Clarity). A high count is normal instrumentation, not exfil.
 
 Follow this decision procedure EXACTLY, in order. Count the RED FLAGS first, then apply the FIRST rule that matches:
 
