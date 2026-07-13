@@ -144,6 +144,10 @@ mkdir -p "$CACHE_DIR"
 # Split host from an explicit :port -- a port glued to DOMAIN breaks dig/openssl (the non-standard
 # high port is itself a tunneling/phishing signal, e.g. portmap.io:46801). PORT feeds the cert check.
 AUTHORITY=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
+# Strip any userinfo (user[:pass]@) -- the host is what follows the LAST '@'. A userinfo is also
+# the classic 'http://paypal.com@evil.com' obfuscation, so note it (non-flooring; benign email pastes).
+USERINFO=""
+if [[ "$AUTHORITY" == *@* ]]; then USERINFO=${AUTHORITY%@*}; AUTHORITY=${AUTHORITY##*@}; fi
 DOMAIN=${AUTHORITY%%:*}
 PORT=${AUTHORITY##*:}; [ "$PORT" = "$AUTHORITY" ] && PORT=443
 TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
@@ -152,6 +156,9 @@ TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
 # being sprinkled through the phases. add_signal appends.
 SIGNALS=()
 add_signal() { SIGNALS+=("$1"); }
+
+# Userinfo in the URL: the '@' hides the real host (host = what follows it). Note it for triage.
+[ -n "$USERINFO" ] && add_signal "URL contains userinfo before '@' ('$USERINFO@') -- real host is $DOMAIN"
 
 # ponytail: High-risk TLDs (list lives in verdict.sh, single source of truth)
 if is_risky_tld "$TLD"; then

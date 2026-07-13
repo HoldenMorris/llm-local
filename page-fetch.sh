@@ -39,6 +39,16 @@ IMAGE="ghcr.io/puppeteer/puppeteer:latest"
 cat << 'SCRIPT' > /tmp/page-fetch.js
 const puppeteer = require('puppeteer');
 const { URL } = require('url');
+const tls = require('tls');
+
+// Does the host answer a TLS handshake on :443? Distinguishes an http-only kit (no HTTPS at all)
+// from a real site that serves https but doesn't force-redirect http->https. Cert validity is
+// irrelevant here -- we only ask "is TLS offered", so rejectUnauthorized:false.
+const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
+  const s = tls.connect({ host, port: 443, servername: host, rejectUnauthorized: false, timeout }, () => { s.destroy(); res(true); });
+  s.on('error', () => res(false));
+  s.on('timeout', () => { s.destroy(); res(false); });
+});
 
 (async () => {
   const targetUrl = process.argv[2];
@@ -71,6 +81,8 @@ const { URL } = require('url');
         '--disable-gpu',
         '--no-first-run',
         '--disable-blink-features=AutomationControlled',  // one more automation tell CF checks
+        // keep an http:// URL on http; else http-only kits die on Chrome's silent https upgrade
+        '--disable-features=HttpsUpgrades,HttpsFirstBalancedMode,HttpsFirstModeV2',
         // Egress proxy (Tor). Chrome SOCKS5 resolves target DNS remotely -> no DNS leak.
         ...(proxy ? [`--proxy-server=${proxy}`] : []),
       ]
@@ -209,7 +221,10 @@ const { URL } = require('url');
   }
 
   const landedUrl = page.url();
-  if (!landedUrl || landedUrl === 'about:blank') {
+  // A failed navigation lands on about:blank or a chrome-error:// interstitial (blocked,
+  // timeout, cert/upgrade failure). Both are empty non-pages: scoring them yields a phantom
+  // "clean" verdict, so treat any non-http(s) landed scheme as an unreachable fetch.
+  if (!landedUrl || !/^https?:/i.test(landedUrl)) {
     console.log(JSON.stringify({ error: 'timeout or unreachable' }));
     await shutdown();
     process.exit(0);
@@ -443,9 +458,14 @@ const { URL } = require('url');
   if (metaRefreshFound && /url=/i.test(metaRefreshFound))
     smells.push(`Meta-refresh redirect: ${metaRefreshFound.slice(0,120)}`);
 
-  // HTTPS -- judge the landed URL, not the typed one (HTTP->HTTPS redirect is secure)
-  if ((redirects.at(-1)?.url || targetUrl).startsWith('http:'))
-    smells.push('Served over HTTP (no TLS)');
+  // HTTPS -- judge the landed URL, not the typed one (HTTP->HTTPS redirect is secure). Flag "no TLS"
+  // only when the host offers no HTTPS at all: Chrome's https auto-upgrade is disabled (so http-only
+  // kits load), which would otherwise false-flag every real site that serves https but doesn't force
+  // a redirect. Under a proxy, skip the probe (a direct connect would bypass Tor/leak) and flag as before.
+  if ((redirects.at(-1)?.url || targetUrl).startsWith('http:')) {
+    const noTls = proxy ? true : !(await httpsAvailable(new URL(landedUrl).hostname));
+    if (noTls) smells.push('Served over HTTP (no TLS)');
+  }
 
   // Suspicious JS -- scan FULL inline bodies, not the 1000-char preview
   const allJs = features.inlineScripts.join('\n');
