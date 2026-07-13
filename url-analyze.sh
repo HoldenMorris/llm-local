@@ -182,8 +182,15 @@ AFRICA_BANKS="nedbank|standardbank|fnb|absa|capitec|investec|firstrand|oldmutual
 APAC_BANKS="dbs|ocbc|uob|maybank|cimb|icici|hdfc|sbi|kotak|axis|commonwealth|anz|westpac|nab"
 
 BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|$APAC_BANKS"
-if echo "$DOMAIN" | grep -qiE "($BRANDS)" && ! echo "$DOMAIN" | grep -qiE "^(www\.)?($BRANDS)\.(com|org|net|io)$"; then
-    MATCHED=$(echo "$DOMAIN" | grep -oiE "($BRANDS)" | head -1)
+# Long brand names (>=5 chars) are unambiguous as substrings (paypalsecure, microsoftlogin).
+# Short ones (ing, dbs, ubs, anz, amex, citi, ally...) false-match inside ordinary words
+# (stag'ing', bear'ings', 'ally'ourbase, 'dbs'chenker), so require them to be a whole dot/dash-
+# delimited label. TSQ is the combined pattern; the apex-exclusion still uses the raw brand list.
+SHORT_B=$(printf '%s' "$BRANDS" | tr '|' '\n' | awk 'length<5'  | paste -sd'|')
+LONG_B=$(printf '%s'  "$BRANDS" | tr '|' '\n' | awk 'length>=5' | paste -sd'|')
+TSQ="(^|[.-])(${SHORT_B})([.-]|\$)|(${LONG_B})"
+if echo "$DOMAIN" | grep -qiE "$TSQ" && ! echo "$DOMAIN" | grep -qiE "^(www\.)?($BRANDS)\.(com|org|net|io)$"; then
+    MATCHED=$(echo "$DOMAIN" | grep -oiE "$TSQ" | grep -oiE "($BRANDS)" | head -1)
     add_signal "Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
 fi
 
@@ -537,6 +544,15 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
     fi
 fi
 
+# Suspicious-JS markers are only a TRIGGER for deobfuscation. If that ran and revealed nothing
+# malicious (same-domain assets only), the marker is cleared -- mirror verdict.sh so the LLM prompt
+# below doesn't re-count it as a red flag (minified Vite/webpack bundles use String.fromCharCode).
+JS_CLEARED=""
+if [ -n "$SUSP_JS" ] && [ -n "$DEOBFUS_SIGNALS" ] \
+   && ! printf '%s' "$DEOBFUS_SIGNALS" | grep -qiE 'off-domain URL|JS redirect|crypto wallet'; then
+    JS_CLEARED=1
+fi
+
 # === Third-party reputation (opt-in: -t) ===
 # ponytail: OFF by default and absent from benchmarks (they never pass -t). Extra external
 # verification for manual scans. Needs only the URL, so it runs even with -s. Cached per URL
@@ -702,6 +718,18 @@ PASSWORD: is a password or login/credential input field visible on the page? Rep
             add_signal "Vision: credential input visible (DOM detection missed it)"
             HAS_LOGIN=true
         fi
+        # Visual brand impersonation: the VLM says the page imitates a known brand that does NOT
+        # own the landed domain -- credential phishing's core tell, and the text-based brand smell
+        # misses it when the brand appears only as a logo/image (not in title/form-action). Feed it
+        # to the deterministic floor via SMELLS (comma-free), exactly like the redirect-to-risky-TLD
+        # signal -- so with a login form it floors to DANGEROUS instead of relying on the LLM.
+        # Primary: the structured 'BRAND_MATCH: no' token. Fallback: the VLM's free text (it doesn't
+        # always emit the token) saying the design belongs to a brand unrelated to the landed domain.
+        if echo "$VISION_NOTE" | grep -qiE 'BRAND_MATCH:?[[:space:]]*no\b' \
+           || echo "$VISION_NOTE" | grep -qiE '(does not|doesn.?t|not) match|unrelated (to the )?domain|different (brand|company) (than|from) the domain'; then
+            add_signal "Visual brand impersonation: page imitates a brand not owned by $LANDED_DOMAIN"
+            SMELLS="${SMELLS:+$SMELLS, }visual brand impersonation - imitates a brand not owned by $LANDED_DOMAIN"
+        fi
     fi
 fi
 
@@ -731,7 +759,7 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Login or password form present: $HAS_LOGIN
 - Total forms on page: $FORMS  (login forms: $LOGIN_FORMS)
 - Redirected to a different URL: $IS_REDIRECT
-- Suspicious JS: ${SUSP_JS:-none}
+- Suspicious JS: ${SUSP_JS:-none}${JS_CLEARED:+ (deobfuscated to same-domain assets only - NOT a red flag)}
 - Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
 - Phishing smells flagged by scraper: ${SMELLS:-none}
 - VirusTotal reputation: ${VT_SUMMARY:-not checked}
@@ -752,7 +780,7 @@ RED FLAGS (count how many are present in the signals):
 - IP fingerprinting
 - sensitive field names (ssn, cvv, routing, etc.)
 - domain age under 90 days
-- suspicious JS (eval, atob, hex-encoded, document.write)
+- suspicious JS (eval, atob, hex-encoded, document.write) -- but do NOT count it if the Suspicious JS line says it was deobfuscated to same-domain assets
 - deobfuscated JS that reveals an off-domain exfil URL, a JS redirect, or cookie/credential theft
 - redirect to wp-content / wp-include / random path
 - any phishing smell flagged by the scraper

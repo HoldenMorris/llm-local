@@ -31,8 +31,12 @@ count_red_flags() {
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
     [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced' | grep -c .) ))
-    # suspicious JS present
-    [ -n "$susp_js" ] && n=$(( n + 1 ))
+    # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
+    # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
+    # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it
+    # (skipped via -D, no inline scripts, or empty). Else minified bundles (Vite/webpack
+    # String.fromCharCode) false-flag every login page to DANGEROUS.
+    [ -n "$susp_js" ] && [ -z "$deobfus" ] && n=$(( n + 1 ))
     # deobfuscated JS revealed real malicious intent: off-domain exfil, JS redirect, or
     # crypto address. Same-domain URLs / storage access alone do NOT count (false-positive guard).
     printf '%s' "$deobfus" | grep -qiE 'off-domain URL|JS redirect|crypto wallet' && n=$(( n + 1 ))
