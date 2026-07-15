@@ -431,9 +431,12 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   if (features.iframes.length > 2)
     smells.push(`${features.iframes.length} iframes - possible clickjacking`);
 
-  // Redirects
-  if (redirects.length > 2)
-    smells.push(`${redirects.length}-hop redirect chain`);
+  // Redirects -- count only real cross-URL hops, not SPA hash-route changes within one
+  // page load (viewer/ -> viewer/#/ -> viewer/#/auth/login is Angular/Vue routing, not a
+  // redirect chain). Two URLs identical except for the #fragment are the same hop.
+  const realHops = [...new Set(redirects.map(r => r.url.split('#')[0]))];
+  if (realHops.length > 2)
+    smells.push(`${realHops.length}-hop redirect chain`);
 
   // Bot / human-verification gates cloaking the real page from the scraper. Detect the major
   // providers by the scripts they load -- fires whether the challenge is invisible or an
