@@ -755,6 +755,12 @@ SMELLS_LLM=$(printf '%s' "$SMELLS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
     | grep -viE 'hidden form field|third-party hosts referenced' \
     | awk 'NF{a[n++]=$0} END{for(i=0;i<n;i++)printf "%s%s",(i?", ":""),a[i]}')
 
+# The weak 1.5b LLM miscounts a CLEAN reputation line ("0/95 engines malicious") as a red flag,
+# so only feed reputation to the LLM when it is actually adverse. An adverse hit already forces
+# the floor via SMELLS/rep_redflag, so the LLM never needs the clean case (see llm-recounts note).
+VT_LLM=""; { [ "${_vm:-0}" -gt 0 ] || [ "${_vs:-0}" -gt 0 ]; } 2>/dev/null && VT_LLM="$VT_SUMMARY"
+URLSCAN_LLM=""; [ "${_um:-false}" = "true" ] && URLSCAN_LLM="$URLSCAN_SUMMARY"
+
 CONTEXT="URL: $URL
 Domain: $DOMAIN
 TLD: $TLD
@@ -770,8 +776,8 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Suspicious JS: ${SUSP_JS:-none}${JS_CLEARED:+ (deobfuscated to same-domain assets only - NOT a red flag)}
 - Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
 - Phishing smells flagged by scraper: ${SMELLS_LLM:-none}
-- VirusTotal reputation: ${VT_SUMMARY:-not checked}
-- urlscan.io reputation: ${URLSCAN_SUMMARY:-not checked}
+- VirusTotal reputation: ${VT_LLM:-not checked}
+- urlscan.io reputation: ${URLSCAN_LLM:-not checked}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
 - Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
 - Page title: \"$TITLE\""
