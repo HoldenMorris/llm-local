@@ -45,6 +45,14 @@ check "third-party hosts don't mask a real smell" 1 "$(count_red_flags com '' ''
 check "one real smell counts"           1 "$(count_red_flags com '' '' 'Urgency language detected' '' '')"
 check "two smells count"                2 "$(count_red_flags com '' '' 'Urgency language detected, IP fingerprinting: x' '' '')"
 check "suspicious JS counts"            1 "$(count_red_flags com '' '' '' 'eval(), atob()' '')"
+# Minifier-emitted markers alone are not evidence: Closure/Vite bundles trip all three, and they
+# no longer trigger deob, so counting them here would just relocate the youtube.com false positive.
+check "minifier-only JS marker not counted" 0 "$(count_red_flags com '' '' '' 'hex-encoded strings' '')"
+check "fromCharCode alone not counted"  0 "$(count_red_flags com '' '' '' 'String.fromCharCode' '')"
+check "weak markers together not counted" 0 "$(count_red_flags com '' '' '' 'hex-encoded strings, String.fromCharCode, location redirect' '')"
+check "strong marker among weak counts" 1 "$(count_red_flags com '' '' '' 'hex-encoded strings, atob()' '')"
+check "_0x obfuscation counts"          1 "$(count_red_flags com '' '' '' 'obfuscated identifiers (_0x)' '')"
+check "_0x adjudicated by deob not double-counted" 1 "$(count_red_flags com '' '' '' 'obfuscated identifiers (_0x)' 'off-domain URL: evil.com')"
 check "same-domain deobfus not counted" 0 "$(count_red_flags com '' '' '' '' 'localStorage read fed nothing')"
 check "off-domain deobfus counts"       1 "$(count_red_flags com '' '' '' '' 'off-domain URL: evil.com')"
 check "risky TLD + young age = 2"       2 "$(count_red_flags xyz 10 '' '' '' '')"

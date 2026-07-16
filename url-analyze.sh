@@ -167,7 +167,7 @@ fi
 
 # ponytail: Typosquatting detection (brand in subdomain but not apex)
 # Tech brands
-TECH_BRANDS="google|facebook|microsoft|apple|amazon|paypal|netflix|instagram|linkedin|twitter|github|dropbox|adobe|zoom|slack|salesforce|oracle|ibm|cisco|vmware"
+TECH_BRANDS="google|facebook|microsoft|apple|amazon|paypal|netflix|instagram|linkedin|twitter|github|dropbox|adobe|zoom|slack|wix|salesforce|oracle|ibm|cisco|vmware"
 # Crypto
 CRYPTO_BRANDS="coinbase|binance|metamask|tronlink|trustwallet|kraken|gemini|blockchain|ledger|exodus|phantom|uniswap|opensea"
 # US Banks
@@ -519,7 +519,11 @@ fi
 # (exfil URLs, redirects, cookie theft, crypto). Deterministic, so it runs in both LLM
 # and heuristic mode; cached per URL. Gated on -D and on scripts actually being present.
 DEOBFUS_SIGNALS=""
-if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/dev/null 2>&1; then
+# Gate on the _0x marker specifically: obfuscator.io hex-named identifiers are what webcrack
+# actually cracks. The weak markers (hex escapes, String.fromCharCode) are emitted by ordinary
+# MINIFIERS -- gating on those ran malware heuristics over Closure/Vite bundles and scored a legit
+# site's own JS as exfil (youtube.com floored to DANGEROUS on its own accounts.google.com refs).
+if [ -z "$NO_DEOBFUS" ] && printf '%s' "$SUSP_JS" | grep -q '_0x' && ls "$CACHE_DIR/scripts"/*.js >/dev/null 2>&1; then
     if [ -f "$CACHE_DIR/deob-signals.txt" ]; then
         DEOBFUS_SIGNALS=$(cat "$CACHE_DIR/deob-signals.txt")
     else
@@ -530,7 +534,9 @@ if [ -z "$NO_DEOBFUS" ] && [ -n "$SUSP_JS" ] && ls "$CACHE_DIR/scripts"/*.js >/d
         LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
         for f in "$CACHE_DIR/scripts"/*.js; do
             _clean=$("$SCRIPT_DIR/js-deobfuscate.sh" "$f" 2>/dev/null)
-            _s=$(LANDED_DOMAIN="$LANDED_DOMAIN" js_signals <<< "$_clean")
+            # ORIG_JS: the source webcrack was handed, so js_signals can tell a REVEALED exfil URL
+            # from one that was in plain sight all along (legit minified bundle).
+            _s=$(LANDED_DOMAIN="$LANDED_DOMAIN" ORIG_JS="$f" js_signals <<< "$_clean")
             [ -n "$_s" ] && DEOBFUS_SIGNALS+="${DEOBFUS_SIGNALS:+; }$_s"
         done
         printf '%s' "$DEOBFUS_SIGNALS" > "$CACHE_DIR/deob-signals.txt"

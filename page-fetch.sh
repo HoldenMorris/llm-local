@@ -53,9 +53,18 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
 (async () => {
   const targetUrl = process.argv[2];
   const parsed = new URL(targetUrl);
+  // Registrable domain. ponytail: no PSL dependency -- just treat a known second-level suffix
+  // ("co" in paypal.co.uk) as part of the TLD, else apexOf('paypal.co.uk') is 'co.uk' and every
+  // legit ccTLD brand site (barclays.co.uk, amazon.co.jp) reads as brand impersonation.
+  // ponytail: covers the ccTLD shapes we see; swap in the real PSL if an edge case bites.
+  const SLD_SUFFIX = /^(co|com|net|org|ac|gov|edu|ne|or|in)$/;
+  const apexOf = h => {
+    const p = (h || '').toLowerCase().split('.');
+    return p.slice(p.length >= 3 && SLD_SUFFIX.test(p[p.length - 2]) ? -3 : -2).join('.');
+  };
   // let: re-anchored to the LANDED host after redirects so analysis isn't judged against the entry shortener
   let domain = parsed.hostname;
-  let apexDomain = domain.split('.').slice(-2).join('.');
+  let apexDomain = apexOf(domain);
 
   // Operator attach mode (PAGE_ATTACH=<CDP browserURL>): connect to the analyst's OWN browser,
   // which already walked past the bot gate on a residential IP. No launch, no navigation, no
@@ -234,7 +243,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
 
   // Re-anchor host to where we actually landed (redirects may cross domains)
   domain = new URL(landedUrl).hostname;
-  apexDomain = domain.split('.').slice(-2).join('.');
+  apexDomain = apexOf(domain);
 
   // Full hop chain (HTTP + JS/meta/cookie redirects), consecutive-deduped
   const redirects = hops.map(u => ({ url: u, status: null }));
@@ -368,7 +377,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // Brand mismatch - but whitelist OAuth/payment integrations
   const brands = [
     // Tech
-    'google','facebook','microsoft','apple','amazon','paypal','netflix','instagram','linkedin','twitter','github','dropbox','adobe','zoom','slack',
+    'google','facebook','microsoft','apple','amazon','paypal','netflix','instagram','linkedin','twitter','github','dropbox','adobe','zoom','slack','wix',
     // Crypto
     'coinbase','binance','metamask','tronlink','trustwallet','kraken','ledger','blockchain',
     // US Banks
@@ -401,11 +410,19 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // Word-boundary match so short brands (e.g. "ing") don't hit inside "tracking"/"information"
   const matched = brands.filter(b => new RegExp(`\\b${b}\\b`, 'i').test(brandHaystack));
   if (matched.length) {
-    const dom = domain.toLowerCase();
-    const brandInDomain = matched.some(b => dom.includes(b.replace(/\s/g,'')));
-    // Check if brand is explained by legitimate OAuth/payment integration
+    // Only the registrable apex proves ownership. A brand in the SUBDOMAIN is attacker-controlled
+    // (userswix-com-signin.pit-phone.com) -- that IS the typosquat, so it must never excuse the
+    // impersonation smell the way testing the full hostname did.
+    const brandInDomain = matched.some(b => apexDomain.includes(b.replace(/\s/g,'')));
+    // Check if brand is explained by legitimate OAuth/payment integration.
+    // Match on dot-delimited labels, never substrings: "m.stripe.com" first-label was "m", and
+    // d.includes("m") is true for every .com domain -- which silently explained away every brand
+    // hit on any page loading a single third-party resource.
+    const onDomain = (d, o) => d === o || d.endsWith(`.${o}`);
     const brandExplainedByOAuth = matched.every(b =>
-      thirdPartyDomains.some(d => d.includes(b.replace(/\s/g,'')) || oauthPaymentDomains.some(o => d.includes(o.split('.')[0])))
+      thirdPartyDomains.some(d =>
+        new RegExp(`(^|\\.)${b.replace(/\s/g,'')}\\.`, 'i').test(d) ||
+        oauthPaymentDomains.some(o => onDomain(d, o)))
     );
     if (!brandInDomain && !brandExplainedByOAuth)
       smells.push(`Brand impersonation: "${matched.slice(0,3).join(', ')}" in title/form but domain is "${domain}"`);
@@ -504,7 +521,6 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
 
   // Off-apex domains the page could send data to: form actions + hosts in plain JS + hosts
   // in base64-decoded JS. Excludes CDNs/analytics. Listed for the verdict and for triage.
-  const apexOf = h => (h || '').toLowerCase().split('.').slice(-2).join('.');
   const hostsIn = (t) => [...String(t).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase());
   const cdnRe = /(googleapis|gstatic|cloudflare|jsdelivr|unpkg|cdnjs|jquery|bootstrapcdn|google-analytics|googletagmanager|fontawesome|recaptcha|hcaptcha|gravatar|w3\.org|schema\.org)/i;
   // Only covert exfil vectors count: an off-domain FORM ACTION (posts data cross-domain) or a
@@ -569,8 +585,10 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   if (/oncopy|oncut|onpaste|clipboard/i.test(allJs))
     smells.push('Clipboard access detected');
 
-  // ponytail: Right-click/context menu disabled
-  if (/oncontextmenu.*return\s*false|preventDefault.*contextmenu/i.test(allJs))
+  // ponytail: Right-click/context menu disabled. Order-independent: the modern idiom is
+  // addEventListener('contextmenu', e => e.preventDefault()), which puts contextmenu FIRST and
+  // slipped past a regex that only matched preventDefault-before-contextmenu.
+  if (/contextmenu/i.test(allJs) && /preventDefault|return\s*false/i.test(allJs))
     smells.push('Right-click disabled');
 
   // ponytail: Crypto wallet addresses

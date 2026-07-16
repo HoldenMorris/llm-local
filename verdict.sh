@@ -36,7 +36,15 @@ count_red_flags() {
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it
     # (skipped via -D, no inline scripts, or empty). Else minified bundles (Vite/webpack
     # String.fromCharCode) false-flag every login page to DANGEROUS.
-    [ -n "$susp_js" ] && [ -z "$deobfus" ] && n=$(( n + 1 ))
+    # Only STRONG markers count. hex escapes / String.fromCharCode / location redirect are ordinary
+    # MINIFIER output (Closure emits all three), so alone they are LLM context, never a red flag --
+    # they also no longer trigger deob, so counting them would just move the same false positive
+    # here. eval/atob/document.write/_0x still count when deob did not adjudicate them.
+    [ -n "$susp_js" ] && [ -z "$deobfus" ] \
+        && [ "$(printf '%s' "$susp_js" | tr ',' '\n' \
+             | grep -viE 'hex-encoded strings|String\.fromCharCode|location redirect' \
+             | grep -c .)" -gt 0 ] \
+        && n=$(( n + 1 ))
     # deobfuscated JS revealed real malicious intent: off-domain exfil, JS redirect, or
     # crypto address. Same-domain URLs / storage access alone do NOT count (false-positive guard).
     printf '%s' "$deobfus" | grep -qiE 'off-domain URL|JS redirect|crypto wallet' && n=$(( n + 1 ))
