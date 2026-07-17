@@ -460,18 +460,32 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     smells.push(`${realHops.length}-hop redirect chain`);
 
   // Bot / human-verification gates cloaking the real page from the scraper. Detect the major
-  // providers by the scripts they load -- fires whether the challenge is invisible or an
-  // interactive click. On a redirect-chain phish this is deliberate cloaking; it also explains a
-  // "dead" (404/empty) land. Each smell ends with "gated from the scraper" so url-analyze's
-  // operator-attach trigger can match any provider with one test.
+  // providers by the scripts they load. On a redirect-chain phish this is deliberate cloaking; it
+  // also explains a "dead" (404/empty) land. Each smell ends with "gated from the scraper" so
+  // url-analyze's operator-attach trigger can match any provider with one test.
+  //
+  // A provider script is NOT a gate. PayPal, Google and much of the legit web load INVISIBLE
+  // reCAPTCHA/Turnstile for fraud scoring while the real page renders fine -- this fired on
+  // paypal.com over a page we fetched perfectly (title "...| PayPal ZA", 200), claiming "real page
+  // gated from the scraper", which scored a red flag AND offered to open Brave for paypal.com.
+  // So only claim a gate when we actually failed to reach the real page: a challenge interstitial
+  // (its title or URL), or a gate script on a page with no content AND no form -- a challenge has
+  // neither, while a bare login page has the form.
+  // ponytail: title/URL markers cover the mainstream gates; add DOM widget detection if a kit
+  // ships a gate with a custom title and real body text.
+  const challengeTitle = /just a moment|checking your browser|attention required|verify you are (a )?human|are you a robot|security check|access denied|enable javascript and cookies/i;
+  const reallyGated = challengeTitle.test(title)
+    || /__cf_chl|cdn-cgi\/challenge/i.test(landedUrl)
+    || (body.trim().length < 200 && !features.hasLoginForm);
   const gateProviders = [
     { re: /challenges\.cloudflare\.com|__cf_chl|cdn-cgi\/challenge/i, name: 'Cloudflare Turnstile' },
     { re: /\bhcaptcha\.com|newassets\.hcaptcha\.com/i, name: 'hCaptcha' },
     { re: /google\.com\/recaptcha|gstatic\.com\/recaptcha|recaptcha\/api\.js/i, name: 'reCAPTCHA' },
   ];
-  for (const g of gateProviders)
-    if (requests.some(r => g.re.test(r.url)))
-      smells.push(`${g.name} challenge - real page gated from the scraper`);
+  if (reallyGated)
+    for (const g of gateProviders)
+      if (requests.some(r => g.re.test(r.url)))
+        smells.push(`${g.name} challenge - real page gated from the scraper`);
 
   // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
   // gates that bounce victims without a visible 3xx Location. Flag when a url= target exists.
