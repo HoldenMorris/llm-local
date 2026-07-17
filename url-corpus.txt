@@ -11,6 +11,14 @@ SAFE https://github.com/login
 SAFE https://www.wikipedia.org
 SAFE https://www.paypal.com
 
+# FP anchor (2b90e9e): a Google share link -> a real gov court-judgment PDF. One URL that
+# trips all 3 fixed false-positive classes at once, so a regression in any of them turns this
+# row red: brand gTLD (share.google -- Google owns .google, once read as typosquatting),
+# /wp-content/uploads/ (legit WordPress media, once a compromised-WP red flag), and the
+# /uploads/ path (once "random"). Depends on a live third-party redirect, so if this row ever
+# fails, curl the URL before touching the detector -- the share link or the PDF may just be gone.
+SAFE https://share.google/lc44smZlLYUsCMAiE
+
 # --- add your threat samples below ---
 # DANGEROUS https://some-fresh-phish.cfd/login
 # SUSPICIOUS https://newsletter.example.top/unsubscribe?e=...
