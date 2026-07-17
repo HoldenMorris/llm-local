@@ -233,7 +233,11 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // A failed navigation lands on about:blank or a chrome-error:// interstitial (blocked,
   // timeout, cert/upgrade failure). Both are empty non-pages: scoring them yields a phantom
   // "clean" verdict, so treat any non-http(s) landed scheme as an unreachable fetch.
-  if (!landedUrl || !/^https?:/i.test(landedUrl)) {
+  // EXCEPT an explicit data: target, which legitimately stays on data: -- rejecting it as
+  // "unreachable" silently zeroed every signal (password field, obfuscated JS, exfil) and
+  // scored the corpus's only DANGEROUS fixture as SAFE.
+  const dataTarget = /^data:/i.test(targetUrl) && /^data:/i.test(landedUrl);
+  if (!landedUrl || (!/^https?:/i.test(landedUrl) && !dataTarget)) {
     console.log(JSON.stringify({ error: 'timeout or unreachable' }));
     await shutdown();
     process.exit(0);
