@@ -52,8 +52,15 @@ count_red_flags() {
     is_risky_tld "$tld" && n=$(( n + 1 ))
     # young domain (<90 days); empty age = unknown -> not counted
     [ -n "$age" ] && [ "$age" -lt 90 ] 2>/dev/null && n=$(( n + 1 ))
-    # redirect into a compromised WordPress tree
-    printf '%s' "$final_url" | grep -qiE 'wp-content|wp-include' && n=$(( n + 1 ))
+    # Redirect into a compromised WordPress tree. Mirrors page-fetch.sh's `wpSuspicious`: a random
+    # segment under wp-content/wp-includes, but NOT the plugins/themes/uploads trees -- those are
+    # where every legit WordPress site serves its own media, so bare 'wp-content|wp-include' scored
+    # a real gov PDF (siu.org.za/wp-content/uploads/.../Judgment-...pdf) as a red flag.
+    # Two greps because ERE has no negative lookahead (keep in sync with wpSuspicious).
+    if printf '%s' "$final_url" | grep -qiE '/wp-(includes?|content)/[a-z0-9]{3,}/' \
+       && ! printf '%s' "$final_url" | grep -qiE '/wp-(includes?|content)/(plugins|themes|uploads)/'; then
+        n=$(( n + 1 ))
+    fi
     printf '%s' "$n"
 }
 

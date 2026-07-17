@@ -58,6 +58,12 @@ check "off-domain deobfus counts"       1 "$(count_red_flags com '' '' '' '' 'of
 check "risky TLD + young age = 2"       2 "$(count_red_flags xyz 10 '' '' '' '')"
 check "old domain age not counted"      0 "$(count_red_flags com 400 '' '' '' '')"
 check "wp-content redirect counts"      1 "$(count_red_flags com '' 'http://x.com/wp-content/ab12/' '' '' '')"
+# Legit WordPress serves its OWN media from uploads/plugins/themes -- a real gov PDF
+# (siu.org.za/wp-content/uploads/.../Judgment-...pdf) must not score as a compromised-WP redirect.
+check "wp-content/uploads NOT counted"  0 "$(count_red_flags za '' 'https://www.siu.org.za/wp-content/uploads/2025/11/Judgment-Tepa-Trading.pdf' '' '' '')"
+check "wp-content/plugins NOT counted"  0 "$(count_red_flags com '' 'http://x.com/wp-content/plugins/akismet/x.js' '' '' '')"
+check "wp-content/themes NOT counted"   0 "$(count_red_flags com '' 'http://x.com/wp-content/themes/twenty/style.css' '' '' '')"
+check "wp-includes random still counts" 1 "$(count_red_flags com '' 'http://x.com/wp-includes/9fz2k/' '' '' '')"
 
 echo "== classify_verdict (the decision table) =="
 check "login + risky TLD -> DANGEROUS"              DANGEROUS  "$(cv true top '' '' 'http://x.top/login' '' '' '' '')"

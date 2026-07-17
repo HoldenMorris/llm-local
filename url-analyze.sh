@@ -189,7 +189,22 @@ BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|
 SHORT_B=$(printf '%s' "$BRANDS" | tr '|' '\n' | awk 'length<5'  | paste -sd'|')
 LONG_B=$(printf '%s'  "$BRANDS" | tr '|' '\n' | awk 'length>=5' | paste -sd'|')
 TSQ="(^|[.-])(${SHORT_B})([.-]|\$)|(${LONG_B})"
-if echo "$DOMAIN" | grep -qiE "$TSQ" && ! echo "$DOMAIN" | grep -qiE "^(www\.)?($BRANDS)\.(com|org|net|io)$"; then
+# A brand's OWN domains are not typosquats. The exclusion must test the APEX, not the whole
+# hostname: `^(www\.)?brand\.(com|org|net|io)$` matched ONLY the bare apex, so every brand
+# subdomain (accounts.google.com, mail.paypal.com) and every brand ccTLD (barclays.co.uk,
+# amazon.co.jp) read as typosquatting. Apex SLD, accounting for a ccTLD second level (co.uk):
+BRAND_SLD=$(printf '%s' "$DOMAIN" | awk -F. '{ s=$(NF-1);
+    if (NF >= 3 && s ~ /^(co|com|net|org|ac|gov|edu|ne|or|in)$/) s=$(NF-2); print tolower(s) }')
+BRAND_OWNED=0
+# 1. The TLD *is* the brand -> a brand gTLD (share.google, blog.google). Those are CLOSED
+#    registries, so only the brand can hold a name there. EXCEPT .ing, an OPEN registry that
+#    merely collides with the ING brand -- paypal.ing would be a real phish, so don't exclude it.
+echo "$TLD" | grep -qiE "^($BRANDS)$" && ! echo "$TLD" | grep -qiE '^ing$' && BRAND_OWNED=1
+# 2. The apex SLD is the brand on a reputable TLD (google.com, barclays.co.uk, paypal.me).
+#    [a-z]{2} = any ccTLD. Deliberately NOT any TLD: paypal.top / paypal.xyz must still flag.
+echo "$BRAND_SLD" | grep -qiE "^($BRANDS)$" \
+    && echo "$TLD" | grep -qiE '^(com|org|net|io|[a-z]{2})$' && BRAND_OWNED=1
+if [ "$BRAND_OWNED" -eq 0 ] && echo "$DOMAIN" | grep -qiE "$TSQ"; then
     MATCHED=$(echo "$DOMAIN" | grep -oiE "$TSQ" | grep -oiE "($BRANDS)" | head -1)
     add_signal "Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
 fi

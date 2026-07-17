@@ -563,9 +563,15 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   if (finalUrl !== targetUrl && wpSuspicious.test(finalUrl))
     smells.push(`Redirect to compromised WordPress: ${new URL(finalUrl).hostname}`);
 
-  // ponytail: Random URL path (high entropy paths like /kz51odwn/)
+  // Random URL path (kit paths like /kz51odwn/, /43uu6p0/). This said "high entropy" but computed
+  // none -- it flagged ANY alphanumeric segment >4 chars outside a 6-word whitelist, so /uploads/,
+  // /content/, /support/ (most of the web) read as random. Shannon entropy does not separate these
+  // either: short distinct-char words score as high as random ones ("uploads" 2.81 vs "kz51odwn" 3.0).
+  // What actually separates them is a digit INSIDE the word: real words have none (uploads, content)
+  // and technical paths only carry a trailing version digit (oauth2, base64, html5, sha256).
+  // ponytail: misses all-alphabetic random paths (/xkcdqwrt/); add a bigram check if kits move there.
   const pathParts = new URL(landedUrl).pathname.split('/').filter(p => p.length > 4);
-  const randomPath = pathParts.find(p => /^[a-z0-9]{5,}$/i.test(p) && !/^(index|login|admin|user|api|auth)$/i.test(p));
+  const randomPath = pathParts.find(p => /^[a-z0-9]{5,}$/i.test(p) && /\d/.test(p.replace(/\d+$/, '')));
   if (randomPath)
     smells.push(`Random URL path: /${randomPath}/`);
 
