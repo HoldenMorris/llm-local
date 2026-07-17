@@ -767,6 +767,14 @@ SMELLS_LLM=$(printf '%s' "$SMELLS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
 VT_LLM=""; { [ "${_vm:-0}" -gt 0 ] || [ "${_vs:-0}" -gt 0 ]; } 2>/dev/null && VT_LLM="$VT_SUMMARY"
 URLSCAN_LLM=""; [ "${_um:-false}" = "true" ] && URLSCAN_LLM="$URLSCAN_SUMMARY"
 
+# The 1.5b does not evaluate a rule's precondition -- it fires whichever rule is listed FIRST and
+# parrots its text. It claimed "Login form present AND red flag count = 1" on a blank page with 0
+# forms, and "Login form present" on wikipedia.org (which has none; that one landed SAFE by luck).
+# So never ask it to count or to check a precondition: count_red_flags() already computes this
+# deterministically for the safety floor, so reuse that number and hand it in as ground truth.
+# Must stay ABOVE the CONTEXT build below, which interpolates it.
+FLAGS_LLM=$(count_red_flags "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS")
+
 CONTEXT="URL: $URL
 Domain: $DOMAIN
 TLD: $TLD
@@ -782,17 +790,34 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Suspicious JS: ${SUSP_JS:-none}${JS_CLEARED:+ (deobfuscated to same-domain assets only - NOT a red flag)}
 - Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
 - Phishing smells flagged by scraper: ${SMELLS_LLM:-none}
+- Red flag count: $FLAGS_LLM  (authoritative - already counted from these signals, use as-is)
 - VirusTotal reputation: ${VT_LLM:-not checked}
 - urlscan.io reputation: ${URLSCAN_LLM:-not checked}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
 - Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
 - Page title: \"$TITLE\""
 
-SYSTEM_PROMPT="You are a strict cybersecurity analyst. Classify this URL using ONLY the EXTRACTED SIGNALS provided. Do NOT invent facts: if 'Login form present' is false there is NO credential form; if 'Redirected' is 'no' there is NO redirect. Never assume a redirect or login page that is not listed.
+if [ "$HAS_LOGIN" = "true" ]; then
+    LOGIN_FACT="This page HAS a login/password form. A login form is NORMAL and expected on legitimate sites (Google, banks, webmail). A login form BY ITSELF is not dangerous - it is only dangerous when combined with a red flag."
+    RULES="RULE 1: the RED FLAG COUNT is 1 or more.
+   -> VERDICT: DANGEROUS. A login form plus even ONE red flag is credential harvesting. You must NOT downgrade this to SUSPICIOUS or SAFE, no matter what else you think. It does NOT need a redirect to be DANGEROUS.
 
-A login form is NORMAL and expected on legitimate sites (Google, banks, webmail). A login form BY ITSELF is not dangerous - it is only dangerous when combined with a red flag.
+RULE 2: the RED FLAG COUNT is exactly 0.
+   -> VERDICT: SAFE. This is a normal legitimate login page."
+else
+    LOGIN_FACT="This page has NO login form and NO password field on it. There is NO credential form here. Do NOT say a login form is present and do NOT reason about one."
+    RULES="RULE 3: the RED FLAG COUNT is 1 or more, OR this is a mailing-list / unsubscribe endpoint.
+   -> VERDICT: SUSPICIOUS (e.g. list-validation: a click confirms your address to spammers).
 
-RED FLAGS (count how many are present in the signals):
+RULE 4: the RED FLAG COUNT is exactly 0.
+   -> VERDICT: SAFE."
+fi
+
+SYSTEM_PROMPT="You are a strict cybersecurity analyst. Classify this URL using ONLY the EXTRACTED SIGNALS provided. Do NOT invent facts: if 'Redirected' is 'no' there is NO redirect. Never assume a redirect or a page feature that is not listed.
+
+$LOGIN_FACT
+
+The RED FLAG COUNT has ALREADY been computed for you and is given in the signals as 'Red flag count'. Use that number exactly as given. Do NOT recount it, do NOT adjust it, do NOT infer your own. For reference only, these are what it already counted:
 - off-domain form submit
 - brand impersonation (brand named but not the real domain)
 - visual brand mismatch: the 'Visual brand check' says the page LOOKS like a known brand (its logo/design) but that brand does not match the domain
@@ -809,22 +834,12 @@ NOT red flags (do NOT count these, no matter how many -- legitimate sites routin
 - hidden form fields / 'N hidden form fields' (CSRF and tracking tokens; GitHub has 40+). The COUNT is never a red flag; only 'sensitive field names' above counts.
 - third-party hosts / domains loaded (analytics, ads, CDNs -- e.g. Google Tag Manager, DoubleClick, Microsoft Clarity). A high count is normal instrumentation, not exfil.
 
-Follow this decision procedure EXACTLY, in order. Count the RED FLAGS first, then apply the FIRST rule that matches:
+Read the 'Red flag count' from the signals, then apply the ONE rule below that matches that number. These are the ONLY rules that apply to this page; do not consider any other rule:
 
-RULE 1 (MANDATORY - check this first): Login form present AND red flag count >= 1.
-   -> VERDICT: DANGEROUS. This is required. A login form plus even ONE red flag is credential harvesting. You must NOT downgrade this to SUSPICIOUS or SAFE, no matter what else you think. It does NOT need a redirect to be DANGEROUS.
-
-RULE 2: Login form present AND red flag count = 0 (established domain >90 days, same-domain submit, no smells, no suspicious JS).
-   -> VERDICT: SAFE. This is a normal legitimate login page.
-
-RULE 3: NO login form, but it is a mailing-list / unsubscribe endpoint on a young or throwaway domain, OR any single red flag is present.
-   -> VERDICT: SUSPICIOUS (e.g. list-validation: a click confirms your address to spammers).
-
-RULE 4: NO login form, established legitimate domain, zero red flags.
-   -> VERDICT: SAFE.
+$RULES
 
 Reply with EXACTLY these two lines and nothing else:
-REASON: one short sentence -- was a login form present, how many red flags, and which RULE fired
+REASON: one short sentence -- the Red flag count from the signals, and which RULE fired
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
 # Cache the LLM answer keyed by model + full request (system+context). Same URL + same
