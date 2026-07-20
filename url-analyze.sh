@@ -857,6 +857,16 @@ Reply with EXACTLY these two lines and nothing else:
 REASON: one short sentence -- the Red flag count from the signals, and which RULE fired
 VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 
+# One Ollama inference for the current MODEL/SYSTEM_PROMPT/CONTEXT at temperature $1.
+# Echoes the raw .response (or an error stub). Used by the main call and the empty-verdict retry.
+_llm_infer() {
+    curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
+        --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":${1:-0.0},\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" \
+        | jq -r '.response // "Error: No response from model"' 2>/dev/null
+}
+# A parseable verdict, uppercased, or empty. Case-insensitive so a lowercase reply still counts.
+_parse_verdict() { printf '%s' "$1" | grep -oiE 'VERDICT:[[:space:]]*(SAFE|SUSPICIOUS|DANGEROUS)' | grep -oiE 'SAFE|SUSPICIOUS|DANGEROUS' | head -1 | tr 'a-z' 'A-Z'; }
+
 # Cache the LLM answer keyed by model + full request (system+context). Same URL + same
 # model -> same signals -> same answer, so re-scans reuse it. -r wipes the cache dir.
 LLM_CACHE="$CACHE_DIR/llm-$(printf '%s' "$MODEL|$SYSTEM_PROMPT|$CONTEXT" | sha256sum | cut -c1-16).txt"
@@ -868,13 +878,11 @@ if [ -z "${NO_LLM_CACHE:-}" ] && [ -f "$LLM_CACHE" ]; then
 else
     echo_grey "- LLM analyzing..."
     LLM_START=$(date +%s.%N)
-    curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
-        --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":0.0,\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" > /tmp/url_analyze_response.json
+    RESPONSE=$(_llm_infer 0.0)
     LLM_SECS=$(echo "$(date +%s.%N) - $LLM_START" | bc)
-    RESPONSE=$(jq -r '.response // "Error: No response from model"' /tmp/url_analyze_response.json 2>/dev/null)
-    rm -f /tmp/url_analyze_response.json
-    # cache a real answer only, never the error stub (so a transient failure retries)
-    [ "$RESPONSE" != "Error: No response from model" ] && printf '%s' "$RESPONSE" > "$LLM_CACHE"
+    # cache only a verdict-bearing answer -- never the error stub or a verdict-less reply, so a
+    # transient failure / no-verdict re-infers next scan instead of sticking as a cached blank.
+    [ -n "$(_parse_verdict "$RESPONSE")" ] && printf '%s' "$RESPONSE" > "$LLM_CACHE"
     LLM_LABEL=$(printf '%.1fs' "$LLM_SECS")
 fi
 
@@ -901,7 +909,27 @@ else
     echo_grey "- (verdict only, no explanation from the model)"
 fi
 
-VERDICT=$(echo "$BODY" | grep -oE 'VERDICT:\s*(SAFE|SUSPICIOUS|DANGEROUS)' | awk '{print $2}')
+VERDICT=$(_parse_verdict "$BODY")
+
+# Empty verdict = the model RAN but emitted no parseable VERDICT (qwen2.5:1.5b sometimes returns
+# nothing). Retry once at a nudged temperature so the sampler escapes the degenerate no-verdict
+# output; a working model should classify the page. If it STILL says nothing, a credential-
+# harvesting surface must not present as a benign-looking UNCLEAR -> floor a login page to
+# SUSPICIOUS. Only reachable on a real LLM run (heuristic mode never enters this block), so this
+# never turns -H's intentional "no LLM" into SUSPICIOUS.
+if [ -z "$VERDICT" ]; then
+    echo_grey "- model returned no verdict; retrying once..."
+    RESPONSE=$(_llm_infer 0.4)
+    BODY=$(echo "$RESPONSE" | sed '/<think>/,/<\/think>/d')
+    VERDICT=$(_parse_verdict "$BODY")
+    if [ -n "$VERDICT" ]; then
+        printf '%s' "$RESPONSE" > "$LLM_CACHE"
+        echo_grey "- retry verdict: $VERDICT"
+    else
+        echo_grey "- still no verdict (UNCLEAR here means 'model did not assess', not 'safe')"
+        [ "$HAS_LOGIN" = "true" ] && { VERDICT=SUSPICIOUS; echo_grey "- login form present -> flooring to SUSPICIOUS pending assessment"; }
+    fi
+fi
 fi   # end real-LLM path (inner heuristic guard)
 fi   # end PHASE 3 (outer heuristic guard)
 

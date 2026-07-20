@@ -77,6 +77,9 @@ check "clean page + LLM empty -> UNCLEAR (empty)"   ""         "$(cv false com '
 check "escalate: floor SUSP, LLM DANGEROUS -> DANGEROUS" DANGEROUS "$(cv false xyz '' '' 'https://x.xyz' '' '' '' DANGEROUS)"
 check "never downgrade: floor DANGEROUS, LLM SAFE -> DANGEROUS" DANGEROUS "$(cv true top '' '' 'http://x.top/login' '' '' '' SAFE)"
 check "floor imposes nothing, LLM SUSPICIOUS kept"  SUSPICIOUS "$(cv false com '' '' 'https://x.com' '' '' '' SUSPICIOUS)"
+# login page + off-CDN third-party host: flaky LLM says SAFE, heuristic floors to SUSPICIOUS anyway
+check "login + off-CDN third-party host -> SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://x.com' 'Third-party hosts referenced (scripts/iframes/images/JS): kalcij.cyberfolks.hr' '' '' SAFE)"
+check "content page + third-party host (no login) -> SAFE kept" SAFE "$(cv false com '' '' 'https://x.com' 'Third-party hosts referenced (scripts/iframes/images/JS): a.com' '' '' SAFE)"
 
 echo
 echo "passed $pass, failed $fail"

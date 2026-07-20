@@ -26,6 +26,24 @@ Not lazy about: input validation, error handling, security, accessibility.
 
 **Current focus:** URL/Page phishing detection toolkit
 
+### Detection changes drive forward — improve BOTH paths, never flip-flop
+
+When double-checking a URL exposes a miss, the fix must **ratchet both the deterministic
+heuristic core (`verdict.sh` / `page-fetch.sh`) and the LLM path forward — never trade one
+against the other.** A miss usually has two co-causes: the flaky small LLM (empty output, or
+contradicting a known fact like `HAS_LOGIN`) *and* a heuristic floor that scored 0 and let the
+LLM downgrade it. Patching only the LLM (prompt tweaks) or only the heuristic, in isolation,
+just moves the false result around — the next scan flips the other way. So every detection fix:
+
+1. **Make the deterministic floor catch it** so the verdict holds regardless of what the LLM says
+   (`classify_verdict` escalates over the LLM but never downgrades — lean on that).
+2. **Harden the LLM path too** (retry on empty, starve miscount fuel, feed it deterministic facts).
+3. **Pin it** with a `test-verdict.sh` golden case, and confirm no regression on a known-good page.
+
+Guard against FPs while driving forward: cap new floors at the severity the signal actually
+earns (a login page + off-CDN third-party host = SUSPICIOUS, not DANGEROUS), and reuse the
+upstream filtering (e.g. `page-fetch.sh`'s `cdnRe`) so legit CDNs/captchas don't trip it.
+
 ### Recommended models (CPU-only laptop: 14 cores, 30GB RAM, no GPU)
 
 | Role | Model | Notes |

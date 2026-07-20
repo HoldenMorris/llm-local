@@ -92,6 +92,13 @@ classify_verdict() {
     # type=password> was detected (kits use non-password inputs to dodge that check).
     printf '%s' "$smells" | grep -qiE 'exfil|obfuscated network call' && exfil=1
     printf '%s' "$deobfus" | grep -qiE 'off-domain URL' && exfil=1
+    # A LOGIN page pulling scripts/fonts/forms from an off-apex, non-CDN host is abnormal -- it is
+    # the kit-copied-from-a-compromised-host / off-origin-fingerprinting pattern. The smell is
+    # already CDN/analytics/captcha-filtered upstream (page-fetch.sh cdnRe), so what's left here is
+    # the suspicious remainder. NOT counted as a red flag on content pages (line 33 excludes it --
+    # legit sites embed off-CDN widgets all the time); only floors a credential page to SUSPICIOUS.
+    local offhost=""
+    [ "$has_login" = "true" ] && printf '%s' "$smells" | grep -qi 'third-party hosts referenced' && offhost=1
 
     # Floor: the minimum severity the signals demand. Empty = impose nothing.
     local floor="" reason=""
@@ -99,8 +106,9 @@ classify_verdict() {
         floor=DANGEROUS; reason="data exfil (obfuscated / off-domain network call)"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
-    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ]; then
-        floor=SUSPICIOUS; reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}"
+    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ]; then
+        floor=SUSPICIOUS
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then
