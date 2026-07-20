@@ -466,6 +466,36 @@ SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev
 # Tunneling-service host (detected in Phase 1) is a deterministic red flag, whether or not the page
 # fetched -- append here so count_red_flags scores it (1 flag -> SUSPICIOUS floor on its own).
 [ -n "$TUNNEL_SVC" ] && SMELLS="${SMELLS:+$SMELLS, }hosted on tunneling service $TUNNEL_SVC"
+
+# ponytail: Brand-lookalike subdomain on multi-tenant hosting. On these hosts the APEX confers no
+# identity -- anyone can register any subdomain -- so a subdomain that spells out the page's OWN
+# declared brand (its <title>) or a known brand is an impersonation lure
+# (supportimmigrationadviceserviceorg.github.io presenting as "Immigration Advice Service"). The
+# static typosquat check above can't catch these: github.io reads as brand-owned (github IS a brand,
+# line 205), and its brand list is fixed. Feeds SMELLS -> deterministic floor (SUSPICIOUS; DANGEROUS
+# with a login form), so the verdict holds regardless of the LLM.
+LOOKALIKE_HOST=$(printf '%s' "${FINAL_URL:-$URL}" | sed -E 's#^[a-z]+://##;s#[/?].*##' | tr 'A-Z' 'a-z')
+if printf '%s' "$LOOKALIKE_HOST" | grep -qE '\.(github\.io|pages\.dev|web\.app|firebaseapp\.com|netlify\.app|vercel\.app|workers\.dev|glitch\.me|repl\.co|onrender\.com|surge\.sh|blogspot\.com|wordpress\.com|weebly\.com)$'; then
+    _la_apex=$(printf '%s' "$LOOKALIKE_HOST" | grep -oE '[^.]+\.[^.]+$')
+    _la_sub=$(printf '%s' "${LOOKALIKE_HOST%.$_la_apex}" | tr -cd 'a-z0-9')  # subdomain, alnum-squashed
+    _la_title=$(printf '%s' "$TITLE" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')     # the page's declared identity
+    # Identity to match: the page title (>=8 chars, specific enough) or a known long brand.
+    _la_id=""
+    if [ ${#_la_title} -ge 8 ] && printf '%s' "$_la_sub" | grep -qF "$_la_title"; then
+        _la_id="$_la_title"
+    elif printf '%s' "$_la_sub" | grep -qiE "($LONG_B)"; then
+        _la_id=$(printf '%s' "$_la_sub" | grep -oiE "($LONG_B)" | head -1)
+    fi
+    # Fire only when the identity is wrapped in EXTRA lure text (subdomain strictly longer), so a
+    # brand's own bare project page (facebook.github.io, johnsmith.github.io titled "John Smith")
+    # does NOT trip -- only a dressed-up impersonation (support...org, ...secure-login) does.
+    if [ -n "$_la_id" ] && [ ${#_la_sub} -gt ${#_la_id} ]; then
+        _la_desc="${TITLE//,/}"   # strip commas: count_red_flags splits SMELLS on commas
+        SMELLS="${SMELLS:+$SMELLS, }brand-lookalike subdomain - impersonates \"$_la_desc\" on shared host $_la_apex"
+        add_signal "Brand-lookalike subdomain: '$LOOKALIKE_HOST' embeds its own identity \"$TITLE\" on shared host $_la_apex (apex confers no ownership)"
+    fi
+fi
+
 [ -n "$SUSP_JS" ] && add_signal "Suspicious JS: $SUSP_JS"
 
 # Surface notable page console output (errors / failed requests) -- diagnoses blank SPAs

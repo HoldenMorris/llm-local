@@ -80,6 +80,9 @@ check "floor imposes nothing, LLM SUSPICIOUS kept"  SUSPICIOUS "$(cv false com '
 # login page + off-CDN third-party host: flaky LLM says SAFE, heuristic floors to SUSPICIOUS anyway
 check "login + off-CDN third-party host -> SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://x.com' 'Third-party hosts referenced (scripts/iframes/images/JS): kalcij.cyberfolks.hr' '' '' SAFE)"
 check "content page + third-party host (no login) -> SAFE kept" SAFE "$(cv false com '' '' 'https://x.com' 'Third-party hosts referenced (scripts/iframes/images/JS): a.com' '' '' SAFE)"
+# brand-lookalike subdomain smell counts as a red flag -> floors over an LLM SAFE (no login: SUSPICIOUS)
+check "brand-lookalike subdomain -> SUSPICIOUS" SUSPICIOUS "$(cv false io '' '' 'https://x.github.io' 'brand-lookalike subdomain - impersonates \"Immigration Advice Service\" on shared host github.io' '' '' SAFE)"
+check "brand-lookalike + login -> DANGEROUS"    DANGEROUS  "$(cv true io '' '' 'https://x.github.io' 'brand-lookalike subdomain - impersonates \"PayPal\" on shared host github.io' '' '' SAFE)"
 
 echo
 echo "passed $pass, failed $fail"

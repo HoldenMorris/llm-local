@@ -233,6 +233,7 @@ Filters by param size from the repo name (MoE `35B-A3B` counts as 35B, not 3B).
 | Right-click disabled | `oncontextmenu` blocked |
 | Crypto wallet addresses | BTC, ETH, TRX patterns |
 | Brand impersonation | Brand in page **title or form action** but not the domain (OAuth whitelist). `BRAND_MATCH=body` also matches body text (noisier) |
+| Brand-lookalike subdomain | On a **multi-tenant host** (`github.io`, `pages.dev`, `netlify.app`, `vercel.app`, `web.app`, `workers.dev`, …) the apex confers no identity, so a subdomain that spells out the page's own `<title>` (≥8 chars) or a known brand, wrapped in extra lure text, is impersonation (`supportimmigrationadviceserviceorg.github.io` = "Immigration Advice Service"). Feeds the deterministic floor: SUSPICIOUS (DANGEROUS with a login form). Catches what the static typosquat check misses — `github.io` reads as brand-owned (`github` is a brand) and its brand list is fixed. |
 | Suspicious JS | eval(), atob(), document.write(), hex-encoded strings, obfuscator.io `_0x` identifiers, String.fromCharCode |
 | External link ratio | Skewed external vs internal links |
 
