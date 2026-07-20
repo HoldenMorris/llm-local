@@ -95,7 +95,10 @@ re-scans reuse the fetch, the ~1min vision call, and the LLM verdict instead of
 re-computing. `-r` forces a full refresh.
 
 Flags: `-m <model>` LLM (`-m auto` = best model per `results/url_benchmark.csv`, falls
-back to qwen2.5:1.5b; `-m none` = same as `-H`), `-s` skip page fetch, `-V` no vision,
+back to qwen2.5:1.5b; `-m none` = same as `-H`; **`-m claude-<id>`** or `-m claude` =
+run the verdict LLM through the **Anthropic API** instead of local Ollama — opt-in, needs
+`ANTHROPIC_API_KEY` in `.env`, bare `claude` aliases `claude-opus-4-8`; `VISION_MODEL=claude-<id>`
+does the same for the screenshot reader), `-s` skip page fetch, `-V` no vision,
 `-H` heuristic-only (no LLM — verdict straight from `verdict.sh`'s decision table), `-r`
 ignore cache, `-c mono` no color, `-D` skip JS deobfuscation, `-t` third-party reputation
 (VirusTotal + urlscan.io — off by default, opt-in, not in benchmarks; see below), `-p tor` route the
@@ -294,10 +297,11 @@ Gated (only runs on obfuscation markers), cached per URL, `-D` to skip. Scripts:
 | Var | Default | Effect |
 |-----|---------|--------|
 | `BRAND_MATCH` | `strict` | Brand impersonation match scope: `strict` = title/form-action; `body` = also body text |
-| `VISION_MODEL` | `openbmb/minicpm-v4.6:q4_K_M` | VLM for the login-form visual brand check |
+| `VISION_MODEL` | `openbmb/minicpm-v4.6:q4_K_M` | VLM for the login-form visual brand check. Set to `claude-<id>` (e.g. `claude-haiku-4-5`) to read the screenshot via the Anthropic API instead of local Ollama (needs `ANTHROPIC_API_KEY`). |
 | `NO_COLOR` | (unset) | Disable ANSI color (also `-c mono`) |
 | `VT_API_KEY` | (unset) | VirusTotal key for `-t` (in `.env`; required for the VT lookup) |
 | `URLSCAN_API_KEY` | (unset) | urlscan.io key for `-t` (in `.env`; optional — raises rate limits) |
+| `ANTHROPIC_API_KEY` | (unset) | Claude API key for `-m claude-<id>` / `VISION_MODEL=claude-<id>` (in `.env`; opt-in, sends page text/screenshots to the API) |
 
 ## Dependencies
 

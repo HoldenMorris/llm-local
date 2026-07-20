@@ -110,6 +110,44 @@ shift $((OPTIND-1))
 # Now that -c mono is known, load the shared color helpers.
 source "$SCRIPT_DIR/colors.sh"
 
+# === Claude (Anthropic API) backend ===
+# -m claude-<id> (or -m claude, an alias for claude-opus-4-8) runs the verdict LLM through the
+# Anthropic Messages API instead of local Ollama; VISION_MODEL=claude-<id> does the same for the
+# screenshot reader. Opt-in only (needs ANTHROPIC_API_KEY in .env) -- sends page text/screenshots of
+# live-suspect pages to the API, so it's off by default and the benchmarks never use it.
+_is_claude()  { case "$1" in claude|claude-*) return 0 ;; *) return 1 ;; esac; }
+_claude_id()  { [ "$1" = claude ] && echo claude-opus-4-8 || echo "$1"; }
+_ENV_LOADED=""
+_load_env()   { [ -n "$_ENV_LOADED" ] && return; [ -f "$SCRIPT_DIR/.env" ] && { set -a; . "$SCRIPT_DIR/.env"; set +a; }; _ENV_LOADED=1; }
+
+# One Anthropic Messages call for the current MODEL/SYSTEM_PROMPT/CONTEXT. Echoes the reply text (or
+# the "Error: No response" stub, matching the Ollama path so caching/retry treat it the same). $1
+# (temperature) is ignored -- current Claude models reject the sampling params.
+_claude_infer() {
+    _load_env
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then printf 'Error: No response from model'; return; fi
+    local resp txt
+    resp=$(jq -n --arg m "$(_claude_id "$MODEL")" --arg s "$SYSTEM_PROMPT" --arg p "$CONTEXT" \
+             '{model:$m,max_tokens:512,system:$s,messages:[{role:"user",content:$p}]}' \
+         | curl -s --max-time 60 https://api.anthropic.com/v1/messages \
+             -H 'content-type: application/json' -H "x-api-key: $ANTHROPIC_API_KEY" \
+             -H 'anthropic-version: 2023-06-01' -d @-)
+    txt=$(printf '%s' "$resp" | jq -r '[.content[]?|select(.type=="text")|.text]|join("\n")' 2>/dev/null)
+    [ -n "$txt" ] && printf '%s' "$txt" || printf 'Error: No response from model'
+}
+
+# Anthropic vision: reads screenshot $1 with prompt $2, echoes the reply text (empty on error).
+_claude_vision() {
+    _load_env
+    [ -z "${ANTHROPIC_API_KEY:-}" ] && return
+    jq -n --arg m "$(_claude_id "$VISION_MODEL")" --arg p "$2" --arg img "$(base64 -w0 "$1")" \
+       '{model:$m,max_tokens:300,messages:[{role:"user",content:[{type:"image",source:{type:"base64",media_type:"image/jpeg",data:$img}},{type:"text",text:$p}]}]}' \
+     | curl -s --max-time 60 https://api.anthropic.com/v1/messages \
+         -H 'content-type: application/json' -H "x-api-key: $ANTHROPIC_API_KEY" \
+         -H 'anthropic-version: 2023-06-01' -d @- \
+     | jq -r '[.content[]?|select(.type=="text")|.text]|join(" ")' 2>/dev/null
+}
+
 # ponytail: attention ping before we open a window / ask a risky prompt. `\a` to the terminal is
 # the portable bell, but its audibility depends on the terminal's bell setting (often off), so if a
 # desktop sound player is present we also play a real system sound. Best-effort, never blocks.
@@ -677,7 +715,14 @@ VERDICT=""   # default; only a real LLM run overrides it. Heuristic modes leave 
 if [ -z "$HEURISTIC" ]; then
 echo ""
 echo "${BOLD}Model${RESET}"
-ensure_ollama || exit 1
+if _is_claude "$MODEL"; then
+    _load_env
+    [ -z "${ANTHROPIC_API_KEY:-}" ] && { echo "  No ANTHROPIC_API_KEY (add it to $SCRIPT_DIR/.env) -- needed for $MODEL"; exit 1; }
+    MODEL=$(_claude_id "$MODEL")   # normalise the bare 'claude' alias -> id (label + cache key)
+    echo_grey "- $MODEL (Anthropic API)"
+else
+    ensure_ollama || exit 1
+fi
 
 # -m auto -> best benchmarked model (falls back to qwen2.5:1.5b if no benchmark data yet).
 # Guard: if that model isn't actually installed, drop to the first installed one.
@@ -743,23 +788,31 @@ if [ -z "$NO_VISION" ] && [ -n "$VISION_TRIGGER" ]; then
     if [ -f "$CACHE_DIR/vision.txt" ]; then
         # Reuse the cached VLM verdict (the ~1min call is the single most expensive step).
         VISION_NOTE=$(cat "$CACHE_DIR/vision.txt")
-    elif [ -f "$SHOT" ] && docker exec llm-spam-test ollama list 2>/dev/null | grep -q "$VISION_MODEL"; then
+    elif [ -f "$SHOT" ]; then
         # Compare the brand against the domain we ACTUALLY landed on (post-redirect), not the
         # entry/cloaker domain -- phishing routinely enters via a shortener/tracker.
         LANDED_DOMAIN=$(echo "$PAGE_DATA" | jq -r '.domain // ""' 2>/dev/null)
         LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
-        echo_grey "- visual check (brand + credential input) via $VISION_MODEL (~1min on CPU)..."
         VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. Answer concisely in two lines:
 BRAND: what brand/company does its visual design (logo, colours, layout) imitate, and does it match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so.
 PASSWORD: is a password or login/credential input field visible on the page? Reply exactly 'PASSWORD: yes' or 'PASSWORD: no'."
-        # think:false  we want a crisp verdict, not a reasoning essay. Without it the
-        # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
-        VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
-            '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
-            | curl -s --max-time 180 http://localhost:11434/api/generate -d @- | jq -r '.response // ""')
-        # belt-and-braces: strip a <think> block if the model emits one anyway
-        VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
-        printf '%s' "$VISION_NOTE" > "$CACHE_DIR/vision.txt"
+        VRESP=""
+        if _is_claude "$VISION_MODEL"; then
+            echo_grey "- visual check (brand + credential input) via $(_claude_id "$VISION_MODEL") (Anthropic API)..."
+            VRESP=$(_claude_vision "$SHOT" "$VP")
+        elif docker exec llm-spam-test ollama list 2>/dev/null | grep -q "$VISION_MODEL"; then
+            echo_grey "- visual check (brand + credential input) via $VISION_MODEL (~1min on CPU)..."
+            # think:false  we want a crisp verdict, not a reasoning essay. Without it the
+            # model's <think> ramble gets truncated by num_predict and leaks in as the "answer".
+            VRESP=$(base64 -w0 "$SHOT" | jq -Rs --arg m "$VISION_MODEL" --arg p "$VP" \
+                '{model:$m,prompt:$p,images:[.],think:false,options:{temperature:0,num_predict:200},stream:false}' \
+                | curl -s --max-time 180 http://localhost:11434/api/generate -d @- | jq -r '.response // ""')
+        fi
+        if [ -n "$VRESP" ]; then
+            # belt-and-braces: strip a <think> block if the model emits one anyway
+            VISION_NOTE=$(echo "$VRESP" | sed '/<think>/,/<\/think>/d' | tr -s '[:space:]' ' ' | sed 's/^ *//;s/ *$//')
+            printf '%s' "$VISION_NOTE" > "$CACHE_DIR/vision.txt"
+        fi
     fi
     if [ -n "$VISION_NOTE" ]; then
         echo_grey "- $VISION_NOTE"
@@ -890,6 +943,7 @@ VERDICT: SAFE or VERDICT: SUSPICIOUS or VERDICT: DANGEROUS"
 # One Ollama inference for the current MODEL/SYSTEM_PROMPT/CONTEXT at temperature $1.
 # Echoes the raw .response (or an error stub). Used by the main call and the empty-verdict retry.
 _llm_infer() {
+    _is_claude "$MODEL" && { _claude_infer "$@"; return; }
     curl -s --max-time 180 -X POST http://localhost:11434/api/generate \
         --data-raw "{\"model\":\"$MODEL\",\"system\":$(echo "$SYSTEM_PROMPT" | jq -Rs .),\"prompt\":$(echo "$CONTEXT" | jq -Rs .),\"think\":false,\"options\":{\"temperature\":${1:-0.0},\"num_predict\":512},\"stream\":false,\"keep_alive\":\"5m\"}" \
         | jq -r '.response // "Error: No response from model"' 2>/dev/null
