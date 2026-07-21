@@ -68,6 +68,7 @@ Ollama runs in the `llm-spam-test` container (needs ≥0.31 for newer VLM archs)
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests pinning the deterministic verdict core (`verdict.sh`); pure, no LLM/network |
+| `feedback-report.sh` | Mine analyst feedback (`url-analyze.sh`'s "Do you agree?" prompt) from `.cache/*/feedback.txt` into an agreement-rate + disagreements report |
 | `tor-up.sh` | Ensure the Tor sidecar (`llm-tor`) for scanner egress: exit-country + circuit rotation. `--down` to stop |
 | `llm-test.sh` | Single email test |
 | `colors.sh` | Shared ANSI colors — `source` it, use `${RED}..${RESET}` or `cecho` |

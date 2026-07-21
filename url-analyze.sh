@@ -1066,3 +1066,16 @@ if [ -t 0 ] && command -v xdg-open >/dev/null 2>&1 \
     read -r -p "${CYAN}Bot gate still blocking. Open ${FINAL_URL:-$URL} in YOUR browser to inspect? (risky) [y/N] ${RESET}" _ans
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "${FINAL_URL:-$URL}" >/dev/null 2>&1 & }
 fi
+
+# Analyst feedback: agree with the verdict? Recorded per-URL to refine the tool later.
+# ponytail: interactive-only so benchmarks never prompt; one TSV line appended to the cache.
+if [ -t 0 ]; then
+    echo ""
+    read -r -p "${CYAN}Do you agree with this verdict? [Y/n/s(kip)] ${RESET}" _fb
+    case "$_fb" in
+        [Nn]*) _fb=disagree ;;
+        [Ss]*) _fb=skip ;;
+        *)     _fb=agree ;;
+    esac
+    printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$VERDICT" "$_fb" "$URL" >> "$CACHE_DIR/feedback.txt"
+fi
