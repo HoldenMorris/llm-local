@@ -84,6 +84,11 @@ check "content page + third-party host (no login) -> SAFE kept" SAFE "$(cv false
 check "brand-lookalike subdomain -> SUSPICIOUS" SUSPICIOUS "$(cv false io '' '' 'https://x.github.io' 'brand-lookalike subdomain - impersonates \"Immigration Advice Service\" on shared host github.io' '' '' SAFE)"
 check "brand-lookalike + login -> DANGEROUS"    DANGEROUS  "$(cv true io '' '' 'https://x.github.io' 'brand-lookalike subdomain - impersonates \"PayPal\" on shared host github.io' '' '' SAFE)"
 
+# Cloaked page gated from the scraper (custom JS challenge): the blank land floors the verdict so a
+# flaky LLM SAFE can't downgrade it (dhlpayonline.com cloak). Login behind the gate -> DANGEROUS.
+check "gate smell (no login) -> SUSPICIOUS"     SUSPICIOUS "$(cv false com '' '' 'https://x.com' 'Unrecognized bot/cloak challenge - real page gated from the scraper' '' '' SAFE)"
+check "gate smell + login -> DANGEROUS"         DANGEROUS  "$(cv true com '' '' 'https://x.com' 'Cloudflare Turnstile challenge - real page gated from the scraper' '' '' SAFE)"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

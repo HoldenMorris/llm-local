@@ -482,10 +482,20 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     { re: /\bhcaptcha\.com|newassets\.hcaptcha\.com/i, name: 'hCaptcha' },
     { re: /google\.com\/recaptcha|gstatic\.com\/recaptcha|recaptcha\/api\.js/i, name: 'reCAPTCHA' },
   ];
+  let gateMatched = false;
   if (reallyGated)
     for (const g of gateProviders)
-      if (requests.some(r => g.re.test(r.url)))
+      if (requests.some(r => g.re.test(r.url))) {
         smells.push(`${g.name} challenge - real page gated from the scraper`);
+        gateMatched = true;
+      }
+  // Custom/unrecognized cloak: we were redirected to a page that renders blank with no form and
+  // NO known provider script -- a homebrew JS challenge (ft_chall/gsauth counters, console.clear
+  // anti-debug) hid the real page. Without this the scraper knows it was blocked yet stays silent,
+  // so a cloaked phish reads phantom-SAFE. The redirect corroborates a cloak so a genuinely-empty
+  // static page isn't flagged. Ends in "gated from the scraper" -> feeds the floor + operator attach.
+  if (reallyGated && !gateMatched && realHops.length > 1)
+    smells.push(`Unrecognized bot/cloak challenge - real page gated from the scraper`);
 
   // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
   // gates that bounce victims without a visible 3xx Location. Flag when a url= target exists.
