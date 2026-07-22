@@ -489,12 +489,15 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
         smells.push(`${g.name} challenge - real page gated from the scraper`);
         gateMatched = true;
       }
-  // Custom/unrecognized cloak: we were redirected to a page that renders blank with no form and
-  // NO known provider script -- a homebrew JS challenge (ft_chall/gsauth counters, console.clear
-  // anti-debug) hid the real page. Without this the scraper knows it was blocked yet stays silent,
-  // so a cloaked phish reads phantom-SAFE. The redirect corroborates a cloak so a genuinely-empty
-  // static page isn't flagged. Ends in "gated from the scraper" -> feeds the floor + operator attach.
-  if (reallyGated && !gateMatched && realHops.length > 1)
+  // Custom/unrecognized cloak: a page that renders blank with no form and NO known provider script
+  // -- a homebrew JS challenge (ft_chall/gsauth counters, console.clear anti-debug) hid the real
+  // page. Without this the scraper knows it was blocked yet stays silent, so a cloaked phish reads
+  // phantom-SAFE. Corroborated by either a redirect (normal scan) or attach mode: in attach there is
+  // no navigation (we read the operator's already-loaded tab, realHops==1), so a blank land means the
+  // operator did NOT clear the gate -- the kit still denied them ("Unauthorized access"). Flagging it
+  // also stops that deny page from overwriting the cache as phantom-SAFE. A cleared gate has real
+  // body/a form -> reallyGated false -> no fire. Ends in "gated from the scraper" -> floor + attach.
+  if (reallyGated && !gateMatched && (realHops.length > 1 || attach))
     smells.push(`Unrecognized bot/cloak challenge - real page gated from the scraper`);
 
   // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
