@@ -1,0 +1,4 @@
+# Keep standalone-repo dev tooling out of the luca-ecosystem snapshot (sync-to-luca.sh
+# ships via `git archive HEAD`; export-ignore drops these from that tarball).
+sync-to-luca.sh export-ignore
+.gitattributes export-ignore
