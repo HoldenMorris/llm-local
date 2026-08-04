@@ -58,13 +58,44 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // legit ccTLD brand site (barclays.co.uk, amazon.co.jp) reads as brand impersonation.
   // ponytail: covers the ccTLD shapes we see; swap in the real PSL if an edge case bites.
   const SLD_SUFFIX = /^(co|com|net|org|ac|gov|edu|ne|or|in)$/;
+  // The real Public Suffix List, mounted read-only by page-fetch.sh (same cached file psl.sh
+  // maintains, so the bash and JS halves can never disagree about who owns a domain). Absent
+  // list -> fall back to the heuristic above, which is wrong for multi-label suffixes in exactly
+  // the way it always was: losing the file must change nothing else. See psl.sh for the why.
+  let PSL = null;
+  try {
+    PSL = new Set(require('fs').readFileSync('/home/pptruser/psl.dat', 'utf8')
+      .split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//')));
+  } catch {}
   const apexOf = h => {
-    const p = (h || '').toLowerCase().split('.');
+    const host = (h || '').toLowerCase().replace(/\.$/, '');
+    if (!host) return '';
+    if (PSL) {
+      let rest = host, suffix = '';
+      while (rest) {                                    // longest rule wins -> longest-first walk
+        const up = rest.includes('.') ? rest.slice(rest.indexOf('.') + 1) : '';
+        if (PSL.has('!' + rest)) { suffix = up; break; }             // exception rule
+        if (PSL.has(rest) || (up && PSL.has('*.' + up))) { suffix = rest; break; }
+        rest = up;
+      }
+      if (!suffix) suffix = host.slice(host.lastIndexOf('.') + 1);   // implicit "*" rule
+      if (suffix === host) return host;                 // host IS a suffix: no registrable domain
+      const head = host.slice(0, host.length - suffix.length - 1);
+      return head.slice(head.lastIndexOf('.') + 1) + '.' + suffix;
+    }
+    const p = host.split('.');
     return p.slice(p.length >= 3 && SLD_SUFFIX.test(p[p.length - 2]) ? -3 : -2).join('.');
   };
   // let: re-anchored to the LANDED host after redirects so analysis isn't judged against the entry shortener
   let domain = parsed.hostname;
   let apexDomain = apexOf(domain);
+  // The apex we STARTED on, kept across the re-anchor above. An SSO hop leaves the tenant apex
+  // (cogtanw.eu.qlikcloud.com -> login.qlik.com), after which the OAuth redirect_uri host -- the
+  // origin's own apex -- read as off-domain exfil and floored genuine Qlik/Auth0 SSO to DANGEROUS.
+  // ponytail: an entry shortener also gets its apex exempted; an exfil endpoint hosted on the
+  // shortener's own apex is not a shape we've seen. Tighten if one shows up.
+  const originApex = apexDomain;
+  const sameSite = h => { const a = apexOf(h); return a === apexDomain || a === originApex; };
 
   // Operator attach mode (PAGE_ATTACH=<CDP browserURL>): connect to the analyst's OWN browser,
   // which already walked past the bot gate on a residential IP. No launch, no navigation, no
@@ -399,6 +430,8 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   const oauthPaymentDomains = ['accounts.google.com','apis.google.com','facebook.com','login.microsoftonline.com',
     'appleid.apple.com','amazon.com','paypal.com','stripe.com','js.stripe.com','m.stripe.com','github.com',
     'login.live.com','auth0.com','okta.com','supabase.co'];
+  // Match on dot-delimited labels, never substrings (see the brandExplainedByOAuth note below).
+  const onDomain = (d, o) => d === o || d.endsWith(`.${o}`);
   // Where a brand must appear to count as impersonation. Config knob: BRAND_MATCH env.
   //   'strict' (default): page TITLE or a FORM ACTION -- the strong signals a phishing clone
   //            emits (titles itself "PayPal Login", posts creds to a paypal-named URL).
@@ -422,7 +455,6 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     // Match on dot-delimited labels, never substrings: "m.stripe.com" first-label was "m", and
     // d.includes("m") is true for every .com domain -- which silently explained away every brand
     // hit on any page loading a single third-party resource.
-    const onDomain = (d, o) => d === o || d.endsWith(`.${o}`);
     const brandExplainedByOAuth = matched.every(b =>
       thirdPartyDomains.some(d =>
         new RegExp(`(^|\\.)${b.replace(/\s/g,'')}\\.`, 'i').test(d) ||
@@ -431,6 +463,31 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     if (!brandInDomain && !brandExplainedByOAuth)
       smells.push(`Brand impersonation: "${matched.slice(0,3).join(', ')}" in title/form but domain is "${domain}"`);
   }
+
+  // ponytail: Hotlinked brand artwork -- the page DISPLAYS an <img> served from a BRAND's own
+  // domain while the page itself is not that brand. Kits are cloned wholesale from the real login
+  // page, so the logo <img src> still points at the victim brand's CDN. The asset's HOST is the
+  // attribution, so this needs no logo database, no perceptual hashing and no model: the cheapest
+  // rung of the visual-impersonation ladder.
+  // Legit pages embed brand artwork too (payment buttons, partner/dealer logos), so this is CONTEXT
+  // and never a red flag on its own -- verdict.sh floors it to SUSPICIOUS only when the page also
+  // asks for credentials, and count_red_flags excludes it. ponytail: upgrade path if recall is too
+  // low is favicon hashing, then a logo hash set; a self-hosted copied logo is invisible here.
+  const noHotlink = new Set(['google','facebook','amazon','microsoft','apple','github','instagram','twitter','linkedin']);
+  // <5 chars ('ing','fnb','visa') matches inside ordinary words; the set above is embedded on
+  // legit pages constantly (social buttons, maps, affiliate images) so it has near-zero precision.
+  const hotlinkBrands = brands.filter(b => b.length >= 5 && !noHotlink.has(b));
+  const hotlinked = [...new Set(features.images.map(u => {
+    try { return new URL(u).hostname.toLowerCase(); } catch { return ''; }
+  }))].flatMap(h => {
+    const sld = apexOf(h).split('.')[0];   // 'paypalobjects' for www.paypalobjects.com
+    const b = hotlinkBrands.find(x => sld === x || sld.startsWith(x));
+    return b && !apexDomain.includes(b) && !oauthPaymentDomains.some(o => onDomain(h, o)) ? [[b, h]] : [];
+  });
+  if (hotlinked.length)  // space-joined (no commas): verdict.sh splits SMELLS on commas
+    smells.push(`Hotlinked brand image: "${[...new Set(hotlinked.map(x => x[0]))].join(' ')}" `
+      + `artwork served from its own domain (${[...new Set(hotlinked.map(x => x[1]))].slice(0,3).join(' ')}) `
+      + `but page is "${domain}"`);
 
   // Links
   const extLinks = features.links.filter(l => l.isExternal);
@@ -553,14 +610,21 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // Off-apex domains the page could send data to: form actions + hosts in plain JS + hosts
   // in base64-decoded JS. Excludes CDNs/analytics. Listed for the verdict and for triage.
   const hostsIn = (t) => [...String(t).matchAll(/https?:\/\/([a-z0-9.-]+)/gi)].map(m => m[1].toLowerCase());
-  const cdnRe = /(googleapis|gstatic|cloudflare|jsdelivr|unpkg|cdnjs|jquery|bootstrapcdn|google-analytics|googletagmanager|fontawesome|recaptcha|hcaptcha|gravatar|w3\.org|schema\.org)/i;
+  // auth0.com: the identity provider behind a large share of legitimate SSO logins -- its SDK/CDN
+  // host is not a third party in any meaningful sense. zohocdn/zohowebstatic: Zoho's own asset
+  // hosts, which sit on a different apex from its product domains (maillist-manage.in).
+  // lr-ingest: LogRocket session replay, which false-positived the real Wasabi console.
+  // ponytail: this is a hand-maintained allowlist and every entry is a patch, not a fix -- three
+  // separate false positives this session were just vendors missing from it. The real answer is a
+  // reputation/prevalence check on the host, not a longer regex. Revisit when it grows again.
+  const cdnRe = /(googleapis|gstatic|cloudflare|jsdelivr|unpkg|cdnjs|jquery|bootstrapcdn|google-analytics|googletagmanager|fontawesome|recaptcha|hcaptcha|gravatar|auth0\.com|zohocdn|zohowebstatic|lr-ingest|w3\.org|schema\.org)/i;
   // Only covert exfil vectors count: an off-domain FORM ACTION (posts data cross-domain) or a
   // host HIDDEN in an obfuscated/base64 blob. A host sitting in plain, readable JS is auditable
   // and overwhelmingly analytics/RUM/CDN -- not covert theft -- so it is NOT treated as exfil.
   const exfilDomains = [...new Set([
     ...features.forms.map(f => { try { return new URL(f.action).hostname.toLowerCase(); } catch { return ''; } }),
     ...hostsIn(b64decoded),
-  ])].filter(h => h && apexOf(h) !== apexDomain && !cdnRe.test(h));
+  ])].filter(h => h && !sameSite(h) && !cdnRe.test(h));
   if (exfilDomains.length)
     smells.push(`Off-domain exfil endpoint(s) in page code: ${exfilDomains.slice(0,4).join(', ')}`);
 
@@ -572,7 +636,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     ...features.scripts.map(s => s.src), ...features.iframes, ...features.images,
   ].map(u => { try { return new URL(u).hostname.toLowerCase(); } catch { return ''; } })
    .concat(hostsIn(allJs)))]
-    .filter(h => h && apexOf(h) !== apexDomain && !cdnRe.test(h) && !exfilDomains.includes(h));
+    .filter(h => h && !sameSite(h) && !cdnRe.test(h) && !exfilDomains.includes(h));
   if (thirdPartyHosts.length)  // space-joined (no commas) so verdict.sh's comma-split count excludes it whole
     smells.push(`Third-party hosts referenced (scripts/iframes/images/JS): ${thirdPartyHosts.slice(0,6).join(' ')}`);
 
@@ -633,6 +697,26 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   if (cryptoPatterns.test(body))
     smells.push('Crypto wallet address found');
 
+  // ponytail: Where the credentials actually live. A marketing landing page or SPA shell often
+  // carries NO form at all -- the login sits one click away behind a "Login" / "Member Portal"
+  // link. Every login-dependent floor (off-CDN third-party host, hotlinked brand artwork,
+  // brand-lookalike subdomain) is a no-op until a password field is seen, so a kit with a clean
+  // front page and the harvester at /login scores SAFE. Real case: icamis.icam.mw came back SAFE
+  // on a page with zero forms while the credential form sat at /login.
+  // Only SURFACE the candidates here -- url-analyze.sh decides whether to spend a second fetch.
+  // Same registrable domain only: legit sites SSO off-domain (login.microsoftonline.com) and
+  // following that would import the identity provider's signals as if they were this site's.
+  const loginStrong = /(^|[^a-z])(log[-_ ]?in|sign[-_ ]?in|signon|logon)([^a-z]|$)/i;
+  const loginWeak   = /(^|[^a-z])(member[-_ ]?portal|my[-_ ]?account|portal|account|auth)([^a-z]|$)/i;
+  const loginLinks = features.hasLoginForm ? [] : [...new Set(features.links.flatMap(a => {
+    let u; try { u = new URL(a.href); } catch { return []; }
+    if (!/^https?:$/.test(u.protocol) || apexOf(u.hostname) !== apexDomain) return [];
+    const hay = `${a.text} ${u.pathname}`;         // link TEXT matters: "Member Portal" -> /portal
+    if (loginStrong.test(hay)) return [[0, u.href]];
+    if (loginWeak.test(hay))   return [[1, u.href]];
+    return [];
+  }).sort((x, y) => x[0] - y[0]).map(x => x[1]))].slice(0, 3);   // strong candidates first
+
   const result = {
     url: targetUrl,
     finalUrl: redirects.at(-1)?.url || targetUrl,
@@ -654,6 +738,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     },
     thirdPartyDomains,
     exfilDomains,
+    loginLinks,
     suspiciousJs: jsSmells,
     phishingSmells: smells,
     console: consoleLogs,
@@ -726,6 +811,12 @@ if [ "$PROXY" = tor ]; then
   PROXY_ARGS=(--network llm-net -e PAGE_PROXY="socks5://llm-tor:9050")
 fi
 
+# Public Suffix List for the JS apexOf (see psl.sh). Mounted read-only; if the list is missing the
+# script falls back to its old last-two-labels heuristic, so this is best-effort by design.
+source "$SCRIPT_DIR/psl.sh"
+PSL_MOUNT=()
+psl_ensure && PSL_MOUNT=(-v "$PSL_FILE":/home/pptruser/psl.dat:ro)
+
 docker run --rm --name "$CONTAINER_NAME" \
   --cap-drop ALL \
   --cap-add SYS_ADMIN \
@@ -738,6 +829,7 @@ docker run --rm --name "$CONTAINER_NAME" \
   "${ATTACH_ARGS[@]}" \
   "${PROXY_ARGS[@]}" \
   -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
+  "${PSL_MOUNT[@]}" \
   "${SHOT_MOUNT[@]}" \
   "${SCRIPTS_MOUNT[@]}" \
   "$IMAGE" \

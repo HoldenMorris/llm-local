@@ -89,6 +89,49 @@ check "brand-lookalike + login -> DANGEROUS"    DANGEROUS  "$(cv true io '' '' '
 check "gate smell (no login) -> SUSPICIOUS"     SUSPICIOUS "$(cv false com '' '' 'https://x.com' 'Unrecognized bot/cloak challenge - real page gated from the scraper' '' '' SAFE)"
 check "gate smell + login -> DANGEROUS"         DANGEROUS  "$(cv true com '' '' 'https://x.com' 'Cloudflare Turnstile challenge - real page gated from the scraper' '' '' SAFE)"
 
+# Email-redirector link (Mailjet mjt.lu etc.) that never left the service -- dead/expired token landed
+# on the "this subdomain is for link redirection" placeholder. The unresolved-destination smell floors
+# it to SUSPICIOUS so a flaky LLM SAFE can't call the placeholder clean.
+check "unresolved redirector -> SUSPICIOUS"     SUSPICIOUS "$(cv false lu '' '' 'https://04l5p.mjt.lu/' 'link-redirection service mjt.lu - destination unresolved (dead/expired link on a phishing-prone redirector)' '' '' SAFE)"
+
+# Hotlinked brand artwork: the page shows a brand's own image off the brand's own CDN. Legit pages
+# do this too (PayPal buttons, dealer logos), so it is display evidence only -- never a red flag,
+# and it floors to SUSPICIOUS only on a credential page. Guards both directions of that cap.
+HL='Hotlinked brand image: "paypal" artwork served from its own domain (www.paypalobjects.com) but page is "secure-pay.example.com"'
+check "hotlinked brand image not counted"    0          "$(count_red_flags com '' '' "$HL" '' '')"
+check "hotlink alone does not floor"         SAFE       "$(cv false com '' '' 'https://x.com' "$HL" '' '' SAFE)"
+check "hotlink + login -> SUSPICIOUS"        SUSPICIOUS "$(cv true  com '' '' 'https://x.com' "$HL" '' '' SAFE)"
+check "hotlink + login never downgrades"     DANGEROUS  "$(cv true  com '' '' 'https://x.com' "$HL" '' '' DANGEROUS)"
+check "hotlink doesn't mask a real smell"    DANGEROUS  "$(cv true  com '' '' 'https://x.com' "Urgency language detected, $HL" '' '' SAFE)"
+
+# Follow-the-login-link escalation (url-analyze.sh Phase 2): when the landed page has no form but
+# links to one, the followed credential page is merged with has_login=true. The contract these pin:
+# every login-gated floor must then fire exactly as if the form had been on the landed page, and
+# the escalation itself must add NO red flag -- a site having a login page is not suspicious.
+check "followed cred page re-arms off-CDN floor"  SUSPICIOUS "$(cv true com '' '' 'https://x.com' 'Third-party hosts referenced (scripts/iframes/images/JS): a.com b.com' '' '' SAFE)"
+check "followed cred page re-arms hotlink floor"  SUSPICIOUS "$(cv true com '' '' 'https://x.com' "$HL" '' '' SAFE)"
+check "followed cred page + real smell -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://x.com' 'Urgency language detected' '' '' SAFE)"
+check "clean followed cred page stays SAFE"       SAFE       "$(cv true com '' '' 'https://x.com' '' '' '' SAFE)"
+
+# A fetch that produced no assessable page must never read SAFE. healthlynotes.com returned
+# HTTP 500 "Database Error" with an empty DOM and scored SAFE; cdn.filestackcontent.com returned
+# 200 with zero of everything. Operator attach (status 0, real DOM) must stay assessable.
+echo "== is_blank_page <status> <element_count> =="
+expect "HTTP 500 is blank"                 yes is_blank_page 500 0
+expect "HTTP 404 is blank even with a DOM" yes is_blank_page 404 42
+expect "200 with an empty DOM is blank"    yes is_blank_page 200 0
+expect "200 with a real DOM is not blank"  no  is_blank_page 200 12
+expect "attach (status 0) + DOM not blank" no  is_blank_page 0 12
+expect "unknown status + DOM not blank"    no  is_blank_page '' 12
+
+# Multi-vendor VirusTotal consensus is stronger than any local heuristic and needs no credential
+# form: trencraft.com (11 vendors, scam storefront, no login) capped at SUSPICIOUS before this.
+VT11='3-hop redirect chain, VirusTotal flagged malicious (11 vendors)'
+check "VT quorum (no login) -> DANGEROUS"   DANGEROUS  "$(cv false com 294 '' 'https://trencraft.com/x/' "$VT11" '' '' SAFE)"
+check "VT below quorum stays SUSPICIOUS"    SUSPICIOUS "$(cv false com '' '' 'https://x.com' 'VirusTotal flagged malicious (2 vendors)' '' '' SAFE)"
+check "VT quorum never downgrades an LLM DANGEROUS" DANGEROUS "$(cv false com '' '' 'https://x.com' "$VT11" '' '' DANGEROUS)"
+check "clean page, no VT line -> SAFE kept"  SAFE      "$(cv false com '' '' 'https://x.com' '' '' '' SAFE)"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

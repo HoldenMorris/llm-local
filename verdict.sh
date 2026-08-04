@@ -20,6 +20,19 @@ is_unsub_url() {
     printf '%s' "$1" | grep -qiE 'unsub|opt[-_]?out|list[-_]?manage|/remove|mailpref|newsletter'
 }
 
+# is_blank_page <http_status> <element_count> -> exit 0 when the fetch produced nothing
+# assessable: an error status, or a DOM with zero links/forms/scripts/images/iframes.
+# Scoring either yields a phantom "clean" verdict -- the scanner saw NO page, which is not
+# the same as seeing a safe one (healthlynotes.com: HTTP 500 "Database Error", empty DOM,
+# zero smells -> SAFE). Callers must degrade the verdict to UNCLEAR; the floor still runs,
+# so static signals (risky TLD, young domain) can still escalate over it.
+# status 0 is NOT blank: operator attach has no response object but a full live DOM.
+is_blank_page() {
+    [ -n "$1" ] && [ "$1" -ge 400 ] 2>/dev/null && return 0
+    [ "${2:-0}" -eq 0 ] 2>/dev/null && return 0
+    return 1
+}
+
 # count_red_flags <tld> <age_days> <final_url> <smells> <susp_js> <deobfus_signals>
 #   Echoes the number of deterministic red flags in the extracted signals.
 #   The signals are already computed deterministically upstream, so we never
@@ -30,7 +43,7 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced' | grep -c .) ))
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image' | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it
@@ -99,16 +112,34 @@ classify_verdict() {
     # legit sites embed off-CDN widgets all the time); only floors a credential page to SUSPICIOUS.
     local offhost=""
     [ "$has_login" = "true" ] && printf '%s' "$smells" | grep -qi 'third-party hosts referenced' && offhost=1
+    # A CREDENTIAL page displaying a brand's own hotlinked artwork is the cloned-kit shape: copied
+    # from the real login page, still pulling the logo off the brand's CDN. Legit pages embed brand
+    # artwork too (PayPal buttons, dealer/partner logos), so like offhost above this earns
+    # SUSPICIOUS only alongside a login form, and nothing at all without one -- which is why
+    # count_red_flags excludes it. Cap is deliberate: it is display evidence, not proof of theft.
+    local hotlink=""
+    [ "$has_login" = "true" ] && printf '%s' "$smells" | grep -qi 'hotlinked brand image' && hotlink=1
+    # A multi-vendor VirusTotal consensus is stronger evidence than anything these local
+    # heuristics produce, and it does NOT need a credential form to be real -- scam storefronts
+    # and malware droppers harvest money, not passwords, so the login-gated DANGEROUS rule below
+    # capped trencraft.com (11 VT vendors malicious) at SUSPICIOUS. Quorum of 5 because one or
+    # two vendors is routinely stale or a lone heuristic engine.
+    local vtquorum="" _vtn
+    _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
+           | grep -oE '[0-9]+' | head -1)
+    [ -n "$_vtn" ] && [ "$_vtn" -ge 5 ] 2>/dev/null && vtquorum="$_vtn"
 
     # Floor: the minimum severity the signals demand. Empty = impose nothing.
     local floor="" reason=""
     if [ -n "$exfil" ]; then
         floor=DANGEROUS; reason="data exfil (obfuscated / off-domain network call)"
+    elif [ -n "$vtquorum" ]; then
+        floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
-    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ]; then
+    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ]; then
         floor=SUSPICIOUS
-        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}"
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then

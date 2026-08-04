@@ -72,7 +72,9 @@ VLM architectures.
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests that pin the deterministic verdict core (`verdict.sh`). Pure: no LLM, no network |
-| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report |
+| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag. Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. Run `--self-test` for the self-check |
+| `psl.sh` | Public Suffix List helper. `source` it, then `apex_of <host>`. Gives the true registrable domain. Caches the list in `.cache/` and refreshes it every 30 days. Run `./psl.sh` for the self-check |
+| `brand-verify.sh` | Ask if the **brand's own site** links to a host. `PROVEN` suppresses a brand smell. `UNPROVEN` escalates nothing. Run `--self-test` for the self-check |
 | `tor-up.sh` | Bring up the Tor sidecar (`llm-tor`) for scanner egress: exit country and circuit rotation. `--down` stops it |
 | `llm-test.sh` | Single email test |
 | `colors.sh` | Shared ANSI colors. `source` it, then use `${RED}..${RESET}` or `cecho` |
@@ -93,7 +95,8 @@ therefore stays plain ASCII. Four tools use `colors.sh`: `url-analyze.sh`, `url-
 ### URL scan cache
 
 `url-analyze.sh` caches the work for each URL in `.cache/<url-hash>/`: page content
-(`page.json`), screenshot (`page.jpg`), domain metadata (`meta.env`), inline scripts
+(`page.json`), screenshot (`page.jpg`), the followed credential page and its screenshot
+(`page-login.json`, `login.jpg`), domain metadata (`meta.env`), inline scripts
 (`scripts/`), deobfuscation signals (`deob-signals.txt`), the vision VLM verdict
 (`vision.txt`), and each LLM answer (`llm-<hash>.txt`, keyed by model and request). A re-scan
 therefore reuses the fetch, the ~1min vision call, and the LLM verdict instead of a re-compute.
@@ -130,9 +133,15 @@ error. Keys live in a gitignored `.env` (copy `.env.sample`). `VT_API_KEY` is ma
 urlscan search is a public API and the key only raises rate limits.
 
 VirusTotal reads `last_analysis_stats` by base64url URL id. urlscan **searches existing public
-scans only** (no submission) and reads `verdicts.overall` from the latest scan. A
+scans only** (no submission) and reads **both** `verdicts.overall` and `verdicts.engines` from the
+latest scan. The two are separate judgements: `engines` carries urlscan's own ML classifier and it
+often calls a page malicious while `overall` stays at 0, so reading only `overall` threw away a
+score-96 hit on `healthlynotes.com`. Either verdict alone is **one** red flag, never two, and the
+flag text names which one fired. A
 confirmed-malicious hit from either source feeds the deterministic safety floor as a red flag
-(appended to `SMELLS`), and both summaries go into the LLM context. **Rate limits:** the
+(appended to `SMELLS`), and both summaries go into the LLM context. A VirusTotal consensus of
+**5 or more vendors** floors the verdict to DANGEROUS on its own, with no login form needed:
+scam storefronts and droppers take money rather than passwords. **Rate limits:** the
 VirusTotal free tier allows 4 requests per minute and 500 per day. The per-URL cache means a
 re-scan costs zero API calls.
 
@@ -242,7 +251,7 @@ not 3B.
 | Detection | Source |
 |-----------|--------|
 | IP geolocation | ip-api.com (country, org, ISP) |
-| Domain age | RDAP/Verisign (flags less than 30 days as high risk) |
+| Domain age | RDAP/Verisign (flags less than 30 days as high risk). The lookup uses the **registrable domain** from `psl.sh`, not the last two labels. `smithpower.autoit.za.com` gave `za.com` before, so the age read 28 years (the CentralNic registry) and every `*.za.com` phish inherited an "aged domain" pass. A host that sits directly on a shared namespace has no RDAP record, so the age reads unknown, which is the honest answer |
 | SSL cert age | openssl (flags less than 7 days as suspicious) |
 | SSL issuer | openssl |
 | Fast-flux DNS | More than 5 A records, or TTL under 300s |
@@ -264,9 +273,31 @@ not 3B.
 | Right-click disabled | `oncontextmenu` blocked |
 | Crypto wallet addresses | BTC, ETH, TRX patterns |
 | Brand impersonation | Brand in the page **title or form action** but not the domain (OAuth whitelist). `BRAND_MATCH=body` also matches body text (noisier) |
+| Hotlinked brand image | An `<img>` served from a **brand's own domain** while the page is not that brand. A kit cloned from the real login page still points the logo at the victim brand's CDN, so the asset host gives the attribution. No logo database and no image matching. Legit pages also embed brand artwork (payment buttons, dealer logos), so this is context only: `count_red_flags` excludes it, and it floors to SUSPICIOUS **only with a login form**. Skips brands under 5 characters and the ubiquitous embed set (google, facebook, amazon, microsoft, apple, github, and the social networks) |
 | Brand-lookalike subdomain | On a **multi-tenant host** (`github.io`, `pages.dev`, `netlify.app`, `vercel.app`, `web.app`, `workers.dev`, and more) the apex confers no identity. So a subdomain that spells out the page `<title>` (8 chars or more) or a known brand, wrapped in extra lure text, is impersonation. Example: `supportimmigrationadviceserviceorg.github.io` = "Immigration Advice Service". This feeds the deterministic floor: SUSPICIOUS, or DANGEROUS with a login form. It catches what the static typosquat check misses, because `github.io` reads as brand-owned (`github` is a brand) and the brand list is fixed. |
 | Suspicious JS | eval(), atob(), document.write(), hex-encoded strings, obfuscator.io `_0x` identifiers, String.fromCharCode |
 | External link ratio | Skewed external vs internal links |
+
+### Phase 3.2: Follow the login link (escalation)
+
+A marketing landing page or SPA shell often carries **no form at all**. The credential form sits
+one click away behind a "Login" or "Member Portal" link. Every login-gated floor (off-CDN
+third-party host, hotlinked brand artwork, brand-lookalike subdomain) stays a no-op until a
+password field is seen, so a kit with a clean front page and the harvester at `/login` reads SAFE.
+This is what `icamis.icam.mw` did: a SAFE verdict on a page with zero forms, and the vision model
+never even ran.
+
+`page-fetch.sh` puts the candidate links in `loginLinks` (strongest first, matched on link **text**
+and path). `url-analyze.sh` spends **one** more fetch on the best one and caches it as
+`page-login.json` plus `login.jpg`. If that page really asks for credentials, its smells merge as
+if seen on the landed page, `HAS_LOGIN` becomes true, and the VLM reads the **credential page**
+instead of the marketing shell.
+
+Two caps hold the false positives down. The **link is never a signal**: a site that has a login
+page is not suspicious, so only what the followed page contains can score. And only a
+**same-registrable-domain** link is followed, because legit sites sign in off-domain
+(`login.microsoftonline.com`) and following that would import the identity provider's signals as
+this site's.
 
 ### Phase 3.5: JS Deobfuscation (escalation)
 

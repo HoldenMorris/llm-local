@@ -5,6 +5,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/ollama-up.sh"
 source "$SCRIPT_DIR/verdict.sh"
+source "$SCRIPT_DIR/psl.sh"
 source "$SCRIPT_DIR/js-signals.sh"
 source "$SCRIPT_DIR/machine.sh"
 # colors.sh is sourced further down, after args are parsed (so -c mono can disable color)
@@ -175,7 +176,16 @@ fi
 # domain lookups are the slow parts; cache them so re-scans and the model benchmark reuse
 # one fetch across many models. -r wipes it.
 CACHE_DIR="$SCRIPT_DIR/.cache/$(printf '%s' "$URL" | sha256sum | cut -c1-16)"
-[ -n "$REFRESH" ] && rm -rf "$CACHE_DIR"
+# -r discards DERIVED data (page, screenshot, metadata, LLM answers) so the scan re-runs clean.
+# It must not touch feedback.txt: that is hand-entered analyst judgement, not something a re-scan
+# can regenerate. Wiping the whole dir silently erased the flag history of every URL re-scanned
+# with -r -- the flags simply vanished from ./feedback-report.sh -f.
+if [ -n "$REFRESH" ]; then
+    _fb_keep=$(cat "$CACHE_DIR/feedback.txt" 2>/dev/null)
+    rm -rf "$CACHE_DIR"
+    mkdir -p "$CACHE_DIR"
+    [ -n "$_fb_keep" ] && printf '%s\n' "$_fb_keep" > "$CACHE_DIR/feedback.txt"
+fi
 mkdir -p "$CACHE_DIR"
 
 # === PHASE 1: Static URL Analysis (zero-day signals) ===
@@ -275,6 +285,19 @@ if echo "$DOMAIN" | grep -qiE "(^|\.)($TUNNEL_SERVICES)\$"; then
     add_signal "Hosted on tunneling service: $TUNNEL_SVC (real operator hidden behind a free tunnel)"
 fi
 
+# ponytail: Email link-tracking / redirection services (Mailjet mjt.lu, SendGrid, Mailchimp, ...).
+# Phishing routinely enters through these: a live token 3xx/JS-redirects off-domain and we analyze
+# the DESTINATION (host is re-anchored post-redirect). The problem case is a dead/expired/bare link
+# -- the scraper lands on the service's own "this subdomain is for link redirection" placeholder,
+# which previously scored SAFE. Detected here; whether it becomes a red flag is decided post-fetch
+# (only when we NEVER left the service -- see below), so a resolved link isn't punished for its entry.
+REDIRECT_SERVICES='mjt\.lu|sendgrid\.net|list-manage\.com|rs6\.net|hubspotlinks\.com|mailgun\.org|sparkpostmail\.com|sg-links\.net'
+REDIRECT_SVC=""
+if echo "$DOMAIN" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
+    REDIRECT_SVC=$(echo "$DOMAIN" | grep -oiE "($REDIRECT_SERVICES)\$" | head -1)
+    add_signal "Email link-redirection service: $REDIRECT_SVC (real destination reached via a tracked redirect)"
+fi
+
 # === Domain Info Lookup ===
 # ponytail: IP/geo, domain age, SSL and DNS are cached in meta.env so re-scans and the
 # model benchmark skip these network round-trips. -r refreshes.
@@ -288,8 +311,13 @@ if [ -f "$CACHE_DIR/meta.env" ]; then
 else
 echo "${BOLD}Domain Info${RESET}"
 
-# Get apex domain (last 2 parts for most TLDs)
-APEX_DOMAIN=$(echo "$DOMAIN" | grep -oE '[^.]+\.[^.]+$')
+# Registrable domain via the Public Suffix List (psl.sh). NOT the last two labels: for
+# smithpower.autoit.za.com that gave "za.com", so the RDAP lookup below returned the CentralNic
+# registry's 1998 registration and every *.za.com phish inherited a 28-year "aged domain" pass.
+# When the host sits directly on a shared namespace, apex_of returns the host itself, RDAP has no
+# record for it, and the age reads unknown -- which is the honest answer, and count_red_flags
+# already treats an empty age as "not counted" rather than "old".
+APEX_DOMAIN=$(apex_of "$DOMAIN")
 
 # DNS + IP info
 IP=$(dig +short "$DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
@@ -408,6 +436,11 @@ if [ -z "$SKIP_FETCH" ]; then
         TITLE=$(echo "$PAGE_DATA" | jq -r '.title' 2>/dev/null)
         FINAL_URL=$(echo "$PAGE_DATA" | jq -r '.finalUrl' 2>/dev/null)
         THIRD_PARTY=$(echo "$PAGE_DATA" | jq -r '.thirdPartyDomains | length' 2>/dev/null)
+        # Fed to is_blank_page at verdict time (see verdict.sh). PAGE_FETCHED marks that a real
+        # page.json exists, so the -s / unreachable paths keep their own handling.
+        PAGE_FETCHED=1
+        PAGE_STATUS=$(echo "$PAGE_DATA" | jq -r '.status // 0' 2>/dev/null)
+        PAGE_ELEMS=$(echo "$PAGE_DATA" | jq -r '[.counts | .links, .forms, .scripts, .images, .iframes] | add // 0' 2>/dev/null)
 
         if [ "$FINAL_URL" != "$URL" ] && [ -n "$FINAL_URL" ] && [ "$FINAL_URL" != "null" ]; then
             add_signal "Redirects to: $FINAL_URL"
@@ -424,6 +457,43 @@ if [ -z "$SKIP_FETCH" ]; then
         fi
 
         echo_grey "- Third-party domains: $THIRD_PARTY"
+
+        # ponytail: Follow-the-login-link escalation. This page has no credential form, but a
+        # marketing landing page or SPA shell routinely puts one a single click away -- and every
+        # login-dependent floor stays a no-op until a password field is seen, so a kit with a clean
+        # front page scored SAFE (icamis.icam.mw did exactly that). Spend ONE more fetch on the best
+        # candidate page-fetch.sh surfaced, and only when this page really has no form.
+        # The LINK is never a signal: having a login page is not suspicious. Only what the followed
+        # page CONTAINS counts, merged below as if it had been seen on the landed page.
+        # A page.json cached before loginLinks existed simply has no candidates; -r refreshes it.
+        LOGIN_URL=""
+        [ "$HAS_LOGIN" != "true" ] && LOGIN_URL=$(echo "$PAGE_DATA" | jq -r '.loginLinks[0] // empty' 2>/dev/null)
+        if [ -n "$LOGIN_URL" ]; then
+            if [ -f "$CACHE_DIR/page-login.json" ]; then
+                LOGIN_DATA=$(cat "$CACHE_DIR/page-login.json")
+            else
+                echo_grey "- No form here; following login link: $LOGIN_URL"
+                [ -z "$NO_VISION" ] && LOGIN_SHOT="$CACHE_DIR/login.jpg"
+                LOGIN_DATA=$(PAGE_SHOT="$LOGIN_SHOT" "$SCRIPT_DIR/page-fetch.sh" \
+                    ${PROXY:+-p "$PROXY"} ${EXIT_CC:+-g "$EXIT_CC"} "$LOGIN_URL" 2>/dev/null | tail -1)
+                echo "$LOGIN_DATA" | jq -e '.error' >/dev/null 2>&1 \
+                    || echo "$LOGIN_DATA" > "$CACHE_DIR/page-login.json"
+            fi
+            # Only a page that really does ask for credentials is worth merging. A "portal" link
+            # that turns out to be a brochure page changes nothing, and costs one fetch to learn.
+            if [ "$(echo "$LOGIN_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)" = "true" ]; then
+                LOGIN_SMELLS=$(echo "$LOGIN_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
+                add_signal "Credential form found one click away: $LOGIN_URL (landing page has none)"
+                while IFS= read -r _ls; do
+                    [ -n "$_ls" ] && add_signal "$_ls [on $LOGIN_URL]"
+                done <<< "$(echo "$LOGIN_DATA" | jq -r '.phishingSmells[]?' 2>/dev/null)"
+                # Point the VLM at the CREDENTIAL page, not the marketing shell that linked it --
+                # the brand-vs-domain question is only meaningful where the password box is.
+                [ -f "$CACHE_DIR/login.jpg" ] && SHOT="$CACHE_DIR/login.jpg"
+            else
+                LOGIN_URL=""    # nothing to merge; keep the verdict inputs untouched
+            fi
+        fi
     fi
 else
     PAGE_DATA="{}"
@@ -504,6 +574,28 @@ SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev
 # Tunneling-service host (detected in Phase 1) is a deterministic red flag, whether or not the page
 # fetched -- append here so count_red_flags scores it (1 flag -> SUSPICIOUS floor on its own).
 [ -n "$TUNNEL_SVC" ] && SMELLS="${SMELLS:+$SMELLS, }hosted on tunneling service $TUNNEL_SVC"
+
+# Merge the followed credential page (see the escalation in Phase 2). Both lines re-derive from
+# PAGE_DATA just above, so the override has to land HERE or it gets clobbered. HAS_LOGIN re-arms
+# every login-gated floor -- off-CDN third-party host, hotlinked brand artwork, brand-lookalike --
+# which is the entire point: the credential surface is what those rules were written to judge.
+# Note it adds no red flag of its own; only the followed page's own smells score.
+if [ -n "$LOGIN_URL" ]; then
+    HAS_LOGIN=true
+    [ -n "$LOGIN_SMELLS" ] && SMELLS="${SMELLS:+$SMELLS, }$LOGIN_SMELLS"
+fi
+
+# ponytail: An email-redirector link (detected in Phase 1) is only a red flag when we NEVER left it:
+# the token was dead/expired/bare and we landed back on the service's own placeholder (or the fetch
+# failed) instead of the real destination. A LIVE link redirects off-domain and the landed host's own
+# signals carry the verdict, so this must not fire there. Flag = SUSPICIOUS floor (1 flag, no login),
+# the honest "couldn't confirm where this actually goes" verdict -- not the phantom-SAFE placeholder.
+if [ -n "$REDIRECT_SVC" ]; then
+    _land_host=$(printf '%s' "${FINAL_URL:-$URL}" | sed -E 's#^[a-z]+://##;s#[/?].*##' | tr 'A-Z' 'a-z')
+    if printf '%s' "$_land_host" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
+        SMELLS="${SMELLS:+$SMELLS, }link-redirection service $REDIRECT_SVC - destination unresolved (dead/expired link on a phishing-prone redirector)"
+    fi
+fi
 
 # ponytail: Brand-lookalike subdomain on multi-tenant hosting. On these hosts the APEX confers no
 # identity -- anyone can register any subdomain -- so a subdomain that spells out the page's OWN
@@ -703,10 +795,21 @@ if [ -n "$VT" ]; then
     else
         _um=$(jq -r '.verdicts.overall.malicious // false' "$CACHE_DIR/urlscan.json")
         _usc=$(jq -r '.verdicts.overall.score // 0' "$CACHE_DIR/urlscan.json")
+        # verdicts.engines is a SEPARATE judgement (urlscan's own ML classifier plus any engine
+        # verdicts) and it routinely calls a page malicious while verdicts.overall stays at 0.
+        # Reading only .overall silently discarded a malicious/score-96 call on healthlynotes.com.
+        _uem=$(jq -r '.verdicts.engines.malicious // false' "$CACHE_DIR/urlscan.json")
+        _uesc=$(jq -r '.verdicts.engines.score // 0' "$CACHE_DIR/urlscan.json")
         _utime=$(jq -r '.task.time // "?"' "$CACHE_DIR/urlscan.json" | cut -dT -f1)
-        URLSCAN_SUMMARY="malicious=$_um, score $_usc (last scan $_utime)"
+        URLSCAN_SUMMARY="overall malicious=$_um score $_usc, engines malicious=$_uem score $_uesc (last scan $_utime)"
         echo_grey "- urlscan.io: $URLSCAN_SUMMARY  (https://urlscan.io/search/#page.url:%22$URL%22)"
-        [ "$_um" = "true" ] && rep_redflag urlscan.io "score $_usc"
+        # Named separately in the flag text so the analyst can weigh an ML call differently from a
+        # community/engine consensus. Either one alone is one red flag, never two.
+        if [ "$_um" = "true" ]; then
+            rep_redflag urlscan.io "overall score $_usc"
+        elif [ "$_uem" = "true" ]; then
+            rep_redflag "urlscan.io engines" "ML score $_uesc"
+        fi
     fi
 fi
 
@@ -852,18 +955,19 @@ else
 fi
 
 # The weak 1.5b LLM counts every item under "Phishing smells" as a red flag even when the prompt
-# says not to, so hand it a filtered list that drops the two smells verdict.sh:33 excludes --
-# hidden-field COUNT and the third-party-hosts note (both normal on legit sites). The deterministic
-# core and the display signals still get the full SMELLS; this only removes the LLM's miscount fuel.
+# says not to, so hand it a filtered list that drops the smells verdict.sh:33 excludes --
+# hidden-field COUNT, the third-party-hosts note and hotlinked brand artwork (all normal on legit
+# sites). The deterministic core and the display signals still get the full SMELLS; this only
+# removes the LLM's miscount fuel. Keep this list in sync with count_red_flags.
 SMELLS_LLM=$(printf '%s' "$SMELLS" | tr ',' '\n' | sed 's/^ *//;s/ *$//' \
-    | grep -viE 'hidden form field|third-party hosts referenced' \
+    | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image' \
     | awk 'NF{a[n++]=$0} END{for(i=0;i<n;i++)printf "%s%s",(i?", ":""),a[i]}')
 
 # The weak 1.5b LLM miscounts a CLEAN reputation line ("0/95 engines malicious") as a red flag,
 # so only feed reputation to the LLM when it is actually adverse. An adverse hit already forces
 # the floor via SMELLS/rep_redflag, so the LLM never needs the clean case (see llm-recounts note).
 VT_LLM=""; { [ "${_vm:-0}" -gt 0 ] || [ "${_vs:-0}" -gt 0 ]; } 2>/dev/null && VT_LLM="$VT_SUMMARY"
-URLSCAN_LLM=""; [ "${_um:-false}" = "true" ] && URLSCAN_LLM="$URLSCAN_SUMMARY"
+URLSCAN_LLM=""; { [ "${_um:-false}" = "true" ] || [ "${_uem:-false}" = "true" ]; } && URLSCAN_LLM="$URLSCAN_SUMMARY"
 
 # The 1.5b does not evaluate a rule's precondition -- it fires whichever rule is listed FIRST and
 # parrots its text. It claimed "Login form present AND red flag count = 1" on a blank page with 0
@@ -1037,6 +1141,15 @@ if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
 fi
 
+# The scanner cannot clear a page it never saw. An error status or an empty DOM makes any SAFE --
+# from the LLM or from the no-signal default -- a phantom, so drop it to UNCLEAR here and let the
+# floor below still escalate on whatever static signals exist. Same failure shape as the data: URL
+# guard in page-fetch.sh: a dead target reads as a clean page.
+if [ -n "$PAGE_FETCHED" ] && is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS"; then
+    echo_yellow "[!] No assessable page (HTTP ${PAGE_STATUS:-?}, ${PAGE_ELEMS:-0} DOM elements) -- cannot call this SAFE"
+    VERDICT=""
+fi
+
 # === Deterministic verdict (classify_verdict in verdict.sh) ===
 # Signals are extracted deterministically upstream, so the final verdict is
 # decided by the decision table in verdict.sh -- it escalates over the LLM's
@@ -1053,6 +1166,19 @@ echo ""
 echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
 echo "==============================================${RESET}"
+
+# A prior deep inspection is the strongest context available on a re-scan: a human already looked
+# at this URL and wrote down what they concluded. Show it next to the fresh verdict so nobody
+# re-litigates a case that is already settled -- and so a known false positive is labelled as one
+# the moment it reappears. Latest inspected row wins, same rule as feedback-report.sh.
+_insp=$(awk -F'\t' '$3=="inspected" { ts=$1; v=$2; note=(NF>=5 ? $5 : "") }
+                    END { if (ts) print ts"\t"v"\t"note }' "$CACHE_DIR/feedback.txt" 2>/dev/null)
+if [ -n "$_insp" ]; then
+    IFS=$'\t' read -r _its _iv _inote <<< "$_insp"
+    echo ""
+    echo_cyan "Prior deep inspection -- $_its (verdict then: ${_iv:-?})"
+    printf '%s\n' "$_inote" | fold -s -w 96 | sed "s/^/  ${GREY}/;s/\$/${RESET}/"
+fi
 
 # Last-resort fallback: a bot gate (Turnstile/hCaptcha/reCAPTCHA) still blocks the real page
 # (operator attach was declined, unavailable, or failed). Offer to just open it in the analyst's
@@ -1071,10 +1197,14 @@ fi
 # ponytail: interactive-only so benchmarks never prompt; one TSV line appended to the cache.
 if [ -t 0 ]; then
     echo ""
-    read -r -p "${CYAN}Do you agree with this verdict? [Y/n/s(kip)] ${RESET}" _fb
+    read -r -p "${CYAN}Do you agree with this verdict? [Y/n/s(kip)/f(lag for deeper inspection)] ${RESET}" _fb
     case "$_fb" in
         [Nn]*) _fb=disagree ;;
         [Ss]*) _fb=skip ;;
+        # 'flag' is not a disagreement -- it means "the verdict may be right but this one needs a
+        # human/deeper look". Kept as its own value so it never pollutes the agreement rate, and
+        # `./feedback-report.sh -f` prints just these as a worklist.
+        [Ff]*) _fb=flag ;;
         *)     _fb=agree ;;
     esac
     printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$VERDICT" "$_fb" "$URL" >> "$CACHE_DIR/feedback.txt"
