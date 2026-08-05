@@ -103,6 +103,10 @@ while getopts "m:sVHrc:Dhtp:g:" opt; do
         *) usage >&2; exit 1 ;;
     esac
 done
+# A bare run -- no flags at all -- is the interactive analyst path, and it is the only one that
+# asks about the cache. Any flag at all means the caller has told us how to behave, and the
+# benchmarks always pass flags, so they can never be stopped by a prompt.
+BARE_RUN=""; [ "$OPTIND" -eq 1 ] && BARE_RUN=1
 shift $((OPTIND-1))
 
 # -m none is an alias for -H (pure heuristic: no LLM, verdict from the decision table)
@@ -176,16 +180,33 @@ fi
 # domain lookups are the slow parts; cache them so re-scans and the model benchmark reuse
 # one fetch across many models. -r wipes it.
 CACHE_DIR="$SCRIPT_DIR/.cache/$(printf '%s' "$URL" | sha256sum | cut -c1-16)"
-# -r discards DERIVED data (page, screenshot, metadata, LLM answers) so the scan re-runs clean.
-# It must not touch feedback.txt: that is hand-entered analyst judgement, not something a re-scan
-# can regenerate. Wiping the whole dir silently erased the flag history of every URL re-scanned
-# with -r -- the flags simply vanished from ./feedback-report.sh -f.
-if [ -n "$REFRESH" ]; then
-    _fb_keep=$(cat "$CACHE_DIR/feedback.txt" 2>/dev/null)
-    rm -rf "$CACHE_DIR"
-    mkdir -p "$CACHE_DIR"
-    [ -n "$_fb_keep" ] && printf '%s\n' "$_fb_keep" > "$CACHE_DIR/feedback.txt"
+# _purge_cache: drop the DERIVED data (page, screenshot, scripts, LLM answers) and keep
+# feedback.txt. That file is hand-entered analyst judgement, not something a re-scan can
+# regenerate: wiping the whole dir silently erased the flag history of every URL re-scanned with
+# -r, and the flags simply vanished from ./feedback-report.sh -f.
+_purge_cache() {
+    local keep; keep=$(cat "$CACHE_DIR/feedback.txt" 2>/dev/null)
+    rm -rf "$CACHE_DIR"; mkdir -p "$CACHE_DIR"
+    [ -n "$keep" ] && printf '%s\n' "$keep" > "$CACHE_DIR/feedback.txt"
+    return 0
+}
+
+# A bare interactive run decides what to do about an existing scan instead of silently reusing it.
+# Reuse is still the default (Enter), because it is free and the cached page is what the recorded
+# verdict was made from -- but a phishing page changes under you, so "is this still what I saw
+# yesterday" has to be one keypress away.
+REUSED_CACHE=""
+if [ -n "$BARE_RUN" ] && [ -t 0 ] && [ -d "$CACHE_DIR" ]; then
+    _cached=$(find "$CACHE_DIR" -maxdepth 1 ! -name feedback.txt ! -path "$CACHE_DIR" \
+              -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+    if [ -n "$_cached" ]; then
+        echo_grey "cached scan of this URL from $(date -d "@${_cached%.*}" '+%F %R' 2>/dev/null)"
+        read -r -p "${CYAN}Re-use it, or update (re-fetch everything)? [R/u] ${RESET}" _ans
+        case "$_ans" in [Uu]*) REFRESH=1 ;; *) REUSED_CACHE=1 ;; esac
+    fi
 fi
+
+[ -n "$REFRESH" ] && _purge_cache
 mkdir -p "$CACHE_DIR"
 
 # === PHASE 1: Static URL Analysis (zero-day signals) ===
@@ -1318,10 +1339,6 @@ VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL"
 _insp=$(awk -F'\t' '$3=="inspected" { ts=$1; v=$2; note=(NF>=5 ? $5 : ""); c=(NF>=6 ? $6 : "") }
                     END { if (ts) print ts"\t"v"\t"note"\t"c }' "$CACHE_DIR/feedback.txt" 2>/dev/null)
 _vmachine=""
-# What the page IS, beside how bad it is (see category_of in verdict.sh). A recorded category
-# beats the deterministic guess for the same reason a recorded verdict does: a human or a deep
-# inspection looked at the page.
-CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE")
 if [ -n "$_insp" ]; then
     IFS=$'\t' read -r _its _iv _inote _icat <<< "$_insp"
     case "$_iv" in
@@ -1329,8 +1346,14 @@ if [ -n "$_insp" ]; then
             [ "$_iv" != "$VERDICT" ] && [ -t 0 ] \
                 && { _vmachine="${VERDICT:-UNCLEAR}"; VERDICT="$_iv"; } ;;
     esac
-    [ -n "$_icat" ] && [ -t 0 ] && CATEGORY="$_icat"
 fi
+# What the page IS, beside how bad it is (see category_of in verdict.sh). A recorded category
+# beats the deterministic guess for the same reason a recorded verdict does: a human or a deep
+# inspection looked at the page. Computed AFTER the override, never before -- guessing from the
+# machine verdict and then printing the overridden one produced "SAFE (other)", where "other"
+# is a category that only exists for verdicts we are calling bad.
+CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE")
+[ -n "$_icat" ] && [ -t 0 ] && CATEGORY="$_icat"
 
 case "$VERDICT" in
     SAFE)       VC="$GREEN";  VLINE="[+] VERDICT: SAFE" ;;
@@ -1495,6 +1518,19 @@ NOTE: <one-line conclusion, max 200 chars>" \
         [ -n "$_ifound" ] && FB_VERDICT="$_ivnew" FB_CATEGORY="$_icnew" \
             "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
     fi
+fi
+
+# A bare interactive run also asks before it KEEPS what it just fetched. A scan of a live phish
+# leaves the page, the screenshot, its scripts and the victim's email in the query string sitting
+# on disk, and that is not always what you want after a one-off look. Asked last, because the deep
+# inspection above reads those very artifacts. The feedback ledger always survives -- the judgement
+# is the part that cannot be re-fetched.
+if [ -n "$BARE_RUN" ] && [ -t 0 ] && [ -z "$REUSED_CACHE" ]; then
+    echo ""
+    read -r -p "${CYAN}Keep this scan cached (page, screenshot, scripts, LLM answers)? [Y/n] ${RESET}" _ans
+    case "$_ans" in
+        [Nn]*) _purge_cache; echo_grey "cache cleared for this URL (feedback history kept)" ;;
+    esac
 fi
 
 # Always the last line: which URL this whole run was about. A scan scrolls several screens of

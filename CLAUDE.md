@@ -187,6 +187,20 @@ Flags:
   the benchmarks. See below.
 - `-p tor` routes scanner egress through Tor. `-g <cc>` sets the exit country. See below.
 
+**A bare run** (`./url-analyze.sh <url>` with no flags at all) is the interactive analyst path, and
+it is the only one that asks about the cache:
+
+- **Already cached?** It prints when the cached scan was taken and offers `[R/u]` — re-use it
+  (default, free, and it is what the recorded verdict was made from) or update, which re-fetches
+  everything exactly like `-r`.
+- **Fresh scan?** It asks at the very end whether to keep the artifacts. A scan of a live phish
+  leaves the page, the screenshot, its scripts and often the victim's email address on disk.
+  Declining wipes them; `feedback.txt` always survives, because the judgement is the one part a
+  re-scan cannot regenerate. Asked last, because the deep inspection reads those very artifacts.
+
+Any flag at all turns both prompts off, so the benchmarks (which always pass flags, and are never
+interactive) can never be stopped by one.
+
 Every run ends with a `scanned: <url>` line. A scan scrolls several screens, so the URL is gone by
 the time you reach the bottom, and the next thing you do is paste it into a ticket or re-run it
 with another flag.
