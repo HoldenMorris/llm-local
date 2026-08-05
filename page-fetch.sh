@@ -260,6 +260,29 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     }
   }
 
+  // The follow loop above chases every onward hop, and the LAST hop is allowed to fail -- a kit
+  // redirects to a destination that is dead, blocked, or resolves to nothing, and Chrome parks the
+  // tab on chrome-error://. The check below then throws away the whole fetch as "unreachable",
+  // including the page we successfully loaded and could read a moment earlier. That is how
+  // tequiero.com.co/rr/tt/ -- an Outlook credential page that answers HTTP 200 -- produced zero
+  // signals and no redirect chain at all: not a redirect-detection failure, a fetch that discarded
+  // its own evidence.
+  // So: if we landed nowhere but the FIRST navigation worked, go back to it and analyse what we
+  // could actually see. One extra navigation, only on the failure path.
+  if (!attach && !/^https?:/i.test(page.url()) && resp) {
+    // Scripts OFF for the retry. The page's own redirect is what broke the tab the first time, so
+    // re-running it just breaks it again -- with JS disabled the served HTML stays put and we read
+    // the credential form, the title and the inline scripts as delivered. Re-enabled immediately
+    // after load: page.evaluate() needs script execution, and the page's own scripts were already
+    // skipped at parse time, so nothing of theirs runs.
+    // This is a last resort on a fetch that already failed, so a JS-built page showing less than
+    // it would have is still strictly more than the nothing we had.
+    await page.setJavaScriptEnabled(false).catch(() => {});
+    const back = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+    await page.setJavaScriptEnabled(true).catch(() => {});
+    if (back) resp = back;
+  }
+
   const landedUrl = page.url();
   // A failed navigation lands on about:blank or a chrome-error:// interstitial (blocked,
   // timeout, cert/upgrade failure). Both are empty non-pages: scoring them yields a phantom
@@ -269,7 +292,11 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // scored the corpus's only DANGEROUS fixture as SAFE.
   const dataTarget = /^data:/i.test(targetUrl) && /^data:/i.test(landedUrl);
   if (!landedUrl || (!/^https?:/i.test(landedUrl) && !dataTarget)) {
-    console.log(JSON.stringify({ error: 'timeout or unreachable' }));
+    // Even with no renderable page we usually know the HTTP status, and "the server answered 404"
+    // is a different fact from "we could not reach it": one says the kit is gone, the other says
+    // nothing at all. Report it so the caller can tell them apart.
+    const st = resp ? resp.status() : 0;
+    console.log(JSON.stringify({ error: 'timeout or unreachable', status: st, url: targetUrl }));
     await shutdown();
     process.exit(0);
   }
