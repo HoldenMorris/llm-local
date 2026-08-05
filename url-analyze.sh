@@ -191,7 +191,11 @@ mkdir -p "$CACHE_DIR"
 # === PHASE 1: Static URL Analysis (zero-day signals) ===
 # Split host from an explicit :port -- a port glued to DOMAIN breaks dig/openssl (the non-standard
 # high port is itself a tunneling/phishing signal, e.g. portmap.io:46801). PORT feeds the cert check.
-AUTHORITY=$(echo "$URL" | sed -E 's|https?://([^/]+).*|\1|')
+# [^/?#] and not [^/]: a url may carry a query with NO path at all (https://host?state=...), and
+# stopping only at '/' swallowed the whole query into DOMAIN. dig then failed, the fetch was
+# skipped, and the scan produced a verdict from zero facts -- which is exactly how the middle hop
+# of the Google-OAuth chain (m-365a63c9-....radiopanamericanapanama.com?state=...) read SAFE.
+AUTHORITY=$(echo "$URL" | sed -E 's|https?://([^/?#]+).*|\1|')
 # Strip any userinfo (user[:pass]@) -- the host is what follows the LAST '@'. A userinfo is also
 # the classic 'http://paypal.com@evil.com' obfuscation, so note it (non-flooring; benign email pastes).
 USERINFO=""
@@ -424,7 +428,7 @@ fi
 # time out. Static + DNS info above still stands. (data: URLs need no DNS, so exempt them.)
 if [ -z "$SKIP_FETCH" ] && [ -z "$IP" ] && ! printf '%s' "$URL" | grep -q '^data:'; then
     add_signal "Domain does not resolve (no DNS A record)"
-    SKIP_FETCH=1
+    SKIP_FETCH=1; NO_DNS=1
 fi
 
 # === PHASE 2: Page Fetch (dynamic signals) ===
@@ -1270,6 +1274,13 @@ fi
 # guard in page-fetch.sh: a dead target reads as a clean page.
 if [ -n "$PAGE_FETCHED" ] && is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS"; then
     echo_yellow "[!] No assessable page (HTTP ${PAGE_STATUS:-?}, ${PAGE_ELEMS:-0} DOM elements) -- cannot call this SAFE"
+    VERDICT=""
+fi
+# Same rule one step earlier: the host did not resolve, so there was no page to fetch at all. The
+# scan holds nothing but the url itself, and "no facts" is not evidence of innocence -- a phish
+# whose host is already sinkholed or rotated away must not read SAFE the day after it worked.
+if [ -n "$NO_DNS" ]; then
+    echo_yellow "[!] Host does not resolve -- nothing was fetched, so this cannot be called SAFE"
     VERDICT=""
 fi
 
