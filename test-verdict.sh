@@ -212,6 +212,12 @@ check "digits only"            ''          "$(campaign_key 'https://x.com/?page=
 check "token shape, hop 1" 'shape:state=alnum-digits' "$(campaign_key 'https://accounts.google.com/o/oauth2/v2/auth?scope=openid&state=p1KZOObfm27wFyTC1ju0T4ppj-14153490313725112891132624')"
 check "token shape, hop 2" 'shape:state=alnum-digits' "$(campaign_key 'https://m-365a63c9-x.radiopanamericanapanama.com?state=hztgXDzNtHx7AgVxKr8clA5Zp-14332323313229262624419027112417262314192517911326913811')"
 check "an ordinary token has no shape" '' "$(campaign_key 'https://x.com/?state=abc-123')"
+# The subdomain label repeated as the path: one campaign, two unrelated registered domains.
+check "label echo, domain 1" 'shape:label=u5xb' "$(campaign_key 'https://u5xb.eaotocephalic.digital/u5xb')"
+check "label echo, domain 2" 'shape:label=u5xb' "$(campaign_key 'https://u5xb.iaoerheartwounding.digital/u5xb')"
+# ... but docs.example.com/docs and blog.foo.com/blog are ordinary site structure
+check "a word label is not a token" '' "$(campaign_key 'https://docs.example.com/docs')"
+check "and neither is blog/blog"     '' "$(campaign_key 'https://blog.foo.com/blog')"
 # A carrier shape must NOT group: every legitimate mailshot on the platform would join the phish
 check "sendgrid click link is not a campaign" '' "$(campaign_key 'http://url7037.comaround.com/ls/click?upn=u001.bmj3YK0AQCI1')"
 check "letters only"           ''          "$(campaign_key 'https://x.com/?lang=engb')"

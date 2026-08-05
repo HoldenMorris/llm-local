@@ -170,6 +170,21 @@ has_gratuitous_encoding() {
 # not group. Sort them if a kit ever shuffles its own query order.
 campaign_key() {
     local url="$1" q pair k v out="" oldifs
+    # Shape 2 first, because it needs no query string at all: the leading subdomain label repeated
+    # as the first path segment. u5xb.eaotocephalic.digital/u5xb and
+    # u5xb.iaoerheartwounding.digital/u5xb are one campaign on two unrelated registered domains, so
+    # nothing about the hosts links them -- the LABEL is the token the operator carries across the
+    # rotation. Guarded to machine-looking labels (3-6 chars, at least one digit AND one letter) so
+    # docs.example.com/docs and blog.foo.com/blog, which are real and common, stay out.
+    local _rest _label _seg
+    _rest="${url#*://}"; _label="${_rest%%.*}"; _seg="${_rest#*/}"; _seg="${_seg%%[/?#]*}"
+    if [ -n "$_label" ] && [ "$_label" = "$_seg" ] \
+       && printf '%s' "$_label" | grep -qE '^[a-z0-9]{3,6}$' \
+       && printf '%s' "$_label" | grep -qE '[0-9]' \
+       && printf '%s' "$_label" | grep -qE '[a-z]'; then
+        printf 'shape:label=%s' "$_label"
+        return 0
+    fi
     q="${url#*\?}"
     [ "$q" = "$url" ] && return 0        # no query string at all
     q="${q%%#*}"
