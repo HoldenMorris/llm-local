@@ -268,10 +268,37 @@ if echo "$DOMAIN" | grep -qP '[^\x00-\x7F]'; then
     add_signal "Homograph attack: non-ASCII characters in domain"
 fi
 
-# ponytail: Random-looking domain (high entropy)
+# ponytail: Random-looking domain (high entropy). is_random_label lives in verdict.sh so the
+# redirect-target check below judges a host by exactly the same rule.
 DOMAIN_BASE=$(echo "$DOMAIN" | sed 's/\.[^.]*$//' | tr -d '.-')
-if [ ${#DOMAIN_BASE} -gt 8 ] && echo "$DOMAIN_BASE" | grep -qE '^[a-z0-9]+$' && echo "$DOMAIN_BASE" | grep -qE '[0-9].*[0-9]'; then
+if is_random_label "$DOMAIN_BASE"; then
     add_signal "Random-looking domain: $DOMAIN_BASE"
+fi
+
+# === Redirect parameter carrying a whole URL (open-redirect abuse) ===
+# The strongest way to hide a phish is to not host it: point a redirect parameter on a trusted
+# host at your own. The landing domain here really IS accounts.google.com -- aged, Google-owned,
+# valid cert -- so every domain-based check passes and the scan reads UNCLEAR.
+# An off-site redirect target is NOT suspicious by itself: that is what OAuth is for, and every
+# legitimate sign-in flow does it. What is never legitimate is HIDING it:
+#   * gratuitous percent-encoding of unreserved characters ("h%74tps" is a plain 't')
+#   * a machine-generated hostname, or a high-risk TLD, at the far end
+# Those score; the bare off-site target is context.
+REDIR_TARGET=$(redirect_target "$URL")
+REDIR_OBFUS=""; REDIR_BAD=""
+if [ -n "$REDIR_TARGET" ] && [ "$(apex_of "$REDIR_TARGET")" != "$(apex_of "$DOMAIN")" ]; then
+    add_signal "Redirect parameter points off-site to: $REDIR_TARGET"
+    if has_gratuitous_encoding "$(redirect_raw "$URL")"; then
+        REDIR_OBFUS=1
+        add_signal "Redirect target is obfuscated: unreserved characters percent-encoded to hide $REDIR_TARGET"
+    fi
+    _rt_tld="${REDIR_TARGET##*.}"
+    if is_risky_tld "$_rt_tld"; then
+        REDIR_BAD="high-risk TLD .$_rt_tld"
+    elif is_random_label "$(printf '%s' "$REDIR_TARGET" | sed 's/\.[^.]*$//' | tr -d '.-')"; then
+        REDIR_BAD="machine-generated hostname"
+    fi
+    [ -n "$REDIR_BAD" ] && add_signal "Redirect target looks hostile: $REDIR_BAD ($REDIR_TARGET)"
 fi
 
 # ponytail: Abuse-prone tunneling / port-forwarding services. A random subdomain on one of these
@@ -579,6 +606,12 @@ SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev
 # Tunneling-service host (detected in Phase 1) is a deterministic red flag, whether or not the page
 # fetched -- append here so count_red_flags scores it (1 flag -> SUSPICIOUS floor on its own).
 [ -n "$TUNNEL_SVC" ] && SMELLS="${SMELLS:+$SMELLS, }hosted on tunneling service $TUNNEL_SVC"
+# Same for the hidden redirect target (Phase 1). One red flag each, and they stack: an obfuscated
+# parameter pointing at a machine-generated host is two. Both are properties of the URL, so they
+# score with no fetch at all -- which is the point, because the fetched page is the real login
+# page of a real trusted brand and looks perfectly clean.
+[ -n "$REDIR_OBFUS" ] && SMELLS="${SMELLS:+$SMELLS, }redirect target hidden by gratuitous percent-encoding ($REDIR_TARGET)"
+[ -n "$REDIR_BAD" ] && SMELLS="${SMELLS:+$SMELLS, }redirect target is hostile-looking - $REDIR_BAD ($REDIR_TARGET)"
 
 # Merge the followed credential page (see the escalation in Phase 2). Both lines re-derive from
 # PAGE_DATA just above, so the override has to land HERE or it gets clobbered. HAS_LOGIN re-arms

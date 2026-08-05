@@ -317,6 +317,7 @@ not 3B.
 | Excessive subdomains | More than 4 levels (this hides the real domain) |
 | Homograph attack | Non-ASCII characters in the domain |
 | Random domain | High-entropy alphanumeric strings |
+| Open-redirect abuse | A redirect-style query parameter (`redirect_uri`, `next`, `url`, `continue`, and more) that carries a whole URL to another site. The strongest way to hide a phish is to **not host it**: `accounts.google.com/o/oauth2/v2/auth?redirect_uri=...` really is Google — aged, Google-owned, valid cert — so every domain check passes and the page you fetch is a genuine login form. An off-site target alone is **not** a signal, because that is what OAuth is for. What scores is **hiding** it: gratuitous percent-encoding of unreserved characters (`h%74tps` is a plain `t`, which RFC 3986 forbids and no normal tool emits), and a machine-generated hostname or high-risk TLD at the far end. One red flag each, and they stack. The parameter is decoded (up to 3 rounds, kits double-encode) and the real destination is printed in clear |
 | Tunneling service | Host on a free tunnel or port-forwarder (`ngrok`, `trycloudflare`, `portmap.io`, `serveo`, `loca.lt`, and more). The operator hides behind a tunnel. This is a deterministic red flag, so the URL reads SUSPICIOUS even when the tunnel is down and the fetch fails. |
 
 ### Phase 2: Domain Info Lookup

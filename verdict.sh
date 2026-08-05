@@ -81,6 +81,78 @@ maillist-manage.in zohosecure.com mjt.lu beak.host irontree.cloud ayai.live"
 # is_tenant_suffix <apex> -> exit 0 if that apex is shared hosting rather than one owner.
 is_tenant_suffix() { case " $(printf '%s' "$TENANT_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# url_decode <string> -> one percent-decoding pass. %XX only; a bare % is left alone, and literal
+# backslashes are escaped first so printf %b cannot reinterpret them.
+url_decode() {
+    local s="${1//\\/\\\\}"
+    s=$(printf '%s' "$s" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')
+    printf '%b' "$s"
+}
+
+# url_decode_deep <string> -> decode until it stops changing (kits double-encode), max 3 rounds.
+url_decode_deep() {
+    local cur="$1" prev="" i=0
+    while [ "$cur" != "$prev" ] && [ "$i" -lt 3 ]; do
+        prev="$cur"; cur=$(url_decode "$cur"); i=$((i+1))
+    done
+    printf '%s' "$cur"
+}
+
+# is_random_label <label> -> exit 0 if it looks machine-generated rather than chosen: long, purely
+# alphanumeric, and carrying at least two digits. Case-insensitive, because hostnames are.
+is_random_label() {
+    local s="${1,,}"; s="${s//[.-]/}"
+    [ "${#s}" -gt 8 ] || return 1
+    case "$s" in *[!a-z0-9]*) return 1 ;; esac
+    case "$s" in *[0-9]*[0-9]*) return 0 ;; esac
+    return 1
+}
+
+# Query parameters that carry a whole URL. An open redirect through one of these is how a phish
+# borrows a trusted host: the landing domain really is accounts.google.com, and the destination is
+# hidden in the parameter.
+REDIRECT_PARAMS="redirect_uri redirect_url redirect redir redirecturl url u next continue return returnto return_to dest destination target goto to r relaystate callback forward image_url"
+
+# redirect_raw <url> -> the RAW (still-encoded) value of the first redirect parameter that decodes
+# to an http(s) URL. Raw, because the encoding itself is the evidence.
+redirect_raw() {
+    local q pair k v oldifs found=""
+    q="${1#*\?}"
+    [ "$q" = "$1" ] && return 0
+    q="${q%%#*}"
+    oldifs="$IFS"; IFS='&'
+    for pair in $q; do
+        k="${pair%%=*}"; v="${pair#*=}"
+        [ "$v" = "$pair" ] && continue
+        case " $REDIRECT_PARAMS " in *" ${k,,} "*) ;; *) continue ;; esac
+        case "$(url_decode_deep "$v")" in http://*|https://*) found="$v"; break ;; esac
+    done
+    IFS="$oldifs"
+    printf '%s' "$found"
+}
+
+# redirect_target <url> -> the host the redirect parameter really points at, decoded and lowercased.
+redirect_target() {
+    local d
+    d=$(url_decode_deep "$(redirect_raw "$1")")
+    [ -z "$d" ] && return 0
+    d="${d#*://}"; d="${d%%[/?#]*}"; d="${d##*@}"; d="${d%%:*}"
+    printf '%s' "${d,,}"
+}
+
+# has_gratuitous_encoding <string> -> exit 0 if an UNRESERVED character was percent-encoded.
+# RFC 3986 says unreserved characters (A-Z a-z 0-9 - . _ ~) must not be encoded, and no normal
+# tool does it. "h%74tps://" is a plain 't' hidden from anything that reads the url as text, which
+# is evasion and nothing else. Decodes every %XX in one pass rather than forking per pair.
+has_gratuitous_encoding() {
+    local pairs decoded
+    pairs=$(printf '%s' "$1" | grep -oE '%[0-9A-Fa-f]{2}' | tr -d '\n')
+    [ -z "$pairs" ] && return 1
+    decoded=$(url_decode "$pairs")
+    case "$decoded" in *[a-zA-Z0-9._~-]*) return 0 ;; esac
+    return 1
+}
+
 # campaign_key <url> -> the campaign tag carried in the query string, or nothing.
 #
 # One operator runs one kit across many registered domains, and the affiliate/sub-id tag in the

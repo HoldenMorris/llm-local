@@ -154,6 +154,28 @@ check "campaign suspicious is capped too"  SUSPICIOUS "$(cv true com '' '' 'http
 CAMPD='Confirmed phishing previously inspected under the same campaign tag s1=upg12 (https://a.b/x)'
 check "campaign dangerous + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/y' "$CAMPD" '' '' SAFE)"
 
+echo "== open-redirect abuse (the phish that hosts nothing) =="
+# The real thing, trimmed: a genuine accounts.google.com authorize url whose redirect_uri is
+# percent-encoded character by character to hide the attacker host.
+OA='https://accounts.google.com/o/oauth2/v2/auth?client_id=904424875402-73hnjvjhcilptli7r7cpf7bvig8fcbp6.apps.googleusercontent.com&redirect_uri=h%74tps:%2f%2fm%2D3%36%35a%36%33c9%2d%61%64o%62%33%39b%37%63%61%62%6C%37jFW%57i%73u%72%6b%73%44%3942%64%579%37v%66Bwc%34%42I%37cN.%72a%64i%6fpanam%65ric%61%6e%61%70an%61ma%2eco%6d&scope=openid+email&prompt=none&response_type=code'
+check "redirect target is decoded out" \
+      'm-365a63c9-adob39b7cabl7jfwwisurksd942dw97vfbwc4bi7cn.radiopanamericanapanama.com' \
+      "$(redirect_target "$OA")"
+expect "and its encoding is gratuitous"  yes has_gratuitous_encoding "$(redirect_raw "$OA")"
+expect "that host reads machine-generated" yes is_random_label m-365a63c9-adob39b7cabl7jfwwisurksd942dw97vfbwc4bi7cn
+# A normal OAuth flow: off-site redirect, no hiding. Nothing here may score.
+OK='https://accounts.google.com/o/oauth2/v2/auth?client_id=1234.apps.googleusercontent.com&redirect_uri=https%3A%2F%2Fapp.slack.com%2Fauth&scope=openid+email&response_type=code'
+check "ordinary oauth still resolves"    'app.slack.com' "$(redirect_target "$OK")"
+expect "and is not called obfuscated"    no  has_gratuitous_encoding "$(redirect_raw "$OK")"
+expect "reserved chars encode normally"  no  has_gratuitous_encoding 'https%3A%2F%2Fx.com%2Fa%3Fb%3Dc'
+expect "a slack host is not random"      no  is_random_label app.slack
+check "no redirect param -> nothing"     ''  "$(redirect_target 'https://x.com/a?b=c')"
+check "param that is not a url"          ''  "$(redirect_target 'https://x.com/a?url=notaurl')"
+check "double-encoded still decodes"     'evil.example' "$(redirect_target 'https://x.com/a?next=https%253A%252F%252Fevil.example%252Fp')"
+OBF='redirect target hidden by gratuitous percent-encoding (evil.example)'
+check "obfuscated redirect is a red flag" 1 "$(count_red_flags com '' '' "$OBF" '' '')"
+check "obfuscated redirect + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://accounts.google.com/o' "$OBF" '' '' SAFE)"
+
 echo "== campaign_key (what survives a domain rotation) =="
 check "affiliate tag"          's1=upg12'  "$(campaign_key 'https://ul590.getmypair.space/?s1=upg12')"
 check "same tag, other domain" 's1=upg12'  "$(campaign_key 'https://lxu438.getnew.space/?s1=upg12')"
