@@ -11,6 +11,7 @@
 #   ./feedback-report.sh --host <host> [exclude-url]   # what we already know about this exact host
 #   ./feedback-report.sh --apex <apex> [exclude-url]   # ... widened to every host under one domain
 #   ./feedback-report.sh --campaign <key> [exclude-url]  # ... same campaign tag, ANY domain
+#   ./feedback-report.sh --settled <url>   # already answered? 0=safe 2=bad 1=unknown (for alerting)
 #   ./feedback-report.sh -c mono      # no color
 #   ./feedback-report.sh --self-test  # exercise the state logic, no real cache touched
 #
@@ -31,6 +32,7 @@ CORPUS="";     [ "$1" = "--corpus" ] && { CORPUS=1; shift; }
 HOSTQ="";      [ "$1" = "--host" ] && { HOSTQ=1; shift; }
 APEXQ="";      [ "$1" = "--apex" ] && { APEXQ=1; shift; }
 CAMPQ="";      [ "$1" = "--campaign" ] && { CAMPQ=1; shift; }
+SETTLED="";    [ "$1" = "--settled" ] && { SETTLED=1; shift; }
 SELFTEST="";   [ "$1" = "--self-test" ] && { SELFTEST=1; shift; }
 source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/verdict.sh"   # VERDICT_CATEGORIES / is_category: the ledger owns no vocabulary of its own
@@ -122,6 +124,21 @@ if [ -n "$SELFTEST" ]; then
         || { echo "FAIL FB_CATEGORY not recorded"; _fails=1; }
     FB_ROOT="$_t" FB_CATEGORY=nonsense "$0" -i https://agreed.example "note" >/dev/null 2>&1 \
         && { echo "FAIL -i accepted a junk FB_CATEGORY"; _fails=1; }
+    # --settled: the alerting contract, where the exit code IS the answer. Pin every branch.
+    # (agreed.example was inspected SAFE by the FB_CATEGORY case just above.)
+    _row https://onlyagree.example/a 2026-01-01T00:00:00Z SAFE agree https://onlyagree.example/a
+    FB_ROOT="$_t" "$0" --settled https://agreed.example >/dev/null 2>&1
+    [ $? -eq 0 ] || { echo "FAIL --settled did not clear a settled SAFE"; _fails=1; }
+    FB_ROOT="$_t" "$0" --settled https://kit.example/anything-new >/dev/null 2>&1
+    [ $? -eq 2 ] || { echo "FAIL --settled did not flag a settled-bad host"; _fails=1; }
+    FB_ROOT="$_t" "$0" --settled https://never.seen.example/x >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled claimed to know an unseen url"; _fails=1; }
+    # one keypress must not silence a future alert: agree-only is NOT an answer
+    FB_ROOT="$_t" "$0" --settled https://onlyagree.example/b >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled auto-resolved on an agree row"; _fails=1; }
+    # nor is a re-opened flag, even though an inspection sits in its history
+    FB_ROOT="$_t" "$0" --settled https://requeued.example >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled resolved a re-flagged url"; _fails=1; }
     [ "$_fails" -eq 0 ] && echo "self-test: OK" || echo "self-test: FAILED"
     exit "$_fails"
 fi
@@ -155,7 +172,10 @@ fi
 shopt -s nullglob
 FILES=("$FB_ROOT"/*/feedback.txt)
 if [ ${#FILES[@]} -eq 0 ]; then
-    [ -n "$FLAGS_ONLY" ] && exit 0
+    # Machine-readable modes must stay silent and honest on an empty ledger: printing prose on
+    # stdout would land in a caller's parser, and --settled must report "unknown" (1), not "clean".
+    [ -n "$FLAGS_ONLY" ] || [ -n "$CORPUS" ] || [ -n "$HOSTQ" ] || [ -n "$APEXQ" ] || [ -n "$CAMPQ" ] && exit 0
+    [ -n "$SETTLED" ] && exit 1
     echo_grey "No feedback yet ($FB_ROOT/*/feedback.txt empty)."; exit 0
 fi
 
@@ -220,6 +240,33 @@ if [ -n "$HOSTQ" ] || [ -n "$APEXQ" ] || [ -n "$CAMPQ" ]; then
         [ -n "$_rows" ] && printf '%s\n' "$_rows"
     fi
     exit 0
+fi
+
+# --settled <url>: "have we already answered this?", for an alerting pipeline. Thirty alerts in
+# twenty minutes for one host that was inspected three hours earlier is how a real detection gets
+# missed, so let the pipeline ask the ledger before it pages anyone.
+#
+#   exit 0 = settled SAFE       -> auto-resolve, we looked and it was clean
+#   exit 2 = settled bad        -> auto-confirm, we looked and it was not
+#   exit 1 = unknown            -> a human still has to look
+#
+# One TSV line on stdout when settled: verdict, category, scope, matched-url, note.
+#
+# Only `inspected` rows answer. `agree` is one keypress -- Enter is the default at the verdict
+# prompt -- and silencing a future alert is exactly the decision that must not rest on a keypress.
+# Scope is the exact url first, then the host. NOT the apex: a settled subdomain says nothing about
+# the next one, and a wrong auto-resolve here is a missed phish rather than a noisy alert.
+if [ -n "$SETTLED" ]; then
+    _url="$1"
+    [ -n "$_url" ] || { echo "usage: $0 --settled <url>" >&2; exit 64; }
+    _h=$(printf '%s' "$_url" | sed -E 's#^[a-zA-Z]+://##; s#[/?#].*$##; s#^[^@]*@##; s#:[0-9]+$##' | tr 'A-Z' 'a-z')
+    _rows=$("$0" --host "$_h" 2>/dev/null)
+    _hit=$(printf '%s\n' "$_rows" | awk -F'\t' -v u="$_url" '$2=="inspected" && $3==u { print "exact\t"$0 }' | tail -1)
+    [ -z "$_hit" ] && _hit=$(printf '%s\n' "$_rows" | awk -F'\t' '$2=="inspected" { print "host\t"$0 }' | tail -1)
+    [ -z "$_hit" ] && exit 1
+    IFS=$'\t' read -r _scope _v _st _u _note _cat <<< "$_hit"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$_v" "${_cat:-?}" "$_scope" "$_u" "$_note"
+    case "$_v" in SAFE) exit 0 ;; SUSPICIOUS|DANGEROUS) exit 2 ;; *) exit 1 ;; esac
 fi
 
 if [ -n "$CORPUS" ]; then
