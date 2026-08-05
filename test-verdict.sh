@@ -186,6 +186,13 @@ check "utm is legit sharing"   ''          "$(campaign_key 'https://x.com/?utm_c
 check "recipient email"        ''          "$(campaign_key 'https://x.com/?e=neil@example.co.za')"
 check "long token"             ''          "$(campaign_key 'https://x.com/?token=cec793b0657b4035ab14d14a0e832939')"
 check "digits only"            ''          "$(campaign_key 'https://x.com/?page=1234')"
+# Per-victim tokens can only be grouped by the shape of the generator that made them. Both hops of
+# the Google-OAuth chain carried this one, with different values.
+check "token shape, hop 1" 'shape:state=alnum-digits' "$(campaign_key 'https://accounts.google.com/o/oauth2/v2/auth?scope=openid&state=p1KZOObfm27wFyTC1ju0T4ppj-14153490313725112891132624')"
+check "token shape, hop 2" 'shape:state=alnum-digits' "$(campaign_key 'https://m-365a63c9-x.radiopanamericanapanama.com?state=hztgXDzNtHx7AgVxKr8clA5Zp-14332323313229262624419027112417262314192517911326913811')"
+check "an ordinary token has no shape" '' "$(campaign_key 'https://x.com/?state=abc-123')"
+# A carrier shape must NOT group: every legitimate mailshot on the platform would join the phish
+check "sendgrid click link is not a campaign" '' "$(campaign_key 'http://url7037.comaround.com/ls/click?upn=u001.bmj3YK0AQCI1')"
 check "letters only"           ''          "$(campaign_key 'https://x.com/?lang=engb')"
 
 echo "== is_tenant_suffix (where an apex means nothing) =="

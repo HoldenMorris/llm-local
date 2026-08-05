@@ -322,11 +322,30 @@ fi
 # -- the scraper lands on the service's own "this subdomain is for link redirection" placeholder,
 # which previously scored SAFE. Detected here; whether it becomes a red flag is decided post-fetch
 # (only when we NEVER left the service -- see below), so a resolved link isn't punished for its entry.
-REDIRECT_SERVICES='mjt\.lu|sendgrid\.net|list-manage\.com|rs6\.net|hubspotlinks\.com|mailgun\.org|sparkpostmail\.com|sg-links\.net'
+REDIRECT_SERVICES='mjt\.lu|sendgrid\.net|list-manage\.com|rs6\.net|hubspotlinks\.com|mailgun\.org|sparkpostmail\.com|sg-links\.net|mandrillapp\.com|klclick\.com|hubspotemail\.net|cmail[0-9]*\.com'
 REDIRECT_SVC=""
 if echo "$DOMAIN" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
     REDIRECT_SVC=$(echo "$DOMAIN" | grep -oiE "($REDIRECT_SERVICES)\$" | head -1)
     add_signal "Email link-redirection service: $REDIRECT_SVC (real destination reached via a tracked redirect)"
+else
+    # The host name hides the service. Every ESP sells "branded links": the customer publishes a
+    # CNAME (url8083.calvis.com -> sendgrid.net) so the tracking url wears the customer's own
+    # domain -- aged, reputable, and completely unlike the service it points at. Five consecutive
+    # scans of one campaign walked past this list for exactly that reason.
+    # So ask DNS what the name really is. One extra lookup, deterministic, and it covers every ESP
+    # in the list at once instead of needing their branded suffixes enumerated.
+    _cname=$(dig +short CNAME "$DOMAIN" 2>/dev/null | sed 's/\.$//' | head -3)
+    if [ -n "$_cname" ] && printf '%s\n' "$_cname" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
+        REDIRECT_SVC=$(printf '%s\n' "$_cname" | grep -oiE "($REDIRECT_SERVICES)\$" | head -1)
+        add_signal "Email link-redirection service behind a branded CNAME: $DOMAIN -> $REDIRECT_SVC"
+    elif printf '%s' "$URL" | grep -qE '/(ls|wf)/click\?upn='; then
+        # DNS-free backstop, because these links are usually already dead by the time we look and
+        # a dead name has no CNAME to read. The path is provider-specific (SendGrid's click
+        # tracker), deliberately not a generic "looks like a tracker" guess: naming the wrong
+        # service is worse than naming none.
+        REDIRECT_SVC="sendgrid.net"
+        add_signal "Email link-redirection service by url shape: SendGrid click tracker on $DOMAIN"
+    fi
 fi
 
 # === Domain Info Lookup ===

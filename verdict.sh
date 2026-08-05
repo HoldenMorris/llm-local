@@ -184,6 +184,21 @@ campaign_key() {
         case "$v" in *[0-9]*) ;; *) continue ;; esac       # ... and digits
         out="${out:+$out&}$k=$v"
     done
+    # Nothing matched by value? Try SHAPE. A kit that mints a fresh token per victim can never be
+    # grouped by an exact value, but its generator still leaves a fingerprint: both hops of the
+    # Google-OAuth chain carried state=<25 alnum>-<26..56 digits>, a format nothing else emits.
+    # Shape keys must stay generator-specific. A carrier shape -- "any SendGrid /ls/click link" --
+    # is deliberately NOT one: it would group every legitimate mailshot on the platform with the
+    # phish, and one bad inspection would taint them all.
+    if [ -z "$out" ]; then
+        for pair in $q; do
+            k="${pair%%=*}"; v="${pair#*=}"
+            [ "$v" = "$pair" ] && continue
+            case "$k" in utm_*) continue ;; esac
+            printf '%s' "$v" | grep -qE '^[A-Za-z0-9]{20,32}-[0-9]{20,}$' \
+                && { out="shape:$k=alnum-digits"; break; }
+        done
+    fi
     IFS="$oldifs"
     printf '%s' "$out"
 }
