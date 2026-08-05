@@ -10,6 +10,7 @@
 #   ./feedback-report.sh --corpus     # labeled corpus of every settled LIVE url, for url-benchmark.sh
 #   ./feedback-report.sh --host <host> [exclude-url]   # what we already know about this exact host
 #   ./feedback-report.sh --apex <apex> [exclude-url]   # ... widened to every host under one domain
+#   ./feedback-report.sh --campaign <key> [exclude-url]  # ... same campaign tag, ANY domain
 #   ./feedback-report.sh -c mono      # no color
 #   ./feedback-report.sh --self-test  # exercise the state logic, no real cache touched
 #
@@ -29,6 +30,7 @@ INSPECT="";    [ "$1" = "-i" ] && { INSPECT=1; shift; }
 CORPUS="";     [ "$1" = "--corpus" ] && { CORPUS=1; shift; }
 HOSTQ="";      [ "$1" = "--host" ] && { HOSTQ=1; shift; }
 APEXQ="";      [ "$1" = "--apex" ] && { APEXQ=1; shift; }
+CAMPQ="";      [ "$1" = "--campaign" ] && { CAMPQ=1; shift; }
 SELFTEST="";   [ "$1" = "--self-test" ] && { SELFTEST=1; shift; }
 source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/verdict.sh"   # VERDICT_CATEGORIES / is_category: the ledger owns no vocabulary of its own
@@ -101,6 +103,15 @@ if [ -n "$SELFTEST" ]; then
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --apex kit.example https://kit.example/verify | cut -f3 | sort | tr '\n' ' ')
     _want="https://a.kit.example/x https://kit.example/login "
     [ "$_got" = "$_want" ] || { echo "FAIL --apex: want [$_want] got [$_got]"; _fails=1; }
+    # --campaign: one operator, unrelated domains, same affiliate tag. The p=unsubscribe row must
+    # not group with anything (word value), which is the whole false-positive risk here.
+    _row https://aa11.rotate-one.example/?s1=upg12 2026-01-01T00:00:00Z DANGEROUS inspected https://aa11.rotate-one.example/?s1=upg12 "kit" phishing
+    _row https://news.unrelated.example/?p=unsubscribe 2026-01-01T00:00:00Z SAFE agree https://news.unrelated.example/?p=unsubscribe
+    _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --campaign s1=upg12 https://bb22.rotate-two.example/?s1=upg12 | cut -f3)
+    [ "$_got" = "https://aa11.rotate-one.example/?s1=upg12" ] \
+        || { echo "FAIL --campaign: got [$_got]"; _fails=1; }
+    [ -z "$(FB_ROOT="$_t" NO_COLOR=1 "$0" --campaign p=unsubscribe)" ] \
+        || { echo "FAIL --campaign grouped on a plain-word query value"; _fails=1; }
     # a dead URL keeps its label and its worklist slot, it is only held out of the corpus
     grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://dead.example)/feedback.txt" \
         || { echo "FAIL gone row clobbered the label"; _fails=1; }
@@ -176,16 +187,20 @@ fi
 # the apex means one owner -- see is_tenant_suffix in verdict.sh.
 # Dead urls are NOT filtered out here: a gone phishing page is still evidence about its host.
 # "settled" = inspected|agree, same rule as --corpus below -- keep the two in sync.
-if [ -n "$HOSTQ" ] || [ -n "$APEXQ" ]; then
+if [ -n "$HOSTQ" ] || [ -n "$APEXQ" ] || [ -n "$CAMPQ" ]; then
     _want="$1"; _excl="${2:-}"
-    [ -n "$_want" ] || { echo "usage: $0 --host <host> | --apex <apex>  [exclude-url]" >&2; exit 2; }
-    cat "${FILES[@]}" | sort | awk -F'\t' -v want="$(printf '%s' "$_want" | tr 'A-Z' 'a-z')" \
-                                          -v excl="$_excl" -v apex="$APEXQ" '
+    [ -n "$_want" ] || { echo "usage: $0 --host <host> | --apex <apex> | --campaign <key>  [exclude-url]" >&2; exit 2; }
+    # campaign mode cannot filter inside awk (the key comes from campaign_key, a shell function),
+    # so it takes every settled row and filters below.
+    _rows=$(cat "${FILES[@]}" | sort | awk -F'\t' \
+        -v want="$([ -n "$CAMPQ" ] || printf '%s' "$_want" | tr 'A-Z' 'a-z')" \
+        -v excl="$_excl" -v apex="$APEXQ" '
     function host(u) { sub(/^[a-zA-Z]+:\/\//, "", u); sub(/[\/?#].*$/, "", u)
                        sub(/^[^@]*@/, "", u); sub(/:[0-9]+$/, "", u); return tolower(u) }
     # apex mode matches the apex itself and anything below it, and only on a label boundary:
     # "notgetnew.space" must not match "getnew.space"
-    function matches(h,   p) { if (!apex) return h==want
+    function matches(h,   p) { if (want=="") return 1          # campaign mode: filtered in shell
+                               if (!apex) return h==want
                                if (h==want) return 1
                                p = index(h, "." want)            # 0 when absent, and 0 would
                                return p > 0 && p == length(h)-length(want) }   # collide with it
@@ -195,7 +210,15 @@ if [ -n "$HOSTQ" ] || [ -n "$APEXQ" ]; then
       note[$4]=(NF>=5 ? $5 : ""); cat[$4]=(NF>=6 ? $6 : "") }
     END { for (i=1; i<=n; i++) { u=URLS[i]
             if (u==excl || lab[u]=="" || !matches(host(u))) continue
-            print lab[u]"\t"st[u]"\t"u"\t"note[u]"\t"cat[u] } }'
+            print lab[u]"\t"st[u]"\t"u"\t"note[u]"\t"cat[u] } }')
+    if [ -n "$CAMPQ" ]; then
+        [ -n "$_rows" ] && while IFS=$'\t' read -r _v _st _u _n _c; do
+            [ "$(campaign_key "$_u")" = "$_want" ] \
+                && printf '%s\t%s\t%s\t%s\t%s\n' "$_v" "$_st" "$_u" "$_n" "$_c"
+        done <<< "$_rows"
+    else
+        [ -n "$_rows" ] && printf '%s\n' "$_rows"
+    fi
     exit 0
 fi
 

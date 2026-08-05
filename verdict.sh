@@ -81,6 +81,41 @@ maillist-manage.in zohosecure.com mjt.lu beak.host irontree.cloud ayai.live"
 # is_tenant_suffix <apex> -> exit 0 if that apex is shared hosting rather than one owner.
 is_tenant_suffix() { case " $(printf '%s' "$TENANT_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# campaign_key <url> -> the campaign tag carried in the query string, or nothing.
+#
+# One operator runs one kit across many registered domains, and the affiliate/sub-id tag in the
+# link is what survives the rotation: ul590.getmypair.space/?s1=upg12 and
+# lxu438.getnew.space/?s1=upg12 are ten different domains and one campaign. Neither the host nor
+# the apex rollup can see that, because nothing about the domains is shared.
+#
+# A tag qualifies only if its VALUE is an opaque short token -- letters AND digits, nothing else,
+# 3..16 chars. That one rule does the filtering: "unsubscribe", "en", "1" and long per-recipient
+# tokens all fail it, so ?p=unsubscribe and ?token=cec793b0... never group. utm_* and the obvious
+# per-recipient keys are dropped outright: utm_campaign really is shared by unrelated legitimate
+# sites in one mailshot, which is the one false grouping this could produce.
+# Pure bash, no forks: this runs once per ledger row.
+# ponytail: pairs keep their url order rather than being sorted, so ?a=x1&b=y2 and ?b=y2&a=x1 do
+# not group. Sort them if a kit ever shuffles its own query order.
+campaign_key() {
+    local url="$1" q pair k v out="" oldifs
+    q="${url#*\?}"
+    [ "$q" = "$url" ] && return 0        # no query string at all
+    q="${q%%#*}"
+    oldifs="$IFS"; IFS='&'
+    for pair in $q; do
+        k="${pair%%=*}"; v="${pair#*=}"
+        if [ "$v" = "$pair" ] || [ -z "$v" ] || [ -z "$k" ]; then continue; fi
+        case "$k" in utm_*|e|email|mail|to|token|hash|sig|key|id|uid|od|upd) continue ;; esac
+        [ "${#v}" -ge 3 ] && [ "${#v}" -le 16 ] || continue
+        case "$v" in *[!a-zA-Z0-9]*) continue ;; esac      # opaque means alnum only
+        case "$v" in *[a-zA-Z]*) ;; *) continue ;; esac    # ... with letters
+        case "$v" in *[0-9]*) ;; *) continue ;; esac       # ... and digits
+        out="${out:+$out&}$k=$v"
+    done
+    IFS="$oldifs"
+    printf '%s' "$out"
+}
+
 # is_unsub_url <url> -> exit 0 if it is a mailing-list / unsubscribe endpoint.
 # A click on one mainly confirms the address is live (list validation).
 is_unsub_url() {
@@ -214,7 +249,7 @@ classify_verdict() {
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
     elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ]; then
         floor=SUSPICIOUS
-        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a sibling url on this domain was inspected and found suspicious}"
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then

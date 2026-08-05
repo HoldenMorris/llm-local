@@ -148,6 +148,24 @@ check "prior suspicious -> SUSPICIOUS"     SUSPICIOUS "$(cv false com '' '' 'htt
 check "prior suspicious + login stays SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://h.com/y' "$PRIORS" '' '' SAFE)"
 check "prior suspicious never downgrades"  DANGEROUS  "$(cv false com '' '' 'https://h.com/y' "$PRIORS" '' '' DANGEROUS)"
 
+# The campaign smells reuse the two shapes above, so only the wording is new here.
+CAMPS='A url under the same campaign tag s1=upg12 was previously inspected as suspicious (https://a.b/x)'
+check "campaign suspicious is capped too"  SUSPICIOUS "$(cv true com '' '' 'https://h.com/y' "$CAMPS" '' '' SAFE)"
+CAMPD='Confirmed phishing previously inspected under the same campaign tag s1=upg12 (https://a.b/x)'
+check "campaign dangerous + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/y' "$CAMPD" '' '' SAFE)"
+
+echo "== campaign_key (what survives a domain rotation) =="
+check "affiliate tag"          's1=upg12'  "$(campaign_key 'https://ul590.getmypair.space/?s1=upg12')"
+check "same tag, other domain" 's1=upg12'  "$(campaign_key 'https://lxu438.getnew.space/?s1=upg12')"
+check "different sub-campaign" 's1=snm3'   "$(campaign_key 'https://mg64.victorypuck.com/?s1=snm3')"
+check "no query -> nothing"    ''          "$(campaign_key 'https://x.com/a/b')"
+check "word value -> nothing"  ''          "$(campaign_key 'https://news.lawncots.co/?p=unsubscribe')"
+check "utm is legit sharing"   ''          "$(campaign_key 'https://x.com/?utm_campaign=aug26')"
+check "recipient email"        ''          "$(campaign_key 'https://x.com/?e=neil@example.co.za')"
+check "long token"             ''          "$(campaign_key 'https://x.com/?token=cec793b0657b4035ab14d14a0e832939')"
+check "digits only"            ''          "$(campaign_key 'https://x.com/?page=1234')"
+check "letters only"           ''          "$(campaign_key 'https://x.com/?lang=engb')"
+
 echo "== is_tenant_suffix (where an apex means nothing) =="
 expect "awsapprunner.com is shared"   yes is_tenant_suffix awsapprunner.com
 expect "pages.dev is shared"          yes is_tenant_suffix pages.dev

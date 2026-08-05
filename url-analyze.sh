@@ -787,6 +787,41 @@ if [ -n "$HOST_PRIORS" ]; then
     HOST_PRIORS_LLM=$(printf '%s' "$HOST_PRIORS" | awk -F'\t' '{ printf "%s%s (%s) %s", sep, $1, $2, $3; sep="; " }')
 fi
 
+# === Same campaign tag, any domain ===
+# The last thing that survives a domain rotation is the affiliate / sub-id tag in the link. Ten
+# throwaway domains carrying ?s1=upg12 are one operator, and neither the host nor the apex rollup
+# can see that, because the domains share nothing. Only runs when this domain is otherwise unknown
+# to us: with a settled sibling on the domain itself the smell is already recorded, and a second
+# one would double-count as two red flags for what is one piece of evidence.
+if [ -z "$_host_bad" ] && [ -z "$_host_susp" ]; then
+    _ckey=$(campaign_key "${FINAL_URL:-$URL}")
+    [ -z "$_ckey" ] && _ckey=$(campaign_key "$URL")
+    _camp=""
+    [ -n "$_ckey" ] && _camp=$("$SCRIPT_DIR/feedback-report.sh" --campaign "$_ckey" "$URL" 2>/dev/null)
+    if [ -n "$_camp" ]; then
+        echo ""
+        echo "${BOLD}Same campaign tag ($_ckey) seen before${RESET}"
+        _camp_bad="" _camp_susp=""
+        while IFS=$'\t' read -r _pv _ps _pu _pn _pc; do
+            [ -z "$_pv" ] && continue
+            echo_grey "- $_pv${_pc:+/$_pc} ($_ps): $_pu"
+            [ -n "$_pn" ] && printf '%s\n' "$_pn" | fold -s -w 92 | sed "s/^/    ${GREY}/;s/\$/${RESET}/"
+            [ "$_ps" = "inspected" ] && case "$_pv" in
+                DANGEROUS)  [ -z "$_camp_bad" ]  && _camp_bad="$_pu" ;;
+                SUSPICIOUS) [ -z "$_camp_susp" ] && _camp_susp="$_pu" ;;
+            esac
+        done <<< "$_camp"
+        # Same two shapes as the domain rollup: a settled DANGEROUS match is an ordinary red flag,
+        # a settled SUSPICIOUS one is capped at SUSPICIOUS by verdict.sh (the wording carries it).
+        if [ -n "$_camp_bad" ]; then
+            SMELLS="${SMELLS:+$SMELLS, }Confirmed phishing previously inspected under the same campaign tag $_ckey ($(printf '%s' "$_camp_bad" | tr ',' ' '))"
+        elif [ -n "$_camp_susp" ]; then
+            SMELLS="${SMELLS:+$SMELLS, }A url under the same campaign tag $_ckey was previously inspected as suspicious ($(printf '%s' "$_camp_susp" | tr ',' ' '))"
+        fi
+        CAMPAIGN_LLM=$(printf '%s' "$_camp" | awk -F'\t' '{ printf "%s%s (%s) %s", sep, $1, $2, $3; sep="; " }')
+    fi
+fi
+
 # === Third-party reputation (opt-in: -t) ===
 # ponytail: OFF by default and absent from benchmarks (they never pass -t). Extra external
 # verification for manual scans. Needs only the URL, so it runs even with -s. Cached per URL
@@ -1048,7 +1083,8 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Red flag count: $FLAGS_LLM  (authoritative - already counted from these signals, use as-is)
 - VirusTotal reputation: ${VT_LLM:-not checked}
 - urlscan.io reputation: ${URLSCAN_LLM:-not checked}
-- Prior analyst judgements on this exact host: ${HOST_PRIORS_LLM:-none}
+- Prior analyst judgements on this domain: ${HOST_PRIORS_LLM:-none}
+- Prior analyst judgements on the same campaign tag: ${CAMPAIGN_LLM:-none}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
 - Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
 - Page title: \"$TITLE\""
