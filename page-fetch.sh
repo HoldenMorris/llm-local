@@ -370,10 +370,16 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     const inlineScripts = Array.from(document.querySelectorAll('script'))
       .filter(s => !s.src).map(s => s.textContent || '');
 
+    // Raw markup for kit-signature matching (see kitSignatures below). Kept OUT of the stdout
+    // JSON like inlineScripts -- it is only a haystack. Class names, hidden input names, asset
+    // filenames and inline script bodies all live in here, which is exactly the set of things a
+    // kit cannot rename without rebuilding itself.
+    const rawHtml = (document.documentElement.outerHTML || '').slice(0, 400000);
+
     return {
       title: document.title,
       text: deepText().slice(0, 4000),
-      links, forms, scripts, inlineScripts, iframes, images, meta, metaRefresh,
+      links, forms, scripts, inlineScripts, rawHtml, iframes, images, meta, metaRefresh,
       hasLoginForm: deepAll('input[type="password"]').length > 0,
     };
   });
@@ -511,6 +517,33 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
           smells.push(`Login form submits to "${new URL(f.action).hostname}" (off-domain)`);
       } catch {}
     }
+  }
+
+  // === Kit signatures ===
+  // Attackers do not write pages, they deploy kits, and a kit leaks its BUILD. Brand imagery
+  // changes per campaign; the scraped design-system class, the hard-coded asset filename and the
+  // POST endpoint do not, because changing them means rebuilding the kit.
+  // Every entry needs a token that is distinctive on its own -- a build hash, an invented field
+  // name, a pair of filenames -- never a generic path like "login.php". `not` is the domain that
+  // legitimately owns the artifact: 1Password's real site carries its own design-system classes,
+  // and the whole point is that this page is NOT that site.
+  // See .planning/phases/kit-fingerprinting/RESEARCH.md for provenance of each token.
+  const kitHay = dezw(features.rawHtml || '').toLowerCase();
+  const kitSignatures = [
+    { name: '1Phish (1Password clone)', not: '1password.com',
+      any: ['knox-provider_ltr__kddqqu0', 'reset_base__1e6d9s10', 'validated_user_1pass', 'hideclick:ignore'] },
+    { name: 'Tycoon2FA', any: ['/web6socket/', 'cllascio.php', 'bltdref', 'bltdua', 'bltddata'] },
+    // Kratos ships these two svgs together on its login page. Either one alone is too weak, and
+    // next.php/save.php alone is a path half the PHP web could use.
+    { name: 'Kratos', all: ['barr.svg', 'lg.svg'] },
+  ];
+  for (const kit of kitSignatures) {
+    if (kit.not && (apexDomain === kit.not || domain.endsWith('.' + kit.not))) continue;
+    const hit = kit.all ? kit.all.every(t => kitHay.includes(t))
+                        : kit.any.filter(t => kitHay.includes(t));
+    const matched = kit.all ? (hit ? kit.all : []) : hit;
+    if (matched.length)
+      smells.push(`Known phishing kit: ${kit.name} (build artifact "${matched[0]}")`);
   }
 
   // The padding itself is a signal, not just an obstacle. A handful of zero-width characters is

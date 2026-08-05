@@ -25,11 +25,10 @@ ten kits of mid-2026 and what each one gives a URL scanner:
 [phases/kit-fingerprinting/RESEARCH.md](phases/kit-fingerprinting/RESEARCH.md).
 
 **Build order (cheapest first):**
-1. Strip invisible Unicode before every text match — kills the Cephas / Sneaky2FA evasion class.
-2. Detect the anti-analysis code itself (the eight-name automation probe, `debugger` loops,
-   `api.ipapi.is` datacentre filtering) in the deobfuscated JS.
-3. Extract kit artefacts in `page-fetch.sh`: form action paths, asset basenames, hidden input
-   names, WebSocket endpoints — then a signature table.
+1. ~~Strip invisible Unicode before every text match~~ — SHIPPED (c0f2d01).
+2. ~~Detect the anti-analysis code itself~~ — SHIPPED (c0f2d01), capped at SUSPICIOUS.
+3. ~~Kit signature table over the page markup~~ — SHIPPED. 1Phish / Tycoon2FA / Kratos.
+   Adding a kit means adding a row; the bar for a token is "distinctive on its own".
 4. A JS **capability vector hash** as a rotation-proof kit fingerprint, wired in as a fourth
    rollup key beside host / apex / campaign. Validate against the ledger corpus first.
 5. Registrar out of the RDAP response we already fetch, as a grouping key.

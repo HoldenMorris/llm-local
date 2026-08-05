@@ -154,6 +154,16 @@ check "campaign suspicious is capped too"  SUSPICIOUS "$(cv true com '' '' 'http
 CAMPD='Confirmed phishing previously inspected under the same campaign tag s1=upg12 (https://a.b/x)'
 check "campaign dangerous + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/y' "$CAMPD" '' '' SAFE)"
 
+echo "== kit signatures (naming the build, not the brand) =="
+# Deliberately an ORDINARY red flag rather than a VirusTotal-style standalone DANGEROUS: the
+# tokens are strong (build hashes, invented field names, paired filenames) but they are OUR
+# string table, with no second opinion behind them. A kit page with no credential form is
+# usually a redirector stage, and SUSPICIOUS covers it.
+KIT='Known phishing kit: Kratos (build artifact "barr.svg")'
+check "kit signature counts once"        1          "$(count_red_flags com '' '' "$KIT" '' '')"
+check "kit signature -> SUSPICIOUS"      SUSPICIOUS "$(cv false com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
+check "kit signature + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
+
 echo "== anti-analysis javascript (the kit checking whether it is talking to us) =="
 # Capped like the other "this is bad company, not proof of theft" signals: SUSPICIOUS, excluded
 # from the red-flag count, so commercial bot protection on a real login page cannot reach DANGEROUS.
