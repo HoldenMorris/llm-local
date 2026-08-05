@@ -7,6 +7,10 @@ ollama_storage/
 # Third-party reputation API keys (VirusTotal, urlscan.io) -- .env.sample is committed
 .env
 
+# Replay corpus exported from the feedback ledger (./feedback-report.sh --corpus). Live phishing
+# URLs embed recipient email addresses and tokens, so this never gets committed or synced.
+url-corpus-live.txt
+
 # Results (optional - commit if you want history)
 results/*.csv
 

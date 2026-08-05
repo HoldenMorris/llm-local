@@ -72,7 +72,7 @@ VLM architectures.
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests that pin the deterministic verdict core (`verdict.sh`). Pure: no LLM, no network |
-| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag. Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. Run `--self-test` for the self-check |
+| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag. Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. Run `--self-test` for the self-check |
 | `psl.sh` | Public Suffix List helper. `source` it, then `apex_of <host>`. Gives the true registrable domain. Caches the list in `.cache/` and refreshes it every 30 days. Run `./psl.sh` for the self-check |
 | `brand-verify.sh` | Ask if the **brand's own site** links to a host. `PROVEN` suppresses a brand smell. `UNPROVEN` escalates nothing. Run `--self-test` for the self-check |
 | `tor-up.sh` | Bring up the Tor sidecar (`llm-tor`) for scanner egress: exit country and circuit rotation. `--down` stops it |
@@ -101,6 +101,25 @@ therefore stays plain ASCII. Four tools use `colors.sh`: `url-analyze.sh`, `url-
 (`vision.txt`), and each LLM answer (`llm-<hash>.txt`, keyed by model and request). A re-scan
 therefore reuses the fetch, the ~1min vision call, and the LLM verdict instead of a re-compute.
 `-r` forces a full refresh.
+
+The cache also holds the feedback ledger (`feedback.txt`). Beside the judgement rows it carries
+**liveness** rows: a failed fetch appends `gone`, and a later successful fetch appends `alive`.
+Liveness is a separate axis from judgement, so a dead URL keeps its `inspected` label and its
+place on the `-f` worklist (the cached page and screenshot are still there to read), it only
+drops out of the replay corpus. Phishing kits die within days, so without this the weekly replay
+would score the scanner on uptime instead of detection.
+
+### Weekly replay
+
+The settled ledger rows are labeled data, so the weekly accuracy check is the existing benchmark:
+
+```bash
+./feedback-report.sh --corpus > url-corpus-live.txt   # settled + live urls only
+CORPUS=url-corpus-live.txt ./url-benchmark.sh         # accuracy-vs-time, writes results/url_benchmark.csv
+```
+
+`url-corpus-live.txt` is **gitignored**: live phishing URLs embed recipient email addresses and
+reset tokens, so the export never gets committed or synced.
 
 Flags:
 - `-m <model>` picks the verdict LLM. `-m auto` picks the best model per

@@ -426,10 +426,20 @@ if [ -z "$SKIP_FETCH" ]; then
         echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1 || echo "$PAGE_DATA" > "$CACHE_DIR/page.json"
     fi
 
+    # Liveness gets its own append-only row (gone/alive) in the feedback ledger, separate from the
+    # judgement rows. Phishing kits die within days, so the weekly replay
+    # (./feedback-report.sh --corpus) must drop a dead URL instead of scoring the scanner against a
+    # page that no longer exists -- while the inspected label survives the outage and comes back
+    # with the URL. One row per state change, never one per scan.
+    _fb_live() { awk -F'\t' '$3=="gone"||$3=="alive" { s=$3 } END { print s }' "$CACHE_DIR/feedback.txt" 2>/dev/null; }
+    _fb_mark() { printf '%s\t?\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$URL" >> "$CACHE_DIR/feedback.txt"; }
+
     if echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1; then
         echo_yellow "[!] Page unreachable or timeout"
+        [ "$(_fb_live)" != "gone" ] && { _fb_mark gone; echo_grey "- marked gone in the feedback ledger (drops out of the replay corpus)"; }
         PAGE_DATA="{}"
     else
+        [ "$(_fb_live)" = "gone" ] && { _fb_mark alive; echo_grey "- back up: cleared the gone mark"; }
         # Extract signals
         SMELLS=$(echo "$PAGE_DATA" | jq -r '.phishingSmells[]?' 2>/dev/null)
         HAS_LOGIN=$(echo "$PAGE_DATA" | jq -r '.hasLoginForm' 2>/dev/null)
