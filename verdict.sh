@@ -321,6 +321,15 @@ classify_verdict() {
     # DANGEROUS sibling arrives as an ordinary smell instead, and does count.
     local priorsusp=""
     printf '%s' "$smells" | grep -qi 'previously inspected as suspicious' && priorsusp=1
+    # The page's own JavaScript probing for automation, trapping devtools, filtering datacentre
+    # IPs or deleting itself. A page that checks whether it is being analysed before it will show
+    # itself has something to hide -- and it explains our blank fetches, which are the kit refusing
+    # us rather than a broken site.
+    # Capped at SUSPICIOUS and kept out of the red-flag count, because commercial bot-protection
+    # (Akamai, DataDome) does some of this on legitimate login pages. It says "this page is hiding
+    # from analysis", which is not the same claim as "this page is harvesting credentials".
+    local antianalysis=""
+    printf '%s' "$deobfus" | grep -qi 'anti-analysis' && antianalysis=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -334,9 +343,9 @@ classify_verdict() {
         floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
-    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ]; then
+    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ]; then
         floor=SUSPICIOUS
-        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}"
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then

@@ -154,6 +154,17 @@ check "campaign suspicious is capped too"  SUSPICIOUS "$(cv true com '' '' 'http
 CAMPD='Confirmed phishing previously inspected under the same campaign tag s1=upg12 (https://a.b/x)'
 check "campaign dangerous + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/y' "$CAMPD" '' '' SAFE)"
 
+echo "== anti-analysis javascript (the kit checking whether it is talking to us) =="
+# Capped like the other "this is bad company, not proof of theft" signals: SUSPICIOUS, excluded
+# from the red-flag count, so commercial bot protection on a real login page cannot reach DANGEROUS.
+AA='anti-analysis: probes for 6 browser-automation artifacts'
+check "anti-analysis is not a red flag"   0          "$(count_red_flags com '' '' '' '' "$AA")"
+check "anti-analysis -> SUSPICIOUS"       SUSPICIOUS "$(cv false com '' '' 'https://x.com/' '' '' "$AA" SAFE)"
+check "anti-analysis + login stays SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://x.com/' '' '' "$AA" SAFE)"
+check "anti-analysis never downgrades"    DANGEROUS  "$(cv false com '' '' 'https://x.com/' '' '' "$AA" DANGEROUS)"
+# but the deob signals that ARE proof still behave as before
+check "exfil still outranks it" DANGEROUS "$(cv false com '' '' 'https://x.com/' '' '' "off-domain URL: https://e.vil/c, $AA" SAFE)"
+
 echo "== open-redirect abuse (the phish that hosts nothing) =="
 # The real thing, trimmed: a genuine accounts.google.com authorize url whose redirect_uri is
 # percent-encoded character by character to hide the attacker host.

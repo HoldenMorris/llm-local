@@ -438,9 +438,17 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   //   'body': also count body-text mentions -- noisier; legit content sites merely NAME brands
   //           (wikipedia -> "google, apple"), so this over-flags. Kept for future tuning.
   const brandMatch = (process.env.BRAND_MATCH || 'strict').toLowerCase();
-  const title = (features.title || '').toLowerCase();
-  const formActions = features.forms.map(f => (f.action || '').toLowerCase()).join(' ');
-  const body = features.text.toLowerCase();
+  // Invisible characters exist in a phishing page for exactly one reason: to break the string
+  // matching that every scanner (and every YARA rule) does. Cephas pads its source with random
+  // zero-width characters; Sneaky2FA breaks up UI labels with invisible tags. "Micro<zwsp>soft"
+  // renders identically and matches nothing. Strip them before ANY text comparison -- one regex
+  // removes the whole evasion class. See .planning/phases/kit-fingerprinting/RESEARCH.md.
+  const ZW = /[​-‍⁠-⁤﻿­͏]/g;
+  const dezw = s => (s || '').replace(ZW, '');
+  const zwCount = ((features.title || '') + (features.text || '')).match(ZW);
+  const title = dezw(features.title).toLowerCase();
+  const formActions = features.forms.map(f => dezw(f.action).toLowerCase()).join(' ');
+  const body = dezw(features.text).toLowerCase();
   const brandHaystack = brandMatch === 'body'
     ? [title, formActions, body].join(' ')
     : [title, formActions].join(' ');
@@ -504,6 +512,13 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
       } catch {}
     }
   }
+
+  // The padding itself is a signal, not just an obstacle. A handful of zero-width characters is
+  // ordinary (emoji joiners, CJK line-break hints, a stray BOM), so only bulk padding counts --
+  // that is the deliberate anti-signature technique, and it is why the threshold sits well above
+  // anything a legitimate page produces by accident.
+  if (zwCount && zwCount.length > 20)
+    smells.push(`${zwCount.length} invisible characters padded into the page text - anti-signature obfuscation`);
 
   // Iframes
   if (features.iframes.length > 2)

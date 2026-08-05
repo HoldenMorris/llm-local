@@ -346,6 +346,7 @@ not 3B.
 | Urgency language | "suspended", "verify now", "24 hours", and similar |
 | Hidden form fields | More than 3 hidden inputs |
 | Sensitive field names | ssn, credit_card, cvv, routing, and similar |
+| Invisible-character padding | Zero-width characters (U+200B-200D, U+2060-2064, U+FEFF, U+00AD) sprinkled through the page. They exist for one reason: to break the string matching that every scanner does — `Micro<zwsp>soft` renders identically and matches nothing. **Stripped before every text comparison**, so brand and urgency matching see through it, and more than 20 of them is itself a smell. Cephas pads its source this way by design and Sneaky2FA breaks up UI labels with it |
 | Clipboard hijacking | `oncopy`, clipboard API usage |
 | Right-click disabled | `oncontextmenu` blocked |
 | Crypto wallet addresses | BTC, ETH, TRX patterns |
@@ -388,6 +389,7 @@ JS. It then re-scans the cleartext for the signals the obfuscation hid.
 | Cookie / storage theft | `document.cookie`, localStorage/sessionStorage reads that feed a send |
 | JS redirect | `location.href/replace/assign`, `window.location=` |
 | Revealed crypto address | BTC/ETH/TRX wallet decoded from the string array |
+| Anti-analysis code | The kit checking whether it is talking to **us**: enumerating browser-automation artifacts (`webdriver`, `__nightmare`, `callPhantom`, `_Selenium_IDE_Recorder`, …), a `debugger` trap inside a timer, blocked devtools keys, `ipapi.is` datacentre/VPN filtering, or a script deleting itself from the DOM. The **probe list** is the discriminator, not any one name: legitimate bot protection tests `navigator.webdriver`, kits enumerate the whole family in a fixed order, so the threshold is 4 distinct names. Zero of the 177 pages in the local cache trip it. Capped: **SUSPICIOUS**, excluded from the red-flag count, because commercial bot protection does some of this on real login pages — "hiding from analysis" is not the same claim as "harvesting credentials" |
 
 An off-domain exfil, a JS redirect, or a crypto address counts as a deterministic red flag (see
 `verdict.sh`). An obfuscated **login** page that deobfuscates to off-domain exfil therefore
