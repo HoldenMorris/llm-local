@@ -63,6 +63,24 @@ category_of() {
     echo content
 }
 
+# Suffixes where the registrable domain confers NO identity: every customer gets a subdomain, so
+# one tenant's kit says nothing about the next tenant's page. Anything that reasons across an apex
+# (the prior-judgement rollup in url-analyze.sh) must stop here.
+# The Public Suffix List already covers most of these -- github.io, pages.dev, netlify.app,
+# azurewebsites.net and friends are public suffixes, so apex_of already returns the tenant host.
+# This list is for the ones it MISSES (awsapprunner.com is not in the PSL, and we have scans from
+# two different tenants of it), plus a deliberate belt-and-braces repeat of the PSL ones, because
+# psl.sh degrades to a last-two-labels heuristic when the list cannot be fetched.
+# Bias: listing a single-owner domain here only loses a rollup, while omitting a multi-tenant one
+# contaminates an innocent tenant. When unsure, list it.
+TENANT_SUFFIXES="amazonaws.com awsapprunner.com azurewebsites.net cloudfront.net appspot.com
+github.io pages.dev netlify.app vercel.app web.app workers.dev base44.app sealos.app
+qlikcloud.com oraclecloud.com wasabisys.com filestackcontent.com myportfolio.com
+maillist-manage.in zohosecure.com mjt.lu beak.host irontree.cloud ayai.live"
+
+# is_tenant_suffix <apex> -> exit 0 if that apex is shared hosting rather than one owner.
+is_tenant_suffix() { case " $(printf '%s' "$TENANT_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
 # is_unsub_url <url> -> exit 0 if it is a mailing-list / unsubscribe endpoint.
 # A click on one mainly confirms the address is live (list validation).
 is_unsub_url() {
@@ -92,7 +110,7 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image' | grep -c .) ))
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious' | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it
@@ -173,6 +191,14 @@ classify_verdict() {
     # and malware droppers harvest money, not passwords, so the login-gated DANGEROUS rule below
     # capped trencraft.com (11 VT vendors malicious) at SUSPICIOUS. Quorum of 5 because one or
     # two vendors is routinely stale or a lone heuristic engine.
+    # A sibling url on this same registered domain that a HUMAN (or a deep inspection) already
+    # settled as SUSPICIOUS. Real evidence -- not this tool's own uncertainty, which is why only
+    # `inspected` rows reach here and never `agree` ones. Capped at its own severity: it says the
+    # domain has hosted something bad, not that THIS page is harvesting, so it is excluded from
+    # count_red_flags and can never combine with a login form to reach DANGEROUS. A settled
+    # DANGEROUS sibling arrives as an ordinary smell instead, and does count.
+    local priorsusp=""
+    printf '%s' "$smells" | grep -qi 'previously inspected as suspicious' && priorsusp=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -186,9 +212,9 @@ classify_verdict() {
         floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
-    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ]; then
+    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ]; then
         floor=SUSPICIOUS
-        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}"
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a sibling url on this domain was inspected and found suspicious}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then

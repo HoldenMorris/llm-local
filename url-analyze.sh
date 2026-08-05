@@ -748,19 +748,42 @@ fi
 # back into the floor would let a host ratchet itself up on its own output. The rest is context.
 # Cap: this is ONE red flag, so alone it floors to SUSPICIOUS. A compromised legitimate host still
 # serves real pages on other paths; the page's own evidence is what takes it to DANGEROUS.
-HOST_PRIORS=$("$SCRIPT_DIR/feedback-report.sh" --host "$DOMAIN" "$URL" 2>/dev/null)
+# Widen to the whole registrable domain when that domain means ONE owner: a kit rotates
+# subdomains as freely as paths (lxu438.getnew.space and tyu620.getnew.space, one day apart).
+# Not when the apex is shared hosting -- see is_tenant_suffix. psl.sh already stops most of those
+# (github.io and friends ARE public suffixes, so apex_of returns the tenant host and this is a
+# no-op), and TENANT_SUFFIXES covers what the PSL misses.
+_prior_scope="$DOMAIN"; _prior_q=(--host "$DOMAIN")
+if [ "$APEX_DOMAIN" != "$DOMAIN" ] && ! is_tenant_suffix "$APEX_DOMAIN"; then
+    _prior_scope="$APEX_DOMAIN (all subdomains)"; _prior_q=(--apex "$APEX_DOMAIN")
+fi
+HOST_PRIORS=$("$SCRIPT_DIR/feedback-report.sh" "${_prior_q[@]}" "$URL" 2>/dev/null)
 if [ -n "$HOST_PRIORS" ]; then
     echo ""
-    echo "${BOLD}Prior judgements on $DOMAIN${RESET}"
-    _host_bad=""
-    while IFS=$'\t' read -r _pv _ps _pu _pn; do
+    echo "${BOLD}Prior judgements on $_prior_scope${RESET}"
+    _host_bad="" _host_susp=""
+    while IFS=$'\t' read -r _pv _ps _pu _pn _pc; do
         [ -z "$_pv" ] && continue
-        echo_grey "- $_pv ($_ps): $_pu"
+        echo_grey "- $_pv${_pc:+/$_pc} ($_ps): $_pu"
         [ -n "$_pn" ] && printf '%s\n' "$_pn" | fold -s -w 92 | sed "s/^/    ${GREY}/;s/\$/${RESET}/"
-        [ "$_pv" = "DANGEROUS" ] && [ "$_ps" = "inspected" ] && [ -z "$_host_bad" ] && _host_bad="$_pu"
+        [ "$_ps" = "inspected" ] && case "$_pv" in
+            DANGEROUS)  [ -z "$_host_bad" ]  && _host_bad="$_pu" ;;
+            SUSPICIOUS) [ -z "$_host_susp" ] && _host_susp="$_pu" ;;
+        esac
     done <<< "$HOST_PRIORS"
-    # commas separate smells for count_red_flags, and urls may contain them
-    [ -n "$_host_bad" ] && SMELLS="${SMELLS:+$SMELLS, }Confirmed phishing previously inspected on this host ($(printf '%s' "$_host_bad" | tr ',' ' '))"
+    # commas separate smells for count_red_flags, and urls may contain them.
+    # A settled DANGEROUS sibling is an ordinary red flag; a settled SUSPICIOUS one is capped at
+    # SUSPICIOUS by verdict.sh and excluded from the count (see priorsusp there).
+    _prior_smell() {   # <wording> <url>
+        local where=host
+        printf '%s' "$2" | grep -qE "^[a-z]+://$(printf '%s' "$DOMAIN" | sed 's/\./\\./g')([/:?#]|$)" || where=domain
+        SMELLS="${SMELLS:+$SMELLS, }$1 on this $where ($(printf '%s' "$2" | tr ',' ' '))"
+    }
+    if [ -n "$_host_bad" ]; then
+        _prior_smell "Confirmed phishing previously inspected" "$_host_bad"
+    elif [ -n "$_host_susp" ]; then
+        _prior_smell "A sibling url was previously inspected as suspicious" "$_host_susp"
+    fi
     HOST_PRIORS_LLM=$(printf '%s' "$HOST_PRIORS" | awk -F'\t' '{ printf "%s%s (%s) %s", sep, $1, $2, $3; sep="; " }')
 fi
 
@@ -1374,3 +1397,9 @@ NOTE: <one-line conclusion, max 200 chars>" \
             "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
     fi
 fi
+
+# Always the last line: which URL this whole run was about. A scan scrolls several screens of
+# signals, console errors and prompts, so by the time you reach the bottom the URL is long gone --
+# and the next thing you usually do is paste it into a ticket or re-run it with another flag.
+echo ""
+echo_grey "scanned: $URL"

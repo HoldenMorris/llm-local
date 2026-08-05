@@ -9,6 +9,7 @@
 #   ./feedback-report.sh -i <url> <note>   # record a deep inspection; closes the flag
 #   ./feedback-report.sh --corpus     # labeled corpus of every settled LIVE url, for url-benchmark.sh
 #   ./feedback-report.sh --host <host> [exclude-url]   # what we already know about this exact host
+#   ./feedback-report.sh --apex <apex> [exclude-url]   # ... widened to every host under one domain
 #   ./feedback-report.sh -c mono      # no color
 #   ./feedback-report.sh --self-test  # exercise the state logic, no real cache touched
 #
@@ -27,6 +28,7 @@ FLAGS_ONLY=""; [ "$1" = "-f" ] && { FLAGS_ONLY=1; shift; }
 INSPECT="";    [ "$1" = "-i" ] && { INSPECT=1; shift; }
 CORPUS="";     [ "$1" = "--corpus" ] && { CORPUS=1; shift; }
 HOSTQ="";      [ "$1" = "--host" ] && { HOSTQ=1; shift; }
+APEXQ="";      [ "$1" = "--apex" ] && { APEXQ=1; shift; }
 SELFTEST="";   [ "$1" = "--self-test" ] && { SELFTEST=1; shift; }
 source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/verdict.sh"   # VERDICT_CATEGORIES / is_category: the ledger owns no vocabulary of its own
@@ -93,6 +95,12 @@ if [ -n "$SELFTEST" ]; then
     # a multi-tenant apex confers nothing: one tenant's kit must not reach the next tenant
     [ -z "$(FB_ROOT="$_t" NO_COLOR=1 "$0" --host b.pages.dev)" ] \
         || { echo "FAIL --host leaked across tenants of a multi-tenant apex"; _fails=1; }
+    # --apex: siblings under one registrable domain, matched on a label boundary only
+    _row https://a.kit.example/x 2026-01-01T00:00:00Z DANGEROUS inspected https://a.kit.example/x "sibling kit"
+    _row https://notkit.example/x 2026-01-01T00:00:00Z DANGEROUS inspected https://notkit.example/x "unrelated"
+    _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --apex kit.example https://kit.example/verify | cut -f3 | sort | tr '\n' ' ')
+    _want="https://a.kit.example/x https://kit.example/login "
+    [ "$_got" = "$_want" ] || { echo "FAIL --apex: want [$_want] got [$_got]"; _fails=1; }
     # a dead URL keeps its label and its worklist slot, it is only held out of the corpus
     grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://dead.example)/feedback.txt" \
         || { echo "FAIL gone row clobbered the label"; _fails=1; }
@@ -158,26 +166,35 @@ fi
 # Unsettled states (flag, disagree, skip) have no trustworthy label, so they are dropped -- and a
 # re-flag after an inspection drops that URL again, because the case re-opened. Dead URLs (gone)
 # are held back until a scan sees them alive, which keeps the score about detection, not uptime.
-# --host <host> [exclude-url]: the settled judgements recorded for OTHER urls on this exact host,
-# one per line as VERDICT<TAB>state<TAB>url<TAB>note. This is what url-analyze.sh knows about a
-# host before it fetches anything: kits rotate paths and query strings behind one hostname, so a
-# harvester settled at /login is evidence about /verify tomorrow.
-# The key is the FULL host and never the apex -- on a multi-tenant apex (github.io, pages.dev,
-# azurewebsites.net) one tenant's kit says nothing about the next tenant's page.
+# --host <host> [exclude-url]: the settled judgements recorded for OTHER urls on this exact host.
+# --apex <apex> [exclude-url]: the same, widened to every host UNDER that registrable domain.
+# One line each: VERDICT<TAB>state<TAB>url<TAB>note<TAB>category. This is what url-analyze.sh knows
+# about where a url lives before it fetches anything: kits rotate paths, query strings AND
+# subdomains behind one registered domain, so a harvester settled at lxu438.kit.example is evidence
+# about tyu620.kit.example tomorrow.
+# The caller decides which of the two to ask for, because widening to the apex is only safe when
+# the apex means one owner -- see is_tenant_suffix in verdict.sh.
 # Dead urls are NOT filtered out here: a gone phishing page is still evidence about its host.
 # "settled" = inspected|agree, same rule as --corpus below -- keep the two in sync.
-if [ -n "$HOSTQ" ]; then
+if [ -n "$HOSTQ" ] || [ -n "$APEXQ" ]; then
     _want="$1"; _excl="${2:-}"
-    [ -n "$_want" ] || { echo "usage: $0 --host <host> [exclude-url]" >&2; exit 2; }
-    cat "${FILES[@]}" | sort | awk -F'\t' -v want="$(printf '%s' "$_want" | tr 'A-Z' 'a-z')" -v excl="$_excl" '
+    [ -n "$_want" ] || { echo "usage: $0 --host <host> | --apex <apex>  [exclude-url]" >&2; exit 2; }
+    cat "${FILES[@]}" | sort | awk -F'\t' -v want="$(printf '%s' "$_want" | tr 'A-Z' 'a-z')" \
+                                          -v excl="$_excl" -v apex="$APEXQ" '
     function host(u) { sub(/^[a-zA-Z]+:\/\//, "", u); sub(/[\/?#].*$/, "", u)
                        sub(/^[^@]*@/, "", u); sub(/:[0-9]+$/, "", u); return tolower(u) }
+    # apex mode matches the apex itself and anything below it, and only on a label boundary:
+    # "notgetnew.space" must not match "getnew.space"
+    function matches(h,   p) { if (!apex) return h==want
+                               if (h==want) return 1
+                               p = index(h, "." want)            # 0 when absent, and 0 would
+                               return p > 0 && p == length(h)-length(want) }   # collide with it
     NF < 4 || $3=="gone" || $3=="alive" { next }
     { if (!($4 in ord)) { ord[$4] = ++n; URLS[n]=$4 }
       lab[$4] = (($3=="inspected" || $3=="agree") ? $2 : ""); st[$4]=$3
       note[$4]=(NF>=5 ? $5 : ""); cat[$4]=(NF>=6 ? $6 : "") }
     END { for (i=1; i<=n; i++) { u=URLS[i]
-            if (u==excl || lab[u]=="" || host(u)!=want) continue
+            if (u==excl || lab[u]=="" || !matches(host(u))) continue
             print lab[u]"\t"st[u]"\t"u"\t"note[u]"\t"cat[u] } }'
     exit 0
 fi

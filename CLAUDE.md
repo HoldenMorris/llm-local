@@ -187,6 +187,10 @@ Flags:
   the benchmarks. See below.
 - `-p tor` routes scanner egress through Tor. `-g <cc>` sets the exit country. See below.
 
+Every run ends with a `scanned: <url>` line. A scan scrolls several screens, so the URL is gone by
+the time you reach the bottom, and the next thing you do is paste it into a ticket or re-run it
+with another flag.
+
 On a bot gate the tool offers operator attach (see below). With no URL argument it prompts for
 one. The interactive model menu lists `0: none (pure heuristic)` plus the installed models, and
 defaults to the best one (press Enter). The LLM analysis line prints which model ran and how
@@ -324,7 +328,7 @@ not 3B.
 | SSL cert age | openssl (flags less than 7 days as suspicious) |
 | SSL issuer | openssl |
 | Fast-flux DNS | More than 5 A records, or TTL under 300s |
-| Prior judgements on this host | The feedback ledger (`feedback-report.sh --host`). Kits rotate paths and query strings behind one hostname, so a harvester settled at `/login` is evidence about `/verify` tomorrow. Only an **`inspected` DANGEROUS** becomes a red flag: `agree` is one keypress (Enter is the default answer) and a prior SUSPICIOUS is often only this tool's own uncertainty, so either one would let a host ratchet itself up on its own output. The rest is LLM context. Cap: one red flag, so it floors to SUSPICIOUS alone and to DANGEROUS with a credential form. Keyed on the **full host, never the apex**, because on a multi-tenant apex (`github.io`, `pages.dev`, `azurewebsites.net`) one tenant says nothing about the next |
+| Prior judgements on this domain | The feedback ledger (`feedback-report.sh --host` / `--apex`). Kits rotate paths, query strings **and subdomains** behind one registered domain, so a harvester settled at `lxu438.getnew.space` is evidence about `tyu620.getnew.space` the next day. Only **`inspected`** rows count: `agree` is one keypress (Enter is the default answer), so it would let a domain ratchet itself up on this tool's own output. An inspected **DANGEROUS** sibling is an ordinary red flag (SUSPICIOUS alone, DANGEROUS with a credential form). An inspected **SUSPICIOUS** sibling is real human evidence but weaker, so it is excluded from the red-flag count and floors at SUSPICIOUS only — it says the domain hosted something bad, not that this page is harvesting. Scope widens from the host to the **registrable domain** only when that domain means one owner: `psl.sh` already returns the tenant host for a public suffix (`github.io`, `pages.dev`, `azurewebsites.net`), and `TENANT_SUFFIXES` in `verdict.sh` covers what the PSL misses (`awsapprunner.com` is not in the list, and one operator's tenant must never taint another's) |
 
 ### Phase 3: Page Fetch (via page-fetch.sh)
 

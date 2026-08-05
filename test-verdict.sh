@@ -137,6 +137,22 @@ check "clean page, no VT line -> SAFE kept"  SAFE      "$(cv false com '' '' 'ht
 # red-flag counter, so the cap is structural: one flag -> SUSPICIOUS alone, DANGEROUS with a
 # credential form. A compromised legitimate host still serves real pages on its other paths.
 PRIOR='Confirmed phishing previously inspected on this host (https://h.com/login)'
+PRIORD='Confirmed phishing previously inspected on this domain (https://sib.h.com/login)'
+check "sibling-host wording counts too"     1          "$(count_red_flags com '' '' "$PRIORD" '' '')"
+# A settled SUSPICIOUS sibling is capped: it floors to SUSPICIOUS and, unlike a DANGEROUS one,
+# never combines with a login form to reach DANGEROUS -- it says the domain hosted something bad,
+# not that this page is harvesting.
+PRIORS='A sibling url was previously inspected as suspicious on this domain (https://sib.h.com/x)'
+check "prior suspicious is not a red flag" 0          "$(count_red_flags com '' '' "$PRIORS" '' '')"
+check "prior suspicious -> SUSPICIOUS"     SUSPICIOUS "$(cv false com '' '' 'https://h.com/y' "$PRIORS" '' '' SAFE)"
+check "prior suspicious + login stays SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://h.com/y' "$PRIORS" '' '' SAFE)"
+check "prior suspicious never downgrades"  DANGEROUS  "$(cv false com '' '' 'https://h.com/y' "$PRIORS" '' '' DANGEROUS)"
+
+echo "== is_tenant_suffix (where an apex means nothing) =="
+expect "awsapprunner.com is shared"   yes is_tenant_suffix awsapprunner.com
+expect "pages.dev is shared"          yes is_tenant_suffix pages.dev
+expect "getnew.space is one owner"    no  is_tenant_suffix getnew.space
+expect "zumbocloud.com is one owner"  no  is_tenant_suffix zumbocloud.com
 check "prior host phishing counts once"     1          "$(count_red_flags com '' '' "$PRIOR" '' '')"
 check "prior host phishing -> SUSPICIOUS"   SUSPICIOUS "$(cv false com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
 check "prior host phishing + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
