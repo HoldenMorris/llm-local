@@ -72,7 +72,7 @@ VLM architectures.
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests that pin the deterministic verdict core (`verdict.sh`). Pure: no LLM, no network |
-| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag. Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. Run `--self-test` for the self-check |
+| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag. Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. `--host <host> [exclude-url]` prints the settled judgements for one exact host, which is how a scan reuses what the ledger already knows about it. Run `--self-test` for the self-check |
 | `psl.sh` | Public Suffix List helper. `source` it, then `apex_of <host>`. Gives the true registrable domain. Caches the list in `.cache/` and refreshes it every 30 days. Run `./psl.sh` for the self-check |
 | `brand-verify.sh` | Ask if the **brand's own site** links to a host. `PROVEN` suppresses a brand smell. `UNPROVEN` escalates nothing. Run `--self-test` for the self-check |
 | `tor-up.sh` | Bring up the Tor sidecar (`llm-tor`) for scanner egress: exit country and circuit rotation. `--down` stops it |
@@ -96,11 +96,26 @@ therefore stays plain ASCII. Four tools use `colors.sh`: `url-analyze.sh`, `url-
 
 `url-analyze.sh` caches the work for each URL in `.cache/<url-hash>/`: page content
 (`page.json`), screenshot (`page.jpg`), the followed credential page and its screenshot
-(`page-login.json`, `login.jpg`), domain metadata (`meta.env`), inline scripts
+(`page-login.json`, `login.jpg`), inline scripts
 (`scripts/`), deobfuscation signals (`deob-signals.txt`), the vision VLM verdict
 (`vision.txt`), and each LLM answer (`llm-<hash>.txt`, keyed by model and request). A re-scan
 therefore reuses the fetch, the ~1min vision call, and the LLM verdict instead of a re-compute.
 `-r` forces a full refresh.
+
+### Per-host cache (`.cache/host/<host>:<port>/`)
+
+Domain metadata (`meta.env`: IP, geo, org, domain age, cert age and issuer, A records, TTL) is a
+fact about the **host**, never about the path or the query, so it caches per host instead of per
+URL. A scan of a new path on a known host therefore skips the whole serial round-trip block (dig,
+ip-api, RDAP, openssl): ~2.6s to ~0.2s. The facts expire after 7 days, and `-r` refreshes now.
+
+The signals are derived from those facts **outside** the lookup, so a cached run and a fresh run
+give the same signal list. They used to diverge: the cached branch re-added only the fast-flux
+signal, so a re-scan silently dropped the domain-age, new-cert and low-TTL signals from the LLM's
+context, and the same scan read differently depending on whether the cache was warm.
+
+Only `AGE_DAYS` is really apex-scoped, so sibling subdomains re-fetch it. That is one RDAP call,
+which does not earn a second cache tier keyed on the apex.
 
 The cache also holds the feedback ledger (`feedback.txt`). Beside the judgement rows it carries
 **liveness** rows: a failed fetch appends `gone`, and a later successful fetch appends `alive`.
@@ -274,6 +289,7 @@ not 3B.
 | SSL cert age | openssl (flags less than 7 days as suspicious) |
 | SSL issuer | openssl |
 | Fast-flux DNS | More than 5 A records, or TTL under 300s |
+| Prior judgements on this host | The feedback ledger (`feedback-report.sh --host`). Kits rotate paths and query strings behind one hostname, so a harvester settled at `/login` is evidence about `/verify` tomorrow. Only an **`inspected` DANGEROUS** becomes a red flag: `agree` is one keypress (Enter is the default answer) and a prior SUSPICIOUS is often only this tool's own uncertainty, so either one would let a host ratchet itself up on its own output. The rest is LLM context. Cap: one red flag, so it floors to SUSPICIOUS alone and to DANGEROUS with a credential form. Keyed on the **full host, never the apex**, because on a multi-tenant apex (`github.io`, `pages.dev`, `azurewebsites.net`) one tenant says nothing about the next |
 
 ### Phase 3: Page Fetch (via page-fetch.sh)
 

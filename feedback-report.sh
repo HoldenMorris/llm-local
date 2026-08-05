@@ -7,6 +7,7 @@
 #   ./feedback-report.sh -f           # just the OPEN flagged URLs, one per line (a worklist)
 #   ./feedback-report.sh -i <url> <note>   # record a deep inspection; closes the flag
 #   ./feedback-report.sh --corpus     # labeled corpus of every settled LIVE url, for url-benchmark.sh
+#   ./feedback-report.sh --host <host> [exclude-url]   # what we already know about this exact host
 #   ./feedback-report.sh -c mono      # no color
 #   ./feedback-report.sh --self-test  # exercise the state logic, no real cache touched
 #
@@ -24,6 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLAGS_ONLY=""; [ "$1" = "-f" ] && { FLAGS_ONLY=1; shift; }
 INSPECT="";    [ "$1" = "-i" ] && { INSPECT=1; shift; }
 CORPUS="";     [ "$1" = "--corpus" ] && { CORPUS=1; shift; }
+HOSTQ="";      [ "$1" = "--host" ] && { HOSTQ=1; shift; }
 SELFTEST="";   [ "$1" = "--self-test" ] && { SELFTEST=1; shift; }
 source "$SCRIPT_DIR/colors.sh"
 
@@ -52,17 +54,21 @@ if [ -n "$SELFTEST" ]; then
     _row https://revived.example 2026-01-01T00:00:00Z DANGEROUS inspected https://revived.example "kit"
     _row https://revived.example 2026-01-02T00:00:00Z ?         gone      https://revived.example
     _row https://revived.example 2026-01-03T00:00:00Z ?         alive     https://revived.example
+    # same host, different paths -- the --host rollup; plus two tenants on one multi-tenant apex
+    _row https://kit.example/login  2026-01-01T00:00:00Z DANGEROUS  inspected https://kit.example/login "harvester"
+    _row https://kit.example/verify 2026-01-01T00:00:00Z SUSPICIOUS agree     https://kit.example/verify
+    _row https://a.pages.dev/x      2026-01-01T00:00:00Z DANGEROUS  inspected https://a.pages.dev/x "kit"
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" -f | sort | tr '\n' ' ')
     _want="https://open.example https://requeued.example "
     _fails=0
     [ "$_got" = "$_want" ] || { echo "FAIL -f open flags: want [$_want] got [$_got]"; _fails=1; }
     _rep=$(FB_ROOT="$_t" NO_COLOR=1 "$0")
     printf '%s' "$_rep" | grep -q 'open flags 2' || { echo "FAIL open-flag count"; _fails=1; }
-    printf '%s' "$_rep" | grep -q 'inspected 3'  || { echo "FAIL inspected count"; _fails=1; }
+    printf '%s' "$_rep" | grep -q "inspected 5"  || { echo "FAIL inspected count"; _fails=1; }
     # gone/alive are liveness, not responses: only dead.example is still down, and neither state
     # may leak into the agree/disagree tallies
     printf '%s' "$_rep" | grep -q 'gone 1'       || { echo "FAIL gone count"; _fails=1; }
-    printf '%s' "$_rep" | grep -q '9 responses'  || { echo "FAIL liveness rows counted as responses"; _fails=1; }
+    printf '%s' "$_rep" | grep -q "12 responses"  || { echo "FAIL liveness rows counted as responses"; _fails=1; }
     printf '%s' "$_rep" | grep -q 'false positive, brand verified' || { echo "FAIL note not shown"; _fails=1; }
     # -i on an unscanned URL must refuse rather than invent a cache dir
     FB_ROOT="$_t" "$0" -i https://never.scanned "note" >/dev/null 2>&1 \
@@ -76,8 +82,15 @@ if [ -n "$SELFTEST" ]; then
     # --corpus: settled + live only. open/requeued = re-opened flags, dead = gone, revived = back.
     # (open.example was just inspected DANGEROUS above, so it is settled and belongs in the corpus.)
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --corpus | grep -v '^#' | sort | tr '\n' '|')
-    _want="DANGEROUS https://open.example|DANGEROUS https://revived.example|SAFE https://agreed.example|SUSPICIOUS https://closed.example|"
+    _want="DANGEROUS https://a.pages.dev/x|DANGEROUS https://kit.example/login|DANGEROUS https://open.example|DANGEROUS https://revived.example|SAFE https://agreed.example|SUSPICIOUS https://closed.example|SUSPICIOUS https://kit.example/verify|"
     [ "$_got" = "$_want" ] || { echo "FAIL --corpus: want [$_want] got [$_got]"; _fails=1; }
+    # --host: other settled urls on the SAME host, the queried url itself excluded
+    _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --host kit.example https://kit.example/verify | tr '\t' ' ')
+    _want="DANGEROUS inspected https://kit.example/login harvester"
+    [ "$_got" = "$_want" ] || { echo "FAIL --host: want [$_want] got [$_got]"; _fails=1; }
+    # a multi-tenant apex confers nothing: one tenant's kit must not reach the next tenant
+    [ -z "$(FB_ROOT="$_t" NO_COLOR=1 "$0" --host b.pages.dev)" ] \
+        || { echo "FAIL --host leaked across tenants of a multi-tenant apex"; _fails=1; }
     # a dead URL keeps its label and its worklist slot, it is only held out of the corpus
     grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://dead.example)/feedback.txt" \
         || { echo "FAIL gone row clobbered the label"; _fails=1; }
@@ -133,6 +146,29 @@ fi
 # Unsettled states (flag, disagree, skip) have no trustworthy label, so they are dropped -- and a
 # re-flag after an inspection drops that URL again, because the case re-opened. Dead URLs (gone)
 # are held back until a scan sees them alive, which keeps the score about detection, not uptime.
+# --host <host> [exclude-url]: the settled judgements recorded for OTHER urls on this exact host,
+# one per line as VERDICT<TAB>state<TAB>url<TAB>note. This is what url-analyze.sh knows about a
+# host before it fetches anything: kits rotate paths and query strings behind one hostname, so a
+# harvester settled at /login is evidence about /verify tomorrow.
+# The key is the FULL host and never the apex -- on a multi-tenant apex (github.io, pages.dev,
+# azurewebsites.net) one tenant's kit says nothing about the next tenant's page.
+# Dead urls are NOT filtered out here: a gone phishing page is still evidence about its host.
+# "settled" = inspected|agree, same rule as --corpus below -- keep the two in sync.
+if [ -n "$HOSTQ" ]; then
+    _want="$1"; _excl="${2:-}"
+    [ -n "$_want" ] || { echo "usage: $0 --host <host> [exclude-url]" >&2; exit 2; }
+    cat "${FILES[@]}" | sort | awk -F'\t' -v want="$(printf '%s' "$_want" | tr 'A-Z' 'a-z')" -v excl="$_excl" '
+    function host(u) { sub(/^[a-zA-Z]+:\/\//, "", u); sub(/[\/?#].*$/, "", u)
+                       sub(/^[^@]*@/, "", u); sub(/:[0-9]+$/, "", u); return tolower(u) }
+    NF < 4 || $3=="gone" || $3=="alive" { next }
+    { if (!($4 in ord)) { ord[$4] = ++n; URLS[n]=$4 }
+      lab[$4] = (($3=="inspected" || $3=="agree") ? $2 : ""); st[$4]=$3; note[$4]=(NF>=5 ? $5 : "") }
+    END { for (i=1; i<=n; i++) { u=URLS[i]
+            if (u==excl || lab[u]=="" || host(u)!=want) continue
+            print lab[u]"\t"st[u]"\t"u"\t"note[u] } }'
+    exit 0
+fi
+
 if [ -n "$CORPUS" ]; then
     cat "${FILES[@]}" | sort | awk -F'\t' -v when="$(date -u +%FT%TZ)" '
     NF < 4 { next }

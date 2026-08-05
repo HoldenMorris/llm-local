@@ -132,6 +132,16 @@ check "VT below quorum stays SUSPICIOUS"    SUSPICIOUS "$(cv false com '' '' 'ht
 check "VT quorum never downgrades an LLM DANGEROUS" DANGEROUS "$(cv false com '' '' 'https://x.com' "$VT11" '' '' DANGEROUS)"
 check "clean page, no VT line -> SAFE kept"  SAFE      "$(cv false com '' '' 'https://x.com' '' '' '' SAFE)"
 
+# Prior-judgement rollup: url-analyze.sh appends this smell when the ledger holds an INSPECTED
+# DANGEROUS for another url on the same host (feedback-report.sh --host). It rides the ordinary
+# red-flag counter, so the cap is structural: one flag -> SUSPICIOUS alone, DANGEROUS with a
+# credential form. A compromised legitimate host still serves real pages on its other paths.
+PRIOR='Confirmed phishing previously inspected on this host (https://h.com/login)'
+check "prior host phishing counts once"     1          "$(count_red_flags com '' '' "$PRIOR" '' '')"
+check "prior host phishing -> SUSPICIOUS"   SUSPICIOUS "$(cv false com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
+check "prior host phishing + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
+check "prior host phishing never downgrades" DANGEROUS "$(cv false com '' '' 'https://h.com/x' "$PRIOR" '' '' DANGEROUS)"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

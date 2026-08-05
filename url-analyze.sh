@@ -299,17 +299,16 @@ if echo "$DOMAIN" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
 fi
 
 # === Domain Info Lookup ===
-# ponytail: IP/geo, domain age, SSL and DNS are cached in meta.env so re-scans and the
-# model benchmark skip these network round-trips. -r refreshes.
-if [ -f "$CACHE_DIR/meta.env" ]; then
-    source "$CACHE_DIR/meta.env"
-    echo "${BOLD}Domain Info (cached)${RESET}"
-    echo_grey "- IP: ${IP:-(unresolvable)}${COUNTRY:+ ($COUNTRY, $ORG)}"
-    [ -n "$AGE_DAYS" ] && echo_grey "- Domain age: $AGE_DAYS days"
-    [ -n "$CERT_AGE_DAYS" ] && echo_grey "- SSL cert age: $CERT_AGE_DAYS days${CERT_ISSUER:+ (issuer: $CERT_ISSUER)}"
-    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records"
-else
-echo "${BOLD}Domain Info${RESET}"
+# IP/geo, domain age, SSL and DNS are facts about the HOST -- nothing here depends on the path or
+# the query string. So they cache per host, not per URL: a scan of a different path on a host we
+# already know skips this whole block of serial network round-trips (dig, ip-api, RDAP, openssl).
+# Facts do go stale (certs rotate, domains age, DNS moves), so the cache expires after
+# META_TTL_DAYS; -r refreshes it now.
+# ponytail: one file per host. AGE_DAYS is really apex-scoped, so sibling subdomains re-fetch it --
+# that is one RDAP call, not worth a second cache tier keyed on the apex.
+HOST_DIR="$SCRIPT_DIR/.cache/host/$(printf '%s' "$DOMAIN:$PORT" | tr -c 'a-zA-Z0-9.:_-' '_')"
+META_TTL_DAYS=7
+mkdir -p "$HOST_DIR"
 
 # Registrable domain via the Public Suffix List (psl.sh). NOT the last two labels: for
 # smithpower.autoit.za.com that gave "za.com", so the RDAP lookup below returned the CentralNic
@@ -319,15 +318,18 @@ echo "${BOLD}Domain Info${RESET}"
 # already treats an empty age as "not counted" rather than "old".
 APEX_DOMAIN=$(apex_of "$DOMAIN")
 
+if [ -z "$REFRESH" ] && [ -n "$(find "$HOST_DIR/meta.env" -mtime "-$META_TTL_DAYS" 2>/dev/null)" ]; then
+    source "$HOST_DIR/meta.env"
+    echo "${BOLD}Domain Info (cached for $DOMAIN)${RESET}"
+else
+echo "${BOLD}Domain Info${RESET}"
+
 # DNS + IP info
 IP=$(dig +short "$DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
 if [ -n "$IP" ]; then
     IP_INFO=$(curl -s --max-time 5 "http://ip-api.com/json/$IP?fields=country,org,isp" 2>/dev/null)
     COUNTRY=$(echo "$IP_INFO" | jq -r '.country // "?"')
     ORG=$(echo "$IP_INFO" | jq -r '.org // .isp // "?"')
-    echo_grey "- IP: $IP ($COUNTRY, $ORG)"
-else
-    echo_grey "- IP: (unresolvable)"
 fi
 
 # Domain age via RDAP (works for .com, .net, .org)
@@ -339,19 +341,7 @@ if echo "$TLD" | grep -qE '^(com|net|org)$'; then
         CREATED_DATE=$(echo "$CREATED" | cut -d'T' -f1)
         # Calculate age in days
         CREATED_TS=$(date -d "$CREATED_DATE" +%s 2>/dev/null || echo "")
-        if [ -n "$CREATED_TS" ]; then
-            NOW_TS=$(date +%s)
-            AGE_DAYS=$(( (NOW_TS - CREATED_TS) / 86400 ))
-            if [ "$AGE_DAYS" -lt 30 ]; then
-                add_signal "Domain age: $AGE_DAYS days (VERY NEW - high risk)"
-            elif [ "$AGE_DAYS" -lt 90 ]; then
-                add_signal "Domain age: $AGE_DAYS days (new)"
-            else
-                echo_grey "- Domain age: $AGE_DAYS days (created $CREATED_DATE)"
-            fi
-        else
-            echo_grey "- Domain created: $CREATED_DATE"
-        fi
+        [ -n "$CREATED_TS" ] && AGE_DAYS=$(( ($(date +%s) - CREATED_TS) / 86400 ))
     fi
 fi
 
@@ -363,40 +353,45 @@ if echo "$URL" | grep -q "^https://"; then
         CERT_ISSUER=$(echo "$SSL_INFO" | grep "issuer" | sed 's/.*CN = //' | cut -d',' -f1)
         if [ -n "$CERT_START" ]; then
             CERT_TS=$(date -d "$CERT_START" +%s 2>/dev/null || echo "")
-            if [ -n "$CERT_TS" ]; then
-                CERT_AGE_DAYS=$(( ($(date +%s) - CERT_TS) / 86400 ))
-                if [ "$CERT_AGE_DAYS" -lt 7 ]; then
-                    add_signal "SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
-                elif [ "$CERT_AGE_DAYS" -lt 30 ]; then
-                    echo_grey "- SSL cert age: $CERT_AGE_DAYS days (recent)"
-                else
-                    echo_grey "- SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
-                fi
-            fi
+            [ -n "$CERT_TS" ] && CERT_AGE_DAYS=$(( ($(date +%s) - CERT_TS) / 86400 ))
         fi
     fi
 fi
 
 # === DNS Records Check ===
 A_RECORDS=$(dig +short "$DOMAIN" A 2>/dev/null | grep -E '^[0-9]+\.' | wc -l)
-if [ "$A_RECORDS" -gt 5 ]; then
-    add_signal "Fast-flux: $A_RECORDS A records (suspicious)"
-fi
-
 TTL=$(dig +noall +answer "$DOMAIN" A 2>/dev/null | awk '{print $2}' | head -1)
-if [ -n "$TTL" ] && [ "$TTL" -lt 300 ]; then
-    add_signal "Low TTL: ${TTL}s (fast-flux indicator)"
-fi
 
 # Persist the lookups for re-scans (only once we actually resolved something).
 # printf %q keeps org names with spaces/quotes shell-safe when sourced back.
 if [ -n "$IP" ]; then
     { printf 'IP=%q\n' "$IP";               printf 'COUNTRY=%q\n' "$COUNTRY"
       printf 'ORG=%q\n' "$ORG";             printf 'AGE_DAYS=%q\n' "$AGE_DAYS"
+      printf 'CREATED_DATE=%q\n' "$CREATED_DATE"
       printf 'CERT_AGE_DAYS=%q\n' "$CERT_AGE_DAYS"; printf 'CERT_ISSUER=%q\n' "$CERT_ISSUER"
-      printf 'A_RECORDS=%q\n' "$A_RECORDS"; printf 'TTL=%q\n' "$TTL"; } > "$CACHE_DIR/meta.env"
+      printf 'A_RECORDS=%q\n' "$A_RECORDS"; printf 'TTL=%q\n' "$TTL"; } > "$HOST_DIR/meta.env"
 fi
 fi
+
+# Signals are derived from the FACTS, outside the lookup, so a cached run and a fresh run produce
+# the same signal list. They used to diverge: the cached branch re-added only the fast-flux signal,
+# so every re-scan silently dropped the domain-age, new-cert and low-TTL signals from the LLM's
+# context -- the same scan could read differently depending on whether the cache happened to be warm.
+echo_grey "- IP: ${IP:-(unresolvable)}${IP:+ ($COUNTRY, $ORG)}"
+if [ -n "$AGE_DAYS" ]; then
+    if   [ "$AGE_DAYS" -lt 30 ] 2>/dev/null; then add_signal "Domain age: $AGE_DAYS days (VERY NEW - high risk)"
+    elif [ "$AGE_DAYS" -lt 90 ] 2>/dev/null; then add_signal "Domain age: $AGE_DAYS days (new)"
+    else echo_grey "- Domain age: $AGE_DAYS days${CREATED_DATE:+ (created $CREATED_DATE)}"
+    fi
+fi
+if [ -n "$CERT_AGE_DAYS" ]; then
+    if   [ "$CERT_AGE_DAYS" -lt 7 ] 2>/dev/null;  then add_signal "SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
+    elif [ "$CERT_AGE_DAYS" -lt 30 ] 2>/dev/null; then echo_grey "- SSL cert age: $CERT_AGE_DAYS days (recent)"
+    else echo_grey "- SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
+    fi
+fi
+[ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records (suspicious)"
+[ -n "$TTL" ] && [ "$TTL" -lt 300 ] 2>/dev/null && add_signal "Low TTL: ${TTL}s (fast-flux indicator)"
 
 # Don't spin up the fetch container if the domain has no DNS A record -- it would just
 # time out. Static + DNS info above still stands. (data: URLs need no DNS, so exempt them.)
@@ -744,6 +739,31 @@ if [ -n "$SUSP_JS" ] && [ -n "$DEOBFUS_SIGNALS" ] \
     JS_CLEARED=1
 fi
 
+# === What we already know about this host ===
+# The feedback ledger is a free, offline prior: kits rotate paths and query strings behind one
+# hostname, so a credential harvester settled at /login is evidence about /verify tomorrow.
+# feedback-report.sh --host keys on the FULL host, never the apex (see there for why).
+# Only an INSPECTED DANGEROUS becomes a red flag. `agree` is one keypress -- Enter is the default
+# answer -- and a prior SUSPICIOUS is often just this tool's own uncertainty, so feeding either
+# back into the floor would let a host ratchet itself up on its own output. The rest is context.
+# Cap: this is ONE red flag, so alone it floors to SUSPICIOUS. A compromised legitimate host still
+# serves real pages on other paths; the page's own evidence is what takes it to DANGEROUS.
+HOST_PRIORS=$("$SCRIPT_DIR/feedback-report.sh" --host "$DOMAIN" "$URL" 2>/dev/null)
+if [ -n "$HOST_PRIORS" ]; then
+    echo ""
+    echo "${BOLD}Prior judgements on $DOMAIN${RESET}"
+    _host_bad=""
+    while IFS=$'\t' read -r _pv _ps _pu _pn; do
+        [ -z "$_pv" ] && continue
+        echo_grey "- $_pv ($_ps): $_pu"
+        [ -n "$_pn" ] && printf '%s\n' "$_pn" | fold -s -w 92 | sed "s/^/    ${GREY}/;s/\$/${RESET}/"
+        [ "$_pv" = "DANGEROUS" ] && [ "$_ps" = "inspected" ] && [ -z "$_host_bad" ] && _host_bad="$_pu"
+    done <<< "$HOST_PRIORS"
+    # commas separate smells for count_red_flags, and urls may contain them
+    [ -n "$_host_bad" ] && SMELLS="${SMELLS:+$SMELLS, }Confirmed phishing previously inspected on this host ($(printf '%s' "$_host_bad" | tr ',' ' '))"
+    HOST_PRIORS_LLM=$(printf '%s' "$HOST_PRIORS" | awk -F'\t' '{ printf "%s%s (%s) %s", sep, $1, $2, $3; sep="; " }')
+fi
+
 # === Third-party reputation (opt-in: -t) ===
 # ponytail: OFF by default and absent from benchmarks (they never pass -t). Extra external
 # verification for manual scans. Needs only the URL, so it runs even with -s. Cached per URL
@@ -1005,6 +1025,7 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Red flag count: $FLAGS_LLM  (authoritative - already counted from these signals, use as-is)
 - VirusTotal reputation: ${VT_LLM:-not checked}
 - urlscan.io reputation: ${URLSCAN_LLM:-not checked}
+- Prior analyst judgements on this exact host: ${HOST_PRIORS_LLM:-none}
 - Third-party domains loaded: ${THIRD_PARTY:-0}
 - Visual brand check (vision model looking at the rendered page): ${VISION_NOTE:-not run}
 - Page title: \"$TITLE\""
@@ -1255,6 +1276,7 @@ Landed:   ${FINAL_URL:-$URL}
 Verdict:  $VERDICT
 Signals:  ${SMELLS:-none}
 Cache:    $CACHE_DIR
+Host facts: $HOST_DIR/meta.env
 
 Read the cached artifacts (page.json, page-login.json, meta.env, scripts/,
 deob-signals.txt, vision.txt, virustotal.json, urlscan.json -- whichever exist) and say
