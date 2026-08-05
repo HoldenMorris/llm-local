@@ -14,6 +14,55 @@ is_risky_tld() {
     case " $RISKY_TLDS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# WHAT a page is, independent of how bad it is. Severity answers "how much should this scare me",
+# the category answers "what am I looking at", and the two really are independent: a scam
+# storefront and a credential harvester are both DANGEROUS, a survey and a login page are both
+# SAFE. Every verdict carries one, so the ledger can be mined by kind ("show me every rating page
+# we called SAFE") and not only by severity. Fixed vocabulary, because free text would not group.
+VERDICT_CATEGORIES="phishing email-harvest scam malware adult spam unsubscribe marketing questionnaire poll rating login content other"
+
+# is_category <name> -> exit 0 if it is one of the fixed categories above.
+is_category() { case " $VERDICT_CATEGORIES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# category_of <verdict> <has_login> <url> <smells> <deobfus_signals> [title] -> the deterministic
+# guess. Only a guess from evidence already extracted: an analyst answer or a deep inspection
+# overrides it, and it is deliberately NOT fed back to the LLM (it is derived from the same
+# signals the LLM already has, so it would only give a small model more to miscount).
+category_of() {
+    local verdict="$1" has_login="$2" url="$3" smells="$4" deobfus="$5" title="${6:-}"
+    local text="$url $title"
+    # UNCLEAR / empty: the scan could not judge the page (blank fetch, dead host, no LLM), so it
+    # does not get to name it either. A category is a claim, and we have nothing to claim from.
+    case "$verdict" in SAFE|SUSPICIOUS|DANGEROUS) ;; *) return 0 ;; esac
+    if [ "$verdict" = "SUSPICIOUS" ] || [ "$verdict" = "DANGEROUS" ]; then
+        # A credential form is the definition of phishing, and it outranks the rest: a kit that
+        # also exfils and also spoofs a brand is still, first, after the password.
+        if [ "$has_login" = "true" ] \
+           || printf '%s' "$smells" | grep -qiE 'exfil|obfuscated network call' \
+           || printf '%s' "$deobfus" | grep -qi 'off-domain URL'; then
+            echo phishing; return 0
+        fi
+        # No form to steal from, so the click itself is the payload: it confirms a live address.
+        is_unsub_url "$url" && { echo email-harvest; return 0; }
+        printf '%s' "$smells" | grep -qi 'link-redirection service' && { echo spam; return 0; }
+        # Money rather than credentials -- a wallet address is the payment rail of a scam page.
+        printf '%s' "$deobfus" | grep -qi 'crypto wallet' && { echo scam; return 0; }
+        printf '%s' "$smells" | grep -qiE 'crypto wallet|flagged malicious' && { echo scam; return 0; }
+        # adult and malware have no reliable signal in what the scraper extracts, so they are never
+        # guessed here -- they only ever come from an analyst answer or a deep inspection.
+        echo other; return 0
+    fi
+    # Benign shapes. Same evidence, read for what the page is FOR rather than what it steals.
+    [ "$has_login" = "true" ] && { echo login; return 0; }
+    is_unsub_url "$url" && { echo unsubscribe; return 0; }
+    # \brate\b, not bare rate: corporate/accurate would swallow half the web
+    printf '%s' "$text" | grep -qiE '\brate\b|rating|review|nps|satisf' && { echo rating; return 0; }
+    printf '%s' "$text" | grep -qiE '\bpoll\b|/vote|ballot' && { echo poll; return 0; }
+    printf '%s' "$text" | grep -qiE 'survey|questionnaire|feedback|quiz|form' && { echo questionnaire; return 0; }
+    printf '%s' "$text" | grep -qiE 'utm_|campaign|promo|newsletter|/track|offer' && { echo marketing; return 0; }
+    echo content
+}
+
 # is_unsub_url <url> -> exit 0 if it is a mailing-list / unsubscribe endpoint.
 # A click on one mainly confirms the address is live (list validation).
 is_unsub_url() {

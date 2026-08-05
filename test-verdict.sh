@@ -142,6 +142,26 @@ check "prior host phishing -> SUSPICIOUS"   SUSPICIOUS "$(cv false com '' '' 'ht
 check "prior host phishing + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
 check "prior host phishing never downgrades" DANGEROUS "$(cv false com '' '' 'https://h.com/x' "$PRIOR" '' '' DANGEROUS)"
 
+echo "== category_of (what it is, independent of how bad) =="
+# category_of <verdict> <has_login> <url> <smells> <deobfus> [title]
+co() { category_of "$@"; }
+check "login form -> phishing"        phishing      "$(co DANGEROUS true 'https://x.cfd/' '' '')"
+check "exfil without a form -> phishing" phishing   "$(co DANGEROUS false 'https://x.cfd/' 'Off-domain exfil detected' '')"
+check "unsub + bad -> email-harvest"  email-harvest "$(co SUSPICIOUS false 'https://x.com/unsubscribe?id=1' '' '')"
+check "unsub + safe -> unsubscribe"   unsubscribe   "$(co SAFE false 'https://x.com/unsubscribe?id=1' '' '')"
+check "wallet -> scam"                scam          "$(co DANGEROUS false 'https://x.com/' '' 'crypto wallet BTC revealed')"
+check "VT hit -> scam"                scam          "$(co DANGEROUS false 'https://x.com/' 'VirusTotal flagged malicious (7 vendors)' '')"
+check "nothing recognisable -> other" other         "$(co SUSPICIOUS false 'https://x.com/' '' '')"
+check "safe login page -> login"      login         "$(co SAFE true 'https://x.com/signin' '' '')"
+check "survey -> questionnaire"       questionnaire "$(co SAFE false 'https://x.com/s/abc' '' '' 'Customer Survey 2026')"
+check "poll -> poll"                  poll          "$(co SAFE false 'https://x.com/vote/12' '' '')"
+check "nps -> rating"                 rating        "$(co SAFE false 'https://x.com/r/9' '' '' 'Rate your experience')"
+check "utm link -> marketing"         marketing     "$(co SAFE false 'https://x.com/p?utm_source=mail' '' '')"
+check "plain page -> content"         content       "$(co SAFE false 'https://x.com/about' '' '')"
+check "every guess is in the vocabulary" yes "$(is_category "$(co SAFE false 'https://x.com/about' '' '')" && echo yes)"
+check "UNCLEAR gets no category"      ""            "$(co UNCLEAR false 'https://x.com/survey' '' '')"
+check "empty verdict gets no category" ""           "$(co '' false 'https://x.com/survey' '' '')"
+
 echo
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

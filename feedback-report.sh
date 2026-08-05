@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Mine analyst feedback (url-analyze.sh's "Do you agree?" prompt) into a review report.
-# Reads every .cache/*/feedback.txt (TSV: timestamp <TAB> verdict <TAB> state <TAB> url [<TAB> note])
+# Reads every .cache/*/feedback.txt
+# (TSV: timestamp <TAB> verdict <TAB> state <TAB> url [<TAB> note [<TAB> category]])
 # where state is agree|disagree|skip|flag|inspected (judgement) or gone|alive (liveness).
 #   ./feedback-report.sh              # human report
 #   ./feedback-report.sh -f           # just the OPEN flagged URLs, one per line (a worklist)
@@ -28,6 +29,7 @@ CORPUS="";     [ "$1" = "--corpus" ] && { CORPUS=1; shift; }
 HOSTQ="";      [ "$1" = "--host" ] && { HOSTQ=1; shift; }
 SELFTEST="";   [ "$1" = "--self-test" ] && { SELFTEST=1; shift; }
 source "$SCRIPT_DIR/colors.sh"
+source "$SCRIPT_DIR/verdict.sh"   # VERDICT_CATEGORIES / is_category: the ledger owns no vocabulary of its own
 
 # Overridable so --self-test can point at a throwaway tree instead of the real cache.
 FB_ROOT="${FB_ROOT:-$SCRIPT_DIR/.cache}"
@@ -40,7 +42,7 @@ _fb_dir() { printf '%s/%s' "$FB_ROOT" "$(printf '%s' "$1" | sha256sum | cut -c1-
 if [ -n "$SELFTEST" ]; then
     _t=$(mktemp -d); trap 'rm -rf "$_t"' EXIT
     _row() { local d; d=$(FB_ROOT="$_t" _fb_dir "$1"); mkdir -p "$d"; shift
-             printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" >> "$d/feedback.txt"; }
+             printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" >> "$d/feedback.txt"; }
     _row https://open.example   2026-01-01T00:00:00Z SUSPICIOUS flag      https://open.example
     _row https://closed.example 2026-01-01T00:00:00Z SUSPICIOUS flag      https://closed.example
     _row https://closed.example 2026-01-02T00:00:00Z SUSPICIOUS inspected https://closed.example "false positive, brand verified"
@@ -55,7 +57,7 @@ if [ -n "$SELFTEST" ]; then
     _row https://revived.example 2026-01-02T00:00:00Z ?         gone      https://revived.example
     _row https://revived.example 2026-01-03T00:00:00Z ?         alive     https://revived.example
     # same host, different paths -- the --host rollup; plus two tenants on one multi-tenant apex
-    _row https://kit.example/login  2026-01-01T00:00:00Z DANGEROUS  inspected https://kit.example/login "harvester"
+    _row https://kit.example/login  2026-01-01T00:00:00Z DANGEROUS  inspected https://kit.example/login "harvester" phishing
     _row https://kit.example/verify 2026-01-01T00:00:00Z SUSPICIOUS agree     https://kit.example/verify
     _row https://a.pages.dev/x      2026-01-01T00:00:00Z DANGEROUS  inspected https://a.pages.dev/x "kit"
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" -f | sort | tr '\n' ' ')
@@ -82,11 +84,11 @@ if [ -n "$SELFTEST" ]; then
     # --corpus: settled + live only. open/requeued = re-opened flags, dead = gone, revived = back.
     # (open.example was just inspected DANGEROUS above, so it is settled and belongs in the corpus.)
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --corpus | grep -v '^#' | sort | tr '\n' '|')
-    _want="DANGEROUS https://a.pages.dev/x|DANGEROUS https://kit.example/login|DANGEROUS https://open.example|DANGEROUS https://revived.example|SAFE https://agreed.example|SUSPICIOUS https://closed.example|SUSPICIOUS https://kit.example/verify|"
+    _want="DANGEROUS https://a.pages.dev/x|DANGEROUS https://kit.example/login phishing|DANGEROUS https://open.example|DANGEROUS https://revived.example|SAFE https://agreed.example|SUSPICIOUS https://closed.example|SUSPICIOUS https://kit.example/verify|"
     [ "$_got" = "$_want" ] || { echo "FAIL --corpus: want [$_want] got [$_got]"; _fails=1; }
     # --host: other settled urls on the SAME host, the queried url itself excluded
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --host kit.example https://kit.example/verify | tr '\t' ' ')
-    _want="DANGEROUS inspected https://kit.example/login harvester"
+    _want="DANGEROUS inspected https://kit.example/login harvester phishing"
     [ "$_got" = "$_want" ] || { echo "FAIL --host: want [$_want] got [$_got]"; _fails=1; }
     # a multi-tenant apex confers nothing: one tenant's kit must not reach the next tenant
     [ -z "$(FB_ROOT="$_t" NO_COLOR=1 "$0" --host b.pages.dev)" ] \
@@ -94,6 +96,13 @@ if [ -n "$SELFTEST" ]; then
     # a dead URL keeps its label and its worklist slot, it is only held out of the corpus
     grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://dead.example)/feedback.txt" \
         || { echo "FAIL gone row clobbered the label"; _fails=1; }
+    # FB_CATEGORY: recorded in column 6, and only from the fixed vocabulary (run last: it settles
+    # agreed.example, which the corpus check above still expects to be a bare agree row)
+    FB_ROOT="$_t" FB_VERDICT=SAFE FB_CATEGORY=marketing "$0" -i https://agreed.example "promo landing page" >/dev/null
+    grep -q "	marketing\$" "$(FB_ROOT="$_t" _fb_dir https://agreed.example)/feedback.txt" \
+        || { echo "FAIL FB_CATEGORY not recorded"; _fails=1; }
+    FB_ROOT="$_t" FB_CATEGORY=nonsense "$0" -i https://agreed.example "note" >/dev/null 2>&1 \
+        && { echo "FAIL -i accepted a junk FB_CATEGORY"; _fails=1; }
     [ "$_fails" -eq 0 ] && echo "self-test: OK" || echo "self-test: FAILED"
     exit "$_fails"
 fi
@@ -102,22 +111,25 @@ fi
 # verdict column repeats the verdict that was inspected, so the row is readable on its own --
 # unless FB_VERDICT says otherwise, which is how an inspection records the CORRECTED verdict
 # (the scan said SAFE, the inspection found a phish). url-analyze.sh reports that on a re-scan.
+# FB_CATEGORY records WHAT it is (phishing, scam, adult, ...) alongside how bad it is.
 if [ -n "$INSPECT" ]; then
     _url="$1"; shift; _note="$*"
     if [ -z "$_url" ] || [ -z "$_note" ]; then
-        echo "usage: $0 -i <url> <note>   (FB_VERDICT=<SAFE|SUSPICIOUS|DANGEROUS> to correct the verdict)" >&2; exit 2
+        echo "usage: $0 -i <url> <note>   (FB_VERDICT=<SAFE|SUSPICIOUS|DANGEROUS>, FB_CATEGORY=<$(printf '%s' "$VERDICT_CATEGORIES" | tr ' ' '|')>)" >&2; exit 2
     fi
     case "${FB_VERDICT:-SAFE}" in SAFE|SUSPICIOUS|DANGEROUS) ;;
         *) echo "FB_VERDICT must be SAFE, SUSPICIOUS or DANGEROUS" >&2; exit 2 ;; esac
+    [ -n "${FB_CATEGORY:-}" ] && ! is_category "$FB_CATEGORY" \
+        && { echo "FB_CATEGORY must be one of: $VERDICT_CATEGORIES" >&2; exit 2; }
     _d=$(_fb_dir "$_url")
     if [ ! -d "$_d" ]; then
         echo_yellow "no scan cached for $_url -- scan it before recording an inspection"; exit 1
     fi
     _v="${FB_VERDICT:-$(awk -F'\t' 'NF>=4 { v=$2 } END { print (v ? v : "?") }' "$_d/feedback.txt" 2>/dev/null)}"
     # tabs/newlines would break the TSV, so flatten them into spaces
-    printf '%s\t%s\tinspected\t%s\t%s\n' "$(date -u +%FT%TZ)" "${_v:-?}" "$_url" \
-        "$(printf '%s' "$_note" | tr '\t\n' '  ')" >> "$_d/feedback.txt"
-    echo_green "inspected: $_url"
+    printf '%s\t%s\tinspected\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${_v:-?}" "$_url" \
+        "$(printf '%s' "$_note" | tr '\t\n' '  ')" "${FB_CATEGORY:-}" >> "$_d/feedback.txt"
+    echo_green "inspected: $_url${FB_CATEGORY:+  [$FB_CATEGORY]}"
     exit 0
 fi
 
@@ -162,10 +174,11 @@ if [ -n "$HOSTQ" ]; then
                        sub(/^[^@]*@/, "", u); sub(/:[0-9]+$/, "", u); return tolower(u) }
     NF < 4 || $3=="gone" || $3=="alive" { next }
     { if (!($4 in ord)) { ord[$4] = ++n; URLS[n]=$4 }
-      lab[$4] = (($3=="inspected" || $3=="agree") ? $2 : ""); st[$4]=$3; note[$4]=(NF>=5 ? $5 : "") }
+      lab[$4] = (($3=="inspected" || $3=="agree") ? $2 : ""); st[$4]=$3
+      note[$4]=(NF>=5 ? $5 : ""); cat[$4]=(NF>=6 ? $6 : "") }
     END { for (i=1; i<=n; i++) { u=URLS[i]
             if (u==excl || lab[u]=="" || host(u)!=want) continue
-            print lab[u]"\t"st[u]"\t"u"\t"note[u] } }'
+            print lab[u]"\t"st[u]"\t"u"\t"note[u]"\t"cat[u] } }'
     exit 0
 fi
 
@@ -176,14 +189,16 @@ if [ -n "$CORPUS" ]; then
     $3=="alive" { dead[$4]=0; next }
     { if (!($4 in ord)) { ord[$4] = ++n; URLS[n]=$4 }
       # last judgement row wins; anything unsettled clears the label
-      lab[$4] = (($3=="inspected" || $3=="agree") ? $2 : "") }
+      lab[$4] = (($3=="inspected" || $3=="agree") ? $2 : ""); cat[$4]=(NF>=6 ? $6 : "") }
     END {
       printf "# generated by feedback-report.sh --corpus at %s\n", when
-      printf "# EXPECTED_VERDICT<space>URL -- from settled, live analyst feedback\n"
+      printf "# EXPECTED_VERDICT<space>URL[<space>category] -- from settled, live analyst feedback\n"
       for (i=1; i<=n; i++) { u=URLS[i]; v=lab[u]
         if (dead[u] || v=="") continue
         if (v!="SAFE" && v!="SUSPICIOUS" && v!="DANGEROUS") continue
-        print v" "u; kept++ }
+        # url-benchmark.sh reads the first two fields and ignores the rest, so the category rides
+        # along for a human reading the corpus without changing what the benchmark scores
+        print v" "u (cat[u] ? " "cat[u] : ""); kept++ }
       printf "# %d urls\n", kept+0
     }'
     exit 0
@@ -205,7 +220,7 @@ $3=="alive" { dead[$4]=0; next }
   else if (fb=="flag" || fb=="inspected") { }
   else                     { skipN++ }
   # current state per URL: last row wins (input is sorted chronologically)
-  state[u]=fb; when[u]=$1; verd[u]=v; note[u]=(NF>=5 ? $5 : "")
+  state[u]=fb; when[u]=$1; verd[u]=v; note[u]=(NF>=5 ? $5 : ""); cat[u]=(NF>=6 ? $6 : "")
   if (!(u in ord)) { ord[u]= ++nURL; URLS[nURL]=u }
 }
 END {
@@ -213,8 +228,10 @@ END {
   openN=0; inspN=0; deadN=0
   for (i=1;i<=nURL;i++) { u=URLS[i]
     tag = (dead[u] ? " " GY "[gone]" X : ""); if (dead[u]) deadN++
-    if (state[u]=="flag")      { openN++;  OP[openN]=when[u]" "verd[u]" "u tag }
-    if (state[u]=="inspected") { inspN++;  IN[inspN]=when[u]" "verd[u]" "u tag "\n      " note[u] }
+    if (cat[u] != "") { ctally[cat[u]]++; catN++ }
+    kind = (cat[u] ? "/" cat[u] : "")
+    if (state[u]=="flag")      { openN++;  OP[openN]=when[u]" "verd[u] kind" "u tag }
+    if (state[u]=="inspected") { inspN++;  IN[inspN]=when[u]" "verd[u] kind" "u tag "\n      " note[u] }
   }
   printf "%s%s== Analyst feedback: %d responses ==%s\n", B, C, tot, X
   printf "  %sagree %d   disagree %d   skip %d   open flags %d   inspected %d   gone %d%s\n\n", GY, agree+0, disN+0, skipN+0, openN, inspN, deadN, X
@@ -224,6 +241,13 @@ END {
     rate = scored ? (100*aV[v]/scored) : 0
     col = (dis[v] ? Y : G)
     printf "  %s%-10s%s %s%3d%%%s agree  (%d agree, %d disagree, %d total)\n", B, v, X, col, rate, X, aV[v]+0, dis[v]+0, seen[v]
+  }
+  # What the corpus is made OF -- severity says how bad, this says what kind. A weekly look here
+  # shows which classes the toolkit actually meets, and which ones it has never once labelled.
+  if (catN) {
+    printf "%sBy category%s %s(%d labelled)%s\n", B, X, GY, catN, X
+    for (c in ctally) printf "  %s%-14s%s %d\n", C, c, X, ctally[c]
+    printf "\n"
   }
   if (disN) {
     printf "\n%s%sDisagreements (retune these)%s\n", B, R, X

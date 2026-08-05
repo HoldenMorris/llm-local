@@ -1193,16 +1193,21 @@ VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL"
 # shouting DANGEROUS, and a missed phish stop reading SAFE, from the second scan on.
 # ponytail: interactive-only, so url-benchmark.sh still measures the raw heuristic+LLM core and
 # an inspection can never paper over a detection regression. The machine verdict is printed too.
-_insp=$(awk -F'\t' '$3=="inspected" { ts=$1; v=$2; note=(NF>=5 ? $5 : "") }
-                    END { if (ts) print ts"\t"v"\t"note }' "$CACHE_DIR/feedback.txt" 2>/dev/null)
+_insp=$(awk -F'\t' '$3=="inspected" { ts=$1; v=$2; note=(NF>=5 ? $5 : ""); c=(NF>=6 ? $6 : "") }
+                    END { if (ts) print ts"\t"v"\t"note"\t"c }' "$CACHE_DIR/feedback.txt" 2>/dev/null)
 _vmachine=""
+# What the page IS, beside how bad it is (see category_of in verdict.sh). A recorded category
+# beats the deterministic guess for the same reason a recorded verdict does: a human or a deep
+# inspection looked at the page.
+CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE")
 if [ -n "$_insp" ]; then
-    IFS=$'\t' read -r _its _iv _inote <<< "$_insp"
+    IFS=$'\t' read -r _its _iv _inote _icat <<< "$_insp"
     case "$_iv" in
         SAFE|SUSPICIOUS|DANGEROUS)
             [ "$_iv" != "$VERDICT" ] && [ -t 0 ] \
                 && { _vmachine="${VERDICT:-UNCLEAR}"; VERDICT="$_iv"; } ;;
     esac
+    [ -n "$_icat" ] && [ -t 0 ] && CATEGORY="$_icat"
 fi
 
 case "$VERDICT" in
@@ -1211,6 +1216,7 @@ case "$VERDICT" in
     DANGEROUS)  VC="$RED";    VLINE="[!!] VERDICT: DANGEROUS" ;;
     *)          VC="$CYAN";   VLINE="[?] VERDICT: UNCLEAR" ;;
 esac
+VLINE="$VLINE${CATEGORY:+ ($CATEGORY)}"
 echo ""
 echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
@@ -1244,11 +1250,45 @@ fi
 # Analyst feedback: agree with the verdict? Recorded per-URL to refine the tool later.
 # ponytail: interactive-only so benchmarks never prompt; one TSV line appended to the cache.
 if [ -t 0 ]; then
+    # _ask_category [default] -> one of VERDICT_CATEGORIES, chosen by number or by name.
+    # Fixed vocabulary rather than free text, because these are mined later and free text
+    # would not group (see verdict.sh).
+    # The menu goes to stderr: only the chosen category may reach stdout, because the caller
+    # reads this through command substitution.
+    _ask_category() {
+        local i=1 c choice picked
+        for c in $VERDICT_CATEGORIES; do
+            printf '  %s%2d)%s %-15s' "$GREY" "$i" "$RESET" "$c" >&2
+            [ $((i % 3)) -eq 0 ] && echo "" >&2
+            i=$((i+1))
+        done
+        echo "" >&2
+        read -r -p "${CYAN}What is it? [number or name${1:+, Enter = $1}] ${RESET}" choice
+        case "$choice" in
+            '')       picked="" ;;
+            *[!0-9]*) is_category "$choice" && picked="$choice" ;;
+            *)        picked=$(printf '%s' "$VERDICT_CATEGORIES" | tr ' ' '\n' | sed -n "${choice}p") ;;
+        esac
+        printf '%s' "${picked:-${1:-other}}"   # unknown name / out-of-range number -> the default
+    }
+
     echo ""
     read -r -p "${CYAN}Do you agree with this verdict? [Y/n/s(kip)/f(lag for later)/i(nspect now)] ${RESET}" _fb
-    _inspect_now=
+    _inspect_now= _correct_v= _correct_c=
     case "$_fb" in
-        [Nn]*) _fb=disagree ;;
+        # Disagreement without the correction is a complaint the toolkit cannot act on, so ask
+        # what it really is. The disagree row still records that the scan was wrong (that is the
+        # accuracy stat), and the correction rides an `inspected` row so re-scans report it.
+        [Nn]*) _fb=disagree
+            read -r -p "${CYAN}What should the verdict be? [1) SAFE  2) SUSPICIOUS  3) DANGEROUS] ${RESET}" _correct_v
+            case "$_correct_v" in
+                1|[Ss][Aa]*)          _correct_v=SAFE ;;
+                2|[Ss][Uu]*)          _correct_v=SUSPICIOUS ;;
+                3|[Dd]*)              _correct_v=DANGEROUS ;;
+                *)                    _correct_v="" ;;
+            esac
+            [ -n "$_correct_v" ] && _correct_c=$(_ask_category "$CATEGORY")
+            ;;
         [Ss]*) _fb=skip ;;
         # 'flag' is not a disagreement -- it means "the verdict may be right but this one needs a
         # human/deeper look". Kept as its own value so it never pollutes the agreement rate, and
@@ -1260,7 +1300,17 @@ if [ -t 0 ]; then
         [Ii]*) _fb=flag; _inspect_now=1 ;;
         *)     _fb=agree ;;
     esac
-    printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$VERDICT" "$_fb" "$URL" >> "$CACHE_DIR/feedback.txt"
+    # 6 columns: ts, verdict, state, url, note, category. Every row carries the category, so the
+    # ledger can be mined by kind and not only by severity.
+    printf '%s\t%s\t%s\t%s\t\t%s\n' "$(date -u +%FT%TZ)" "$VERDICT" "$_fb" "$URL" "$CATEGORY" >> "$CACHE_DIR/feedback.txt"
+
+    # The correction is what makes a disagreement actionable: it becomes the settled label, so the
+    # next scan of this URL reports it and the replay corpus scores against it.
+    if [ -n "$_correct_v" ]; then
+        read -r -p "${CYAN}Why? (optional, Enter to skip) ${RESET}" _why
+        FB_VERDICT="$_correct_v" FB_CATEGORY="$_correct_c" "$SCRIPT_DIR/feedback-report.sh" \
+            -i "$URL" "${_why:-analyst disagreed with $VERDICT: this is $_correct_c}"
+    fi
 
     if [ -n "$_inspect_now" ]; then
         echo ""
@@ -1283,8 +1333,9 @@ deob-signals.txt, vision.txt, virustotal.json, urlscan.json -- whichever exist) 
 whether $VERDICT is right. Cite concrete evidence from the artifacts, never guess. If it
 is wrong, name the heuristic gap in verdict.sh / page-fetch.sh that let it through.
 Do not fetch the live URL and do not edit any file.
-End your reply with exactly these two lines:
+End your reply with exactly these three lines:
 VERDICT: <SAFE|SUSPICIOUS|DANGEROUS -- the TRUE verdict, which future scans will report>
+CATEGORY: <what the page IS, one of: $VERDICT_CATEGORIES>
 NOTE: <one-line conclusion, max 200 chars>" \
                 --allowedTools "Read,Grep,Glob" 2>&1); then
                 printf '%s\n' "$_iout"
@@ -1294,6 +1345,9 @@ NOTE: <one-line conclusion, max 200 chars>" \
                 # reports. Unparseable -> keep this run's verdict, never guess one.
                 _ivnew=$(printf '%s\n' "$_iout" | grep -m1 '^VERDICT:' \
                          | grep -oiE 'SAFE|SUSPICIOUS|DANGEROUS' | head -1 | tr 'a-z' 'A-Z')
+                _icnew=$(printf '%s\n' "$_iout" | grep -m1 '^CATEGORY:' \
+                         | sed 's/^CATEGORY:[[:space:]]*//' | tr -d ' ' | tr 'A-Z' 'a-z')
+                is_category "$_icnew" || _icnew=""
             else
                 echo_yellow "claude inspection failed: $(printf '%s' "$_iout" | tail -1)"
             fi
@@ -1302,14 +1356,21 @@ NOTE: <one-line conclusion, max 200 chars>" \
             SAFE|SUSPICIOUS|DANGEROUS) _ivnew="${_ivnew:-$VERDICT}" ;;
             *) _ivnew="" ;;   # nothing to correct to -> the row keeps the last known verdict
         esac
+        _icnew="${_icnew:-$CATEGORY}"
         echo ""
         if [ -n "$_ifound" ]; then
-            echo_cyan "Real verdict for this URL: $_ivnew  (future scans will report it)"
-            read -r -p "${CYAN}Record it? [Y/n, or type your own note] ${RESET}" _iedit
-            case "$_iedit" in [Nn]|[Nn][Oo]) _ifound= ;; ?*) _ifound="$_iedit" ;; esac
+            echo_cyan "Real verdict for this URL: $_ivnew${_icnew:+ ($_icnew)}  (future scans will report it)"
+            read -r -p "${CYAN}Record it? [Y/n/c(hange category), or type your own note] ${RESET}" _iedit
+            case "$_iedit" in
+                [Nn]|[Nn][Oo]) _ifound= ;;
+                [Cc]) _icnew=$(_ask_category "$_icnew") ;;
+                ?*) _ifound="$_iedit" ;;
+            esac
         else
             read -r -p "${CYAN}What did the inspection find? (empty = leave flagged) ${RESET}" _ifound
+            [ -n "$_ifound" ] && _icnew=$(_ask_category "$_icnew")
         fi
-        [ -n "$_ifound" ] && FB_VERDICT="$_ivnew" "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
+        [ -n "$_ifound" ] && FB_VERDICT="$_ivnew" FB_CATEGORY="$_icnew" \
+            "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
     fi
 fi

@@ -72,7 +72,7 @@ VLM architectures.
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests that pin the deterministic verdict core (`verdict.sh`). Pure: no LLM, no network |
-| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag. Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. `--host <host> [exclude-url]` prints the settled judgements for one exact host, which is how a scan reuses what the ledger already knows about it. Run `--self-test` for the self-check |
+| `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag (`FB_CATEGORY=<category>` records what the page is, in column 6). Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. `--host <host> [exclude-url]` prints the settled judgements for one exact host, which is how a scan reuses what the ledger already knows about it. Run `--self-test` for the self-check |
 | `psl.sh` | Public Suffix List helper. `source` it, then `apex_of <host>`. Gives the true registrable domain. Caches the list in `.cache/` and refreshes it every 30 days. Run `./psl.sh` for the self-check |
 | `brand-verify.sh` | Ask if the **brand's own site** links to a host. `PROVEN` suppresses a brand smell. `UNPROVEN` escalates nothing. Run `--self-test` for the self-check |
 | `tor-up.sh` | Bring up the Tor sidecar (`llm-tor`) for scanner egress: exit country and circuit rotation. `--down` stops it |
@@ -123,6 +123,41 @@ Liveness is a separate axis from judgement, so a dead URL keeps its `inspected` 
 place on the `-f` worklist (the cached page and screenshot are still there to read), it only
 drops out of the replay corpus. Phishing kits die within days, so without this the weekly replay
 would score the scanner on uptime instead of detection.
+
+### Verdict category (what it is, not how bad it is)
+
+Severity answers "how much should this scare me". The **category** answers "what am I looking
+at", and the two are independent: a scam storefront and a credential harvester are both
+DANGEROUS, a survey and a login page are both SAFE. Every verdict carries one, so the ledger can
+be mined by kind and not only by severity. The banner prints it: `VERDICT: DANGEROUS (phishing)`.
+
+The vocabulary is fixed (`VERDICT_CATEGORIES` in `verdict.sh`), because these get mined later and
+free text does not group:
+
+`phishing` `email-harvest` `scam` `malware` `adult` `spam` `unsubscribe` `marketing`
+`questionnaire` `poll` `rating` `login` `content` `other`
+
+`category_of` (also `verdict.sh`, pure and golden-tested) makes the deterministic guess from
+evidence already extracted: a credential form means `phishing`, a mailing-list endpoint means
+`email-harvest` when the verdict is bad and `unsubscribe` when it is not, a wallet address or a
+VirusTotal hit means `scam`, and the benign shapes fall out of the URL and the page title. Two
+rules keep it honest: `adult` and `malware` have no reliable signal in what the scraper extracts,
+so they are **never** guessed and only ever come from a person or an inspection; and an UNCLEAR
+verdict gets **no** category, because a category is a claim and a scan that could not judge the
+page has nothing to claim from. The guess is not fed back to the LLM — it is derived from signals
+the LLM already has, so it would only give a small model more to miscount.
+
+An analyst answer or a deep inspection overrides the guess and is stored in the ledger (column 6),
+so a re-scan reports the recorded category the same way it reports the recorded verdict.
+
+### Disagreement records the correction
+
+Answering `n` at the verdict prompt now asks what the verdict **should** be and what the page
+actually **is**, then an optional why. A disagreement without the correction is a complaint the
+toolkit cannot act on. Two rows are appended: the `disagree` row (which keeps the accuracy stat
+honest — the scan *was* wrong) and an `inspected` row carrying the corrected verdict and category,
+which is what makes the next scan report it and what puts the URL into the replay corpus with a
+true label.
 
 ### Weekly replay
 
