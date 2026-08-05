@@ -501,7 +501,11 @@ if [ -z "$SKIP_FETCH" ]; then
     _fb_mark() { printf '%s\t?\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$URL" >> "$CACHE_DIR/feedback.txt"; }
 
     if echo "$PAGE_DATA" | jq -e '.error' >/dev/null 2>&1; then
-        echo_yellow "[!] Page unreachable or timeout"
+        # Keep the HTTP status out of the error stub before discarding the rest. "The server
+        # answered 404" and "we could not reach it at all" are different facts, and on a
+        # link-redirection service the difference is the whole finding (see below).
+        PAGE_ERR_STATUS=$(echo "$PAGE_DATA" | jq -r '.status // 0' 2>/dev/null)
+        echo_yellow "[!] Page unreachable or timeout${PAGE_ERR_STATUS:+ (HTTP $PAGE_ERR_STATUS)}"
         [ "$(_fb_live)" != "gone" ] && { _fb_mark gone; echo_grey "- marked gone in the feedback ledger (drops out of the replay corpus)"; }
         PAGE_DATA="{}"
     else
@@ -675,7 +679,19 @@ fi
 if [ -n "$REDIRECT_SVC" ]; then
     _land_host=$(printf '%s' "${FINAL_URL:-$URL}" | sed -E 's#^[a-z]+://##;s#[/?].*##' | tr 'A-Z' 'a-z')
     if printf '%s' "$_land_host" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
+        # A 4xx from the SERVICE ITSELF is not an expired link, it is a withdrawn one. An ESP does
+        # not 404 a click id it issued hours ago; it 404s one whose destination its abuse team has
+        # since cut off -- which means somebody has already reported this campaign. Verified on
+        # this pair: the click link 404s while the OPEN pixel from the same message still answers
+        # 200, so the account is alive and only the click-through was severed.
+        # Either source of the status: the service usually SERVES its 404 page (so the fetch
+        # succeeds and PAGE_STATUS holds it) and only sometimes fails outright.
+        _svc_status="${PAGE_ERR_STATUS:-${PAGE_STATUS:-0}}"
+        if [ "${_svc_status:-0}" -ge 400 ] 2>/dev/null && [ "${_svc_status:-0}" -lt 500 ] 2>/dev/null; then
+            SMELLS="${SMELLS:+$SMELLS, }link-redirection service $REDIRECT_SVC returned HTTP $_svc_status for this link - withdrawn by the service (its destination was cut off) rather than expired"
+        else
         SMELLS="${SMELLS:+$SMELLS, }link-redirection service $REDIRECT_SVC - destination unresolved (dead/expired link on a phishing-prone redirector)"
+        fi
     fi
 fi
 
