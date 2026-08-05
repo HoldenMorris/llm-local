@@ -16,7 +16,25 @@
 
 ## Planned
 
-### Phase: Anti-bot rendering (headful + xvfb)  ← NEXT
+### Phase: Kit fingerprinting  ← NEXT
+**Why:** attackers do not write URLs, they buy kits, and a kit leaks its build. Half the field by
+volume (device-code and reverse-proxy AiTM) shows us a genuine page and cannot be caught by
+appearance at all, while the other half leaks fixed asset names, endpoint paths and an
+anti-analysis routine written specifically against our headless Linux scraper. Research, the top
+ten kits of mid-2026 and what each one gives a URL scanner:
+[phases/kit-fingerprinting/RESEARCH.md](phases/kit-fingerprinting/RESEARCH.md).
+
+**Build order (cheapest first):**
+1. Strip invisible Unicode before every text match — kills the Cephas / Sneaky2FA evasion class.
+2. Detect the anti-analysis code itself (the eight-name automation probe, `debugger` loops,
+   `api.ipapi.is` datacentre filtering) in the deobfuscated JS.
+3. Extract kit artefacts in `page-fetch.sh`: form action paths, asset basenames, hidden input
+   names, WebSocket endpoints — then a signature table.
+4. A JS **capability vector hash** as a rotation-proof kit fingerprint, wired in as a fourth
+   rollup key beside host / apex / campaign. Validate against the ledger corpus first.
+5. Registrar out of the RDAP response we already fetch, as a grouping key.
+
+### Phase: Anti-bot rendering (headful + xvfb)
 **Why:** Cloudflare Turnstile and similar anti-bot challenges gate the real credential page
 from our headless scraper (e.g. `zbeem.top/…/login.php` behind Turnstile). Headless Chrome from
 a datacenter IP gets the hardest, non-auto-passing challenges, so we land on a dead 404 and never
