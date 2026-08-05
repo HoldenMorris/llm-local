@@ -1197,7 +1197,8 @@ fi
 # ponytail: interactive-only so benchmarks never prompt; one TSV line appended to the cache.
 if [ -t 0 ]; then
     echo ""
-    read -r -p "${CYAN}Do you agree with this verdict? [Y/n/s(kip)/f(lag for deeper inspection)] ${RESET}" _fb
+    read -r -p "${CYAN}Do you agree with this verdict? [Y/n/s(kip)/f(lag for later)/i(nspect now)] ${RESET}" _fb
+    _inspect_now=
     case "$_fb" in
         [Nn]*) _fb=disagree ;;
         [Ss]*) _fb=skip ;;
@@ -1205,7 +1206,50 @@ if [ -t 0 ]; then
         # human/deeper look". Kept as its own value so it never pollutes the agreement rate, and
         # `./feedback-report.sh -f` prints just these as a worklist.
         [Ff]*) _fb=flag ;;
+        # 'inspect now' is the same flag lifecycle compressed into one sitting: the flag row is
+        # still written (so an abandoned inspection leaves the URL on the worklist), then closed
+        # by the `inspected` row below. Same append-only rows as the -f round-trip.
+        [Ii]*) _fb=flag; _inspect_now=1 ;;
         *)     _fb=agree ;;
     esac
     printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$VERDICT" "$_fb" "$URL" >> "$CACHE_DIR/feedback.txt"
+
+    if [ -n "$_inspect_now" ]; then
+        echo ""
+        echo_grey "artifacts: $CACHE_DIR  (page.json, page.jpg, scripts/, vision.txt)"
+        # ponytail: headless `claude -p` does the triage, read-only tools so it never prompts
+        # for permission mid-run and never touches the live site. Falls back to a typed note.
+        if command -v claude >/dev/null 2>&1; then
+            echo_grey "deep inspection: claude is reading the cached scan (ctrl-c to skip)..."
+            if _iout=$(claude -p "Deep-inspect one phishing scan from this repo ($SCRIPT_DIR).
+
+URL:      $URL
+Landed:   ${FINAL_URL:-$URL}
+Verdict:  $VERDICT
+Signals:  ${SMELLS:-none}
+Cache:    $CACHE_DIR
+
+Read the cached artifacts (page.json, page-login.json, meta.env, scripts/,
+deob-signals.txt, vision.txt, virustotal.json, urlscan.json -- whichever exist) and say
+whether $VERDICT is right. Cite concrete evidence from the artifacts, never guess. If it
+is wrong, name the heuristic gap in verdict.sh / page-fetch.sh that let it through.
+Do not fetch the live URL and do not edit any file.
+End your reply with one final line: NOTE: <one-line conclusion, max 200 chars>" \
+                --allowedTools "Read,Grep,Glob" 2>&1); then
+                printf '%s\n' "$_iout"
+                _ifound=$(printf '%s\n' "$_iout" | grep -m1 '^NOTE:' | sed 's/^NOTE:[[:space:]]*//')
+                [ -z "$_ifound" ] && _ifound=$(printf '%s\n' "$_iout" | grep -v '^[[:space:]]*$' | tail -1)
+            else
+                echo_yellow "claude inspection failed: $(printf '%s' "$_iout" | tail -1)"
+            fi
+        fi
+        echo ""
+        if [ -n "$_ifound" ]; then
+            read -r -p "${CYAN}Record this note? [Y/n, or type your own] ${RESET}" _iedit
+            case "$_iedit" in [Nn]|[Nn][Oo]) _ifound= ;; ?*) _ifound="$_iedit" ;; esac
+        else
+            read -r -p "${CYAN}What did the inspection find? (empty = leave flagged) ${RESET}" _ifound
+        fi
+        [ -n "$_ifound" ] && "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
+    fi
 fi
