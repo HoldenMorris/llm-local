@@ -49,22 +49,32 @@ if [ -n "$SELFTEST" ]; then
     # -i on an unscanned URL must refuse rather than invent a cache dir
     FB_ROOT="$_t" "$0" -i https://never.scanned "note" >/dev/null 2>&1 \
         && { echo "FAIL -i accepted an unscanned URL"; _fails=1; }
+    # FB_VERDICT is what a re-scan reports, so pin that -i writes it (and rejects junk)
+    FB_ROOT="$_t" FB_VERDICT=DANGEROUS "$0" -i https://open.example "claude: credential harvester" >/dev/null
+    grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://open.example)/feedback.txt" \
+        || { echo "FAIL FB_VERDICT not recorded"; _fails=1; }
+    FB_ROOT="$_t" FB_VERDICT=NONSENSE "$0" -i https://open.example "note" >/dev/null 2>&1 \
+        && { echo "FAIL -i accepted a junk FB_VERDICT"; _fails=1; }
     [ "$_fails" -eq 0 ] && echo "self-test: OK" || echo "self-test: FAILED"
     exit "$_fails"
 fi
 
 # -i <url> <note...>: append an `inspected` row carrying what the inspection concluded. The
-# verdict column repeats the verdict that was inspected, so the row is readable on its own.
+# verdict column repeats the verdict that was inspected, so the row is readable on its own --
+# unless FB_VERDICT says otherwise, which is how an inspection records the CORRECTED verdict
+# (the scan said SAFE, the inspection found a phish). url-analyze.sh reports that on a re-scan.
 if [ -n "$INSPECT" ]; then
     _url="$1"; shift; _note="$*"
     if [ -z "$_url" ] || [ -z "$_note" ]; then
-        echo "usage: $0 -i <url> <note>" >&2; exit 2
+        echo "usage: $0 -i <url> <note>   (FB_VERDICT=<SAFE|SUSPICIOUS|DANGEROUS> to correct the verdict)" >&2; exit 2
     fi
+    case "${FB_VERDICT:-SAFE}" in SAFE|SUSPICIOUS|DANGEROUS) ;;
+        *) echo "FB_VERDICT must be SAFE, SUSPICIOUS or DANGEROUS" >&2; exit 2 ;; esac
     _d=$(_fb_dir "$_url")
     if [ ! -d "$_d" ]; then
         echo_yellow "no scan cached for $_url -- scan it before recording an inspection"; exit 1
     fi
-    _v=$(awk -F'\t' 'NF>=4 { v=$2 } END { print (v ? v : "?") }' "$_d/feedback.txt" 2>/dev/null)
+    _v="${FB_VERDICT:-$(awk -F'\t' 'NF>=4 { v=$2 } END { print (v ? v : "?") }' "$_d/feedback.txt" 2>/dev/null)}"
     # tabs/newlines would break the TSV, so flatten them into spaces
     printf '%s\t%s\tinspected\t%s\t%s\n' "$(date -u +%FT%TZ)" "${_v:-?}" "$_url" \
         "$(printf '%s' "$_note" | tr '\t\n' '  ')" >> "$_d/feedback.txt"

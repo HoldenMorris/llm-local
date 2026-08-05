@@ -1156,6 +1156,24 @@ fi
 # verdict but never downgrades. The "[floor] Safety floor" notice goes to stderr.
 VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS" "$VERDICT")
 
+# A prior deep inspection is the strongest context available on a re-scan: a human (or a claude
+# triage) already read the artifacts and settled this URL. Its verdict therefore REPLACES the
+# freshly computed one, in either direction -- that is what makes a known false positive stop
+# shouting DANGEROUS, and a missed phish stop reading SAFE, from the second scan on.
+# ponytail: interactive-only, so url-benchmark.sh still measures the raw heuristic+LLM core and
+# an inspection can never paper over a detection regression. The machine verdict is printed too.
+_insp=$(awk -F'\t' '$3=="inspected" { ts=$1; v=$2; note=(NF>=5 ? $5 : "") }
+                    END { if (ts) print ts"\t"v"\t"note }' "$CACHE_DIR/feedback.txt" 2>/dev/null)
+_vmachine=""
+if [ -n "$_insp" ]; then
+    IFS=$'\t' read -r _its _iv _inote <<< "$_insp"
+    case "$_iv" in
+        SAFE|SUSPICIOUS|DANGEROUS)
+            [ "$_iv" != "$VERDICT" ] && [ -t 0 ] \
+                && { _vmachine="${VERDICT:-UNCLEAR}"; VERDICT="$_iv"; } ;;
+    esac
+fi
+
 case "$VERDICT" in
     SAFE)       VC="$GREEN";  VLINE="[+] VERDICT: SAFE" ;;
     SUSPICIOUS) VC="$YELLOW"; VLINE="[!] VERDICT: SUSPICIOUS" ;;
@@ -1167,16 +1185,15 @@ echo "${VC}${BOLD}=============================================="
 echo "$VLINE"
 echo "==============================================${RESET}"
 
-# A prior deep inspection is the strongest context available on a re-scan: a human already looked
-# at this URL and wrote down what they concluded. Show it next to the fresh verdict so nobody
-# re-litigates a case that is already settled -- and so a known false positive is labelled as one
-# the moment it reappears. Latest inspected row wins, same rule as feedback-report.sh.
-_insp=$(awk -F'\t' '$3=="inspected" { ts=$1; v=$2; note=(NF>=5 ? $5 : "") }
-                    END { if (ts) print ts"\t"v"\t"note }' "$CACHE_DIR/feedback.txt" 2>/dev/null)
+# Show the inspection that settled it, so nobody re-litigates a closed case -- and name the
+# machine verdict it overrode, so a detection gap stays visible instead of being papered over.
 if [ -n "$_insp" ]; then
-    IFS=$'\t' read -r _its _iv _inote <<< "$_insp"
     echo ""
-    echo_cyan "Prior deep inspection -- $_its (verdict then: ${_iv:-?})"
+    if [ -n "$_vmachine" ]; then
+        echo_cyan "Verdict from a prior deep inspection -- $_its (this scan's heuristics+LLM said $_vmachine)"
+    else
+        echo_cyan "Prior deep inspection -- $_its (verdict: ${_iv:-?})"
+    fi
     printf '%s\n' "$_inote" | fold -s -w 96 | sed "s/^/  ${GREY}/;s/\$/${RESET}/"
 fi
 
@@ -1234,22 +1251,33 @@ deob-signals.txt, vision.txt, virustotal.json, urlscan.json -- whichever exist) 
 whether $VERDICT is right. Cite concrete evidence from the artifacts, never guess. If it
 is wrong, name the heuristic gap in verdict.sh / page-fetch.sh that let it through.
 Do not fetch the live URL and do not edit any file.
-End your reply with one final line: NOTE: <one-line conclusion, max 200 chars>" \
+End your reply with exactly these two lines:
+VERDICT: <SAFE|SUSPICIOUS|DANGEROUS -- the TRUE verdict, which future scans will report>
+NOTE: <one-line conclusion, max 200 chars>" \
                 --allowedTools "Read,Grep,Glob" 2>&1); then
                 printf '%s\n' "$_iout"
                 _ifound=$(printf '%s\n' "$_iout" | grep -m1 '^NOTE:' | sed 's/^NOTE:[[:space:]]*//')
                 [ -z "$_ifound" ] && _ifound=$(printf '%s\n' "$_iout" | grep -v '^[[:space:]]*$' | tail -1)
+                # The corrected verdict is the point of the inspection: it is what a re-scan
+                # reports. Unparseable -> keep this run's verdict, never guess one.
+                _ivnew=$(printf '%s\n' "$_iout" | grep -m1 '^VERDICT:' \
+                         | grep -oiE 'SAFE|SUSPICIOUS|DANGEROUS' | head -1 | tr 'a-z' 'A-Z')
             else
                 echo_yellow "claude inspection failed: $(printf '%s' "$_iout" | tail -1)"
             fi
         fi
+        case "${_ivnew:-$VERDICT}" in
+            SAFE|SUSPICIOUS|DANGEROUS) _ivnew="${_ivnew:-$VERDICT}" ;;
+            *) _ivnew="" ;;   # nothing to correct to -> the row keeps the last known verdict
+        esac
         echo ""
         if [ -n "$_ifound" ]; then
-            read -r -p "${CYAN}Record this note? [Y/n, or type your own] ${RESET}" _iedit
+            echo_cyan "Real verdict for this URL: $_ivnew  (future scans will report it)"
+            read -r -p "${CYAN}Record it? [Y/n, or type your own note] ${RESET}" _iedit
             case "$_iedit" in [Nn]|[Nn][Oo]) _ifound= ;; ?*) _ifound="$_iedit" ;; esac
         else
             read -r -p "${CYAN}What did the inspection find? (empty = leave flagged) ${RESET}" _ifound
         fi
-        [ -n "$_ifound" ] && "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
+        [ -n "$_ifound" ] && FB_VERDICT="$_ivnew" "$SCRIPT_DIR/feedback-report.sh" -i "$URL" "$_ifound"
     fi
 fi
