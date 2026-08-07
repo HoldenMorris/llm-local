@@ -215,6 +215,28 @@ campaign_key() {
         done
     fi
     IFS="$oldifs"
+    # SendGrid wraps the destination as upn=u001.<per-recipient payload>_<tracking blob>. The
+    # payload differs every send, but the LEADING run of the tracking blob is constant across every
+    # link one operator puts out: seven links in the ledger, on seven unrelated customer domains
+    # (magikweb.ca, gebesa.com, comaround.com, badgerdefence.com, calvis.com, raceway.ai, and
+    # ct.sendgrid.net direct) all open RlEke38337DE9NoRp6M9QNtL5lwdCzbHiNt5hhDTsI and only diverge
+    # at char 43. That is what makes the dead ones worth scanning: the payload is a 404 by the time
+    # we look, so the tag is the only thing left that says who sent it.
+    # This is a GENERATOR key, not the carrier shape the block above refuses. "Any /ls/click link"
+    # would group the whole platform; this groups one sender, because unrelated legitimate SendGrid
+    # links carry a different prefix -- SendGrid's own documented example opens iSAbizCL and public
+    # urlquery captures open GVdTVise. 32 chars sits well inside the constant run and cannot collide.
+    # The blobs are base64 with + and / percent-escaped as -2B / -2F, so '_' only ever appears as a
+    # separator -- but it can appear in the 4-char chunk too (...-3D-3D83_G_RlEke...), hence LAST.
+    if [ -z "$out" ]; then
+        case "$url" in
+            *upn=u001.*_*)
+                v="${url##*upn=u001.}"; v="${v%%[&#]*}"; v="${v##*_}"
+                printf '%s' "$v" | grep -qE '^[A-Za-z0-9]{32}' \
+                    && out="shape:sendgrid=$(printf '%s' "$v" | cut -c1-32)"
+                ;;
+        esac
+    fi
     printf '%s' "$out"
 }
 

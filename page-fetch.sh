@@ -822,7 +822,12 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // A page that renders blank/empty but logged JS errors -- common with SPAs that fail to
   // mount headless, and worth flagging (the screenshot/vision won't see anything either).
   const consoleErrs = consoleLogs.filter(l => l.type === 'error' || l.type === 'pageerror');
-  if (features.text.trim().length < 20 && consoleErrs.length)
+  // Not on a 4xx/5xx: there the empty body IS the error page and the only console error is the
+  // document's own failed load, so "an SPA that failed to mount" is a story about a page that was
+  // never served. It read that way on every dead SendGrid click link, and a wrong explanation in
+  // the LLM's context is worse than none -- the status is the finding, and the redirector rule
+  // in url-analyze.sh reads it.
+  if (features.text.trim().length < 20 && consoleErrs.length && !(status >= 400))
     smells.push(`Page did not render (${consoleErrs.length} JS error(s); likely an SPA that failed to mount headless)`);
 
   // ponytail: optional viewport screenshot for the vision-model escalation (argv[4] = container path)

@@ -218,8 +218,20 @@ check "label echo, domain 2" 'shape:label=u5xb' "$(campaign_key 'https://u5xb.ia
 # ... but docs.example.com/docs and blog.foo.com/blog are ordinary site structure
 check "a word label is not a token" '' "$(campaign_key 'https://docs.example.com/docs')"
 check "and neither is blog/blog"     '' "$(campaign_key 'https://blog.foo.com/blog')"
-# A carrier shape must NOT group: every legitimate mailshot on the platform would join the phish
+# The carrier must NOT group on its own: /ls/click with no tracking blob is every mailshot on the
+# platform, and grouping there would put every legitimate sender behind one bad inspection.
 check "sendgrid click link is not a campaign" '' "$(campaign_key 'http://url7037.comaround.com/ls/click?upn=u001.bmj3YK0AQCI1')"
+# The blob's leading run IS the generator. Same operator, three unrelated customer domains, three
+# per-recipient payloads -- and the 4-char chunk before the separator may itself contain '_'.
+_sg='shape:sendgrid=RlEke38337DE9NoRp6M9QNtL5lwdCzbH'
+check "sendgrid blob, domain 1" "$_sg" "$(campaign_key 'http://url7037.comaround.com/ls/click?upn=u001.bmj3YK0AQCI1-2BKgyVtOcfi-3D-3Da9um_RlEke38337DE9NoRp6M9QNtL5lwdCzbHiNt5hhDTsIyfD9zR2T-3D-3D')"
+check "sendgrid blob, domain 2" "$_sg" "$(campaign_key 'http://url3695.gebesa.com/ls/click?upn=u001.SWp9zHIs4lB6d7ZV7uya-3D-3DbGUB_RlEke38337DE9NoRp6M9QNtL5lwdCzbHiNt5hhDTsIy1eavD2P-3D-3D')"
+check "separator chunk holding _" "$_sg" "$(campaign_key 'http://url8083.calvis.com/ls/click?upn=u001.-2B8lUgkdiKuq91Fx-3D-3D83_G_RlEke38337DE9NoRp6M9QNtL5lwdCzbHiNt5hhDTsIwehMNSjP-3D-3D')"
+# An unrelated legitimate sender has a different blob, so it must land in its own group, not ours
+check "another sender, own group" 'shape:sendgrid=GVdTVisepyi0Aw01b0BRD4YM8I6Z2lIO' "$(campaign_key 'https://u16090459.ct.sendgrid.net/ls/click?upn=u001.fQA8MPQ1Ll0Ew-2FFTw7jM-3Dyd6E_GVdTVisepyi0Aw01b0BRD4YM8I6Z2lIOzarEEC-2BA8Jk-3D-3D')"
+# Too short to be the constant run, or broken by an escaped +// inside it: no key beats a weak one
+check "short blob -> nothing" '' "$(campaign_key 'https://x.ct.sendgrid.net/ls/click?upn=u001.abc-3D-3Dyd6E_RlEke38337DE9')"
+check "escape inside the run" '' "$(campaign_key 'https://x.ct.sendgrid.net/ls/click?upn=u001.abc-3D-3Dyd6E_RlEke-2BFke38337DE9NoRp6M9QNtL5lwdCzbH')"
 check "letters only"           ''          "$(campaign_key 'https://x.com/?lang=engb')"
 
 echo "== is_tenant_suffix (where an apex means nothing) =="
