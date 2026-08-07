@@ -96,15 +96,18 @@ therefore stays plain ASCII. Four tools use `colors.sh`: `url-analyze.sh`, `url-
 
 `url-analyze.sh` caches the work for each URL in `.cache/<url-hash>/`: page content
 (`page.json`), screenshot (`page.jpg`), the followed credential page and its screenshot
-(`page-login.json`, `login.jpg`), inline scripts
+(`page-login.json`, `login.jpg`), the followed interstitial destination and its screenshot
+(`page-redirect.json`, `redirect.jpg`), inline scripts
 (`scripts/`), deobfuscation signals (`deob-signals.txt`), the vision VLM verdict
-(`vision.txt`), and each LLM answer (`llm-<hash>.txt`, keyed by model and request). A re-scan
+(`vision.txt`), the Wayback capture index (`wayback.json`, dead URLs only), and each LLM answer
+(`llm-<hash>.txt`, keyed by model and request). A re-scan
 therefore reuses the fetch, the ~1min vision call, and the LLM verdict instead of a re-compute.
 `-r` forces a full refresh.
 
 ### Per-host cache (`.cache/host/<host>:<port>/`)
 
-Domain metadata (`meta.env`: IP, geo, org, domain age, cert age and issuer, A records, TTL) is a
+Domain metadata (`meta.env`: IP, geo, org, domain age, RDAP status and expiry, cert age and
+issuer, A records, TTL) is a
 fact about the **host**, never about the path or the query, so it caches per host instead of per
 URL. A scan of a new path on a known host therefore skips the whole serial round-trip block (dig,
 ip-api, RDAP, openssl): ~2.6s to ~0.2s. The facts expire after 7 days, and `-r` refreshes now.
@@ -210,6 +213,29 @@ one. The interactive model menu lists `0: none (pure heuristic)` plus the instal
 defaults to the best one (press Enter). The LLM analysis line prints which model ran and how
 long it took.
 
+### Web archive history (automatic, dead URLs only)
+
+A dead URL is a factless scan, and a factless scan has nothing to judge — the phantom-SAFE class
+again. When there is no live page (no DNS A record, or the fetch errored) `url-analyze.sh` queries
+the **Wayback CDX index** (`web.archive.org/cdx/search/cdx`, keyless, no account) for every capture
+of the host. That answers what the failed fetch could not: how long did this host exist, and did
+any crawler ever see it. A kit that was up for six days and never captured looks nothing like a
+four-year-old business whose server happens to be down today. The output names the capture count,
+the first and last dates, the span, and a direct link to **read the archived page** — which is
+often the only way left to see what the kit actually asked for.
+
+It is **gated on the page being dead**, so an ordinary scan and every benchmark run (which scan
+live URLs) pay nothing for it. Caches per URL in `.cache/<hash>/wayback.json` and respects `-r`.
+
+It is deliberately **informational only** and never touches the safety floor: most of the web is
+uncrawled, so an archive gap is not evidence of phishing. A rate-limited or 503 response (both are
+common — archive.org returns an HTML error body, not JSON) is discarded rather than cached, and
+reports "lookup failed — unknown", never "never archived". Claiming a clean answer from a failed
+lookup is precisely the bug this section exists to fix.
+
+Google's cache is **not** an option: the `cache:` operator and the cached-page links were retired
+in September 2024. Bing's is effectively gone too. Wayback is the only general archive left.
+
 ### Third-party reputation (`-t`, opt-in)
 
 `-t` adds external verification from **VirusTotal** and **urlscan.io**. It stays off by default,
@@ -219,7 +245,12 @@ error. Keys live in a gitignored `.env` (copy `.env.sample`). `VT_API_KEY` is ma
 ([docs](https://docs.virustotal.com/reference/overview)). `URLSCAN_API_KEY` is optional, because
 urlscan search is a public API and the key only raises rate limits.
 
-VirusTotal reads `last_analysis_stats` by base64url URL id. urlscan **searches existing public
+VirusTotal reads `last_analysis_stats` by base64url URL id, plus `first_submission_date`,
+`last_submission_date` and `times_submitted` off the same response. First-to-last submission is the
+window in which *anybody* saw this URL, which is the nearest thing to a lifespan for a page that is
+already dead by the time we look at it: `linktoyourstore.com` spans 1689 days over 15 submissions,
+a freshly minted kit spans 0. It prints on the VirusTotal line and costs no extra call. urlscan
+**searches existing public
 scans only** (no submission) and reads **both** `verdicts.overall` and `verdicts.engines` from the
 latest scan. The two are separate judgements: `engines` carries urlscan's own ML classifier and it
 often calls a page malicious while `overall` stays at 0, so reading only `overall` threw away a
@@ -340,7 +371,8 @@ not 3B.
 | Detection | Source |
 |-----------|--------|
 | IP geolocation | ip-api.com (country, org, ISP) |
-| Domain age | RDAP/Verisign (flags less than 30 days as high risk). The lookup uses the **registrable domain** from `psl.sh`, not the last two labels. `smithpower.autoit.za.com` gave `za.com` before, so the age read 28 years (the CentralNic registry) and every `*.za.com` phish inherited an "aged domain" pass. A host that sits directly on a shared namespace has no RDAP record, so the age reads unknown, which is the honest answer |
+| Domain age | RDAP (flags less than 30 days as high risk). The lookup uses the **registrable domain** from `psl.sh`, not the last two labels. `smithpower.autoit.za.com` gave `za.com` before, so the age read 28 years (the CentralNic registry) and every `*.za.com` phish inherited an "aged domain" pass. A host that sits directly on a shared namespace has no RDAP record, so the age reads unknown, which is the honest answer. Verisign is authoritative for `.com`/`.net`/`.org`; **every other TLD** goes through the `rdap.org` bootstrap. Two bugs used to make that whole branch dead: the lookup only ran for com/net/org at all, and `rdap.org` **302s** to the authoritative registry while the curl had no `-L`, so it returned an empty body. Every `.space`, `.co.ke`, `.icu` domain therefore read "age unknown", and `count_red_flags` does not count an unknown age — a structural aged-domain pass for exactly the TLDs kits prefer. A one-day-old `.space` host now scores the young-domain flag |
+| Registry status / expiry | The `status[]` and `expiration` event on the **same** RDAP response. A failed fetch cannot tell a takedown from an unpaid invoice from a kit that was never really there; RDAP can. `client hold` / `server hold` means a registrar or registry pulled the delegation, which is how an abuse report ends — but it is also how an unpaid renewal on a legitimate domain ends, and RDAP cannot separate them, so it is **capped at SUSPICIOUS** in `verdict.sh` and excluded from `count_red_flags`. `redemption period` / `pending delete` / a past expiry date means the registration simply lapsed: display and LLM context only, because a lapse is not evidence of anything bad |
 | SSL cert age | openssl (flags less than 7 days as suspicious) |
 | SSL issuer | openssl |
 | Fast-flux DNS | More than 5 A records, or TTL under 300s |
@@ -367,7 +399,7 @@ not 3B.
 | Crypto wallet addresses | BTC, ETH, TRX patterns |
 | Brand impersonation | Brand in the page **title or form action** but not the domain (OAuth whitelist). `BRAND_MATCH=body` also matches body text (noisier) |
 | Hotlinked brand image | An `<img>` served from a **brand's own domain** while the page is not that brand. A kit cloned from the real login page still points the logo at the victim brand's CDN, so the asset host gives the attribution. No logo database and no image matching. Legit pages also embed brand artwork (payment buttons, dealer logos), so this is context only: `count_red_flags` excludes it, and it floors to SUSPICIOUS **only with a login form**. Skips brands under 5 characters and the ubiquitous embed set (google, facebook, amazon, microsoft, apple, github, and the social networks) |
-| Brand-lookalike subdomain | On a **multi-tenant host** (`github.io`, `pages.dev`, `netlify.app`, `vercel.app`, `web.app`, `workers.dev`, and more) the apex confers no identity. So a subdomain that spells out the page `<title>` (8 chars or more) or a known brand, wrapped in extra lure text, is impersonation. Example: `supportimmigrationadviceserviceorg.github.io` = "Immigration Advice Service". This feeds the deterministic floor: SUSPICIOUS, or DANGEROUS with a login form. It catches what the static typosquat check misses, because `github.io` reads as brand-owned (`github` is a brand) and the brand list is fixed. |
+| Brand-lookalike subdomain | On a **vanity multi-tenant host** the apex confers no identity. So a subdomain that spells out the page `<title>` (8 chars or more) or a known brand, wrapped in extra lure text, is impersonation. Example: `supportimmigrationadviceserviceorg.github.io` = "Immigration Advice Service". This feeds the deterministic floor: SUSPICIOUS, or DANGEROUS with a login form. It catches what the static typosquat check misses, because `github.io` reads as brand-owned (`github` is a brand) and the brand list is fixed. The host list is **`VANITY_SUFFIXES`** in `verdict.sh`, not an inline regex — it used to be one, and it drifted from `TENANT_SUFFIXES` next door: `appspot.com` was a tenant suffix for the ledger rollup and *not* a lookalike host, so a Google App Engine service label spelling out a lure could never trip this. `is_tenant_suffix` is now the **union** of both lists (so a rollup also stops at `blogspot.com`), while the lookalike rule uses `is_vanity_suffix` alone. The split is deliberate: a vanity host hands out **customer-chosen** labels, but an S3 bucket or CloudFront distribution named after its own owner is ordinary, so `amazonaws.com`, `cloudfront.net` and the ESP infra hosts stay out — otherwise `acmecorp-assets.s3.amazonaws.com` titled "Acme Corp" reads as impersonation |
 | Suspicious JS | eval(), atob(), document.write(), hex-encoded strings, obfuscator.io `_0x` identifiers, String.fromCharCode |
 | External link ratio | Skewed external vs internal links |
 
@@ -391,6 +423,52 @@ page is not suspicious, so only what the followed page contains can score. And o
 **same-registrable-domain** link is followed, because legit sites sign in off-domain
 (`login.microsoftonline.com`) and following that would import the identity provider's signals as
 this site's.
+
+### Phase 3.2b: Follow the interstitial destination (escalation)
+
+A **redirect-notice** page contains nothing of its own: zero forms, one outbound link, a
+"Redirect Notice" title. Judging it judges the wrapper, not the thing the link opens — and every
+wrapper of that shape scores 0 red flags, so the destination could be anything.
+`help_genderise_biz-dot-mmemails.appspot.com/em_...?url=<dest>` did exactly that: an aged
+Google-owned host, a valid cert, a clean empty shell, and the real destination sitting in `?url=`
+**in cleartext that Phase 1 had already decoded and then dropped on the floor**. Nothing anywhere
+fetched it.
+
+`redirect_url` (`verdict.sh`, pure and golden-tested) returns the **whole** decoded destination,
+not just the host that `redirect_target` gives — an interstitial hands the browser a URL with a
+path, and fetching the bare host lands on a homepage the link never opened. `url-analyze.sh` spends
+**one** more fetch on it and caches it as `page-redirect.json` plus `redirect.jpg`, and the VLM
+reads the destination, because a screenshot of a redirect notice tells it nothing.
+
+This does **not** relax the same-apex cap on scraped links above: the destination here is one *we*
+parsed out of the URL, not one the page offered us. Three guards hold the false positives down:
+
+1. **The wrapper must be contentless** — no credential form, no forms at all, 3 links or fewer. An
+   OAuth consent screen has both a form and content, so a genuine
+   `accounts.google.com/o/oauth2/v2/auth?redirect_uri=...` is never followed. That is the whole
+   reason an off-site target is not a signal in the first place.
+2. **The redirect is never a signal.** Only what the destination *contains* can score.
+3. **The destination's own domain age decides whether its findings score at all.** Without this the
+   first cut called the real LinkedIn tracker **DANGEROUS**: LinkedIn has a sign-in form and three
+   iframes, which is "login form + 1 red flag" once you attribute them to the wrapper. Every large
+   legitimate site would do the same. So an interstitial pointing at an **established** domain is
+   the ordinary email-tracker shape and its findings are context — printed, and handed to the LLM,
+   but never a floor — while one pointing at a domain **under 90 days old** is the kit shape and
+   scores in full, re-arming `HAS_LOGIN` and every login-gated floor on the real credential
+   surface. Unknown age reads as established, matching `count_red_flags`, which does not count an
+   unknown age either: an absent fact must never manufacture one.
+
+Verified both ways on the same wrapper: `?url=` to LinkedIn (8679-day domain) → context only, no
+floor; `?url=` to a 1-day-old `.space` host → its `atob()`/redirect JS imported, floor SUSPICIOUS.
+
+`FINAL_URL` and `TITLE` are deliberately **not** overridden by the destination — they feed the
+brand-lookalike check, and the wrapper host is exactly where an impersonation lure lives on a
+vanity multi-tenant host. Pointing them at the destination would trade one half of this fix for the
+other. The destination's own hostile *shape* is already scored from the URL by the open-redirect
+rule in Phase 1 (risky TLD / machine-generated host at the far end).
+
+**ponytail ceiling:** domain age is the whole test, so a **compromised aged** domain serving a kit
+lands as context. Scan the destination URL directly to judge it on its own facts.
 
 ### Phase 3.5: JS Deobfuscation (escalation)
 

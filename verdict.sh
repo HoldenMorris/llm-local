@@ -78,8 +78,28 @@ github.io pages.dev netlify.app vercel.app web.app workers.dev base44.app sealos
 qlikcloud.com oraclecloud.com wasabisys.com filestackcontent.com myportfolio.com
 maillist-manage.in zohosecure.com mjt.lu beak.host irontree.cloud ayai.live"
 
+# The subset of shared hosts where the subdomain is a VANITY label the customer chose, rather than
+# a machine-assigned id. That distinction is what makes a lookalike claim meaningful: nobody picks
+# "supportimmigrationadviceserviceorg" by accident, but an S3 bucket or a CloudFront distribution
+# named after its own owner is completely ordinary, and the brand-lookalike rule would read
+# "acmecorp-downloads.s3.amazonaws.com" titled "Acme Corp" as impersonation. So amazonaws.com,
+# cloudfront.net, the ESP infra hosts and friends stay OUT of this list while remaining tenant
+# suffixes for the ledger rollup below.
+# This list used to be an inline regex in url-analyze.sh, which is how appspot.com ended up a
+# tenant suffix here and NOT a lookalike host there.
+VANITY_SUFFIXES="github.io pages.dev web.app firebaseapp.com netlify.app vercel.app workers.dev
+glitch.me repl.co onrender.com surge.sh blogspot.com wordpress.com weebly.com appspot.com
+azurewebsites.net awsapprunner.com base44.app sealos.app myportfolio.com"
+
+# is_vanity_suffix <apex> -> exit 0 if that apex hands out customer-chosen subdomain labels.
+is_vanity_suffix() { case " $(printf '%s' "$VANITY_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
 # is_tenant_suffix <apex> -> exit 0 if that apex is shared hosting rather than one owner.
-is_tenant_suffix() { case " $(printf '%s' "$TENANT_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+# Union of both lists: every vanity host is also multi-tenant, so an apex-wide rollup must stop at
+# blogspot.com and wordpress.com too -- one blogspot kit says nothing about the next blog.
+is_tenant_suffix() {
+    case " $(printf '%s' "$TENANT_SUFFIXES $VANITY_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 # url_decode <string> -> one percent-decoding pass. %XX only; a bare % is left alone, and literal
 # backslashes are escaped first so printf %b cannot reinterpret them.
@@ -129,6 +149,16 @@ redirect_raw() {
     done
     IFS="$oldifs"
     printf '%s' "$found"
+}
+
+# redirect_url <url> -> the FULL decoded destination the redirect parameter points at, or empty.
+# redirect_target gives only the host, which is all the SIGNALS need. Following an interstitial
+# needs the whole thing: the destination carries a path, and fetching the bare host lands on a
+# homepage that has nothing to do with what the link actually opened.
+redirect_url() {
+    local d
+    d=$(url_decode_deep "$(redirect_raw "$1")")
+    case "$d" in http://*|https://*) printf '%s' "$d" ;; esac
 }
 
 # redirect_target <url> -> the host the redirect parameter really points at, decoded and lowercased.
@@ -269,7 +299,7 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious' | grep -c .) ))
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry' | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it
@@ -367,6 +397,13 @@ classify_verdict() {
     # from analysis", which is not the same claim as "this page is harvesting credentials".
     local antianalysis=""
     printf '%s' "$deobfus" | grep -qi 'anti-analysis' && antianalysis=1
+    # A registry/registrar HOLD on the domain (RDAP clientHold/serverHold). It is where an abuse
+    # takedown ends -- and equally where an unpaid renewal on a perfectly legitimate domain ends,
+    # and RDAP alone cannot tell those apart. So: capped at SUSPICIOUS, excluded from
+    # count_red_flags, and it can never combine with a login form to reach DANGEROUS. It says
+    # somebody pulled the plug on this domain, not that this page was harvesting.
+    local rdaphold=""
+    printf '%s' "$smells" | grep -qi 'domain suspended at the registry' && rdaphold=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -380,9 +417,9 @@ classify_verdict() {
         floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
-    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ]; then
+    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ] || [ -n "$rdaphold" ]; then
         floor=SUSPICIOUS
-        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}"
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}${rdaphold:+ + the domain is suspended at the registry (RDAP hold)}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then

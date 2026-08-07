@@ -33,7 +33,9 @@ domain_dns() {
         country=$(echo "$info" | jq -r '.country // "?"' 2>/dev/null)
         org=$(echo "$info" | jq -r '.org // .isp // "?"' 2>/dev/null)
     fi
-    created=$(curl -s --max-time 6 "https://rdap.org/domain/$d" 2>/dev/null \
+    # -L is load-bearing: rdap.org is a bootstrap that 302s to the authoritative registry, so
+    # without it every lookup here returned an empty body and the age silently read unknown.
+    created=$(curl -sL --max-time 6 "https://rdap.org/domain/$d" 2>/dev/null \
         | jq -r '.events[]? | select(.eventAction=="registration") | .eventDate' 2>/dev/null | head -1 | cut -dT -f1)
     if [ -n "$created" ] && [ "$created" != "null" ]; then
         cts=$(date -d "$created" +%s 2>/dev/null)
@@ -310,8 +312,9 @@ fi
 #   * a machine-generated hostname, or a high-risk TLD, at the far end
 # Those score; the bare off-site target is context.
 REDIR_TARGET=$(redirect_target "$URL")
-REDIR_OBFUS=""; REDIR_BAD=""
+REDIR_OBFUS=""; REDIR_BAD=""; REDIR_OFFSITE=""
 if [ -n "$REDIR_TARGET" ] && [ "$(apex_of "$REDIR_TARGET")" != "$(apex_of "$DOMAIN")" ]; then
+    REDIR_OFFSITE=1   # gates the interstitial follow in Phase 3.2 (the destination is off-site)
     add_signal "Redirect parameter points off-site to: $REDIR_TARGET"
     if has_gratuitous_encoding "$(redirect_raw "$URL")"; then
         REDIR_OBFUS=1
@@ -403,18 +406,30 @@ if [ -n "$IP" ]; then
     ORG=$(echo "$IP_INFO" | jq -r '.org // .isp // "?"')
 fi
 
-# Domain age via RDAP (works for .com, .net, .org)
+# Domain registration via RDAP. Verisign is authoritative for com/net/org; rdap.org bootstraps
+# every other TLD -- the same general path domain_dns() already uses for exfil targets. It used to
+# be com/net/org ONLY, which meant the dead domains we most want to explain (.vu, .co.ke, .space)
+# got no RDAP call at all, so neither their age nor the status below.
 if echo "$TLD" | grep -qE '^(com|net|org)$'; then
     RDAP_URL="https://rdap.verisign.com/$TLD/v1/domain/$APEX_DOMAIN"
-    RDAP=$(curl -s --max-time 5 "$RDAP_URL" 2>/dev/null)
-    CREATED=$(echo "$RDAP" | jq -r '.events[] | select(.eventAction=="registration") | .eventDate' 2>/dev/null | head -1)
-    if [ -n "$CREATED" ] && [ "$CREATED" != "null" ]; then
-        CREATED_DATE=$(echo "$CREATED" | cut -d'T' -f1)
-        # Calculate age in days
-        CREATED_TS=$(date -d "$CREATED_DATE" +%s 2>/dev/null || echo "")
-        [ -n "$CREATED_TS" ] && AGE_DAYS=$(( ($(date +%s) - CREATED_TS) / 86400 ))
-    fi
+else
+    RDAP_URL="https://rdap.org/domain/$APEX_DOMAIN"
 fi
+# -L: rdap.org is a bootstrap service that 302s to the authoritative registry (see domain_dns).
+RDAP=$(curl -sL --max-time 8 "$RDAP_URL" 2>/dev/null)
+CREATED=$(echo "$RDAP" | jq -r '.events[]? | select(.eventAction=="registration") | .eventDate' 2>/dev/null | head -1)
+if [ -n "$CREATED" ] && [ "$CREATED" != "null" ]; then
+    CREATED_DATE=$(echo "$CREATED" | cut -d'T' -f1)
+    # Calculate age in days
+    CREATED_TS=$(date -d "$CREATED_DATE" +%s 2>/dev/null || echo "")
+    [ -n "$CREATED_TS" ] && AGE_DAYS=$(( ($(date +%s) - CREATED_TS) / 86400 ))
+fi
+# WHY the domain is dead, from the round-trip we already paid for. A failed fetch cannot tell a
+# takedown from an unpaid invoice from a kit that was never really there. RDAP can: a
+# clientHold/serverHold means a registrar or registry pulled the delegation, which is how an abuse
+# report ends; a redemptionPeriod/pendingDelete means the registration simply lapsed.
+RDAP_STATUS=$(echo "$RDAP" | jq -r '(.status // []) | join(" ")' 2>/dev/null)
+EXPIRY_DATE=$(echo "$RDAP" | jq -r '.events[]? | select(.eventAction=="expiration") | .eventDate' 2>/dev/null | head -1 | cut -dT -f1)
 
 # === SSL Certificate Check (openssl) ===
 if echo "$URL" | grep -q "^https://"; then
@@ -440,6 +455,7 @@ if [ -n "$IP" ]; then
       printf 'ORG=%q\n' "$ORG";             printf 'AGE_DAYS=%q\n' "$AGE_DAYS"
       printf 'CREATED_DATE=%q\n' "$CREATED_DATE"
       printf 'CERT_AGE_DAYS=%q\n' "$CERT_AGE_DAYS"; printf 'CERT_ISSUER=%q\n' "$CERT_ISSUER"
+      printf 'RDAP_STATUS=%q\n' "$RDAP_STATUS"; printf 'EXPIRY_DATE=%q\n' "$EXPIRY_DATE"
       printf 'A_RECORDS=%q\n' "$A_RECORDS"; printf 'TTL=%q\n' "$TTL"; } > "$HOST_DIR/meta.env"
 fi
 fi
@@ -459,6 +475,28 @@ if [ -n "$CERT_AGE_DAYS" ]; then
     if   [ "$CERT_AGE_DAYS" -lt 7 ] 2>/dev/null;  then add_signal "SSL cert age: $CERT_AGE_DAYS days (VERY NEW - suspicious)"
     elif [ "$CERT_AGE_DAYS" -lt 30 ] 2>/dev/null; then echo_grey "- SSL cert age: $CERT_AGE_DAYS days (recent)"
     else echo_grey "- SSL cert: $CERT_AGE_DAYS days old, issuer: $CERT_ISSUER"
+    fi
+fi
+# Registry/registrar state. A HOLD is a suspension: the delegation was pulled, which is exactly
+# where an abuse takedown ends -- and also exactly where an unpaid renewal on a legitimate domain
+# ends, and RDAP alone cannot tell those apart. So it is capped at SUSPICIOUS in verdict.sh and
+# excluded from the red-flag count. A LAPSE (redemption / pendingDelete / a past expiry date) is
+# not evidence of anything bad by itself, so it stays display + LLM context only. Both answer the
+# question a dead fetch raises and cannot: did this expire, or was it taken down?
+RDAP_HOLD=""
+case "$RDAP_STATUS" in
+    *[Hh]old*)
+        RDAP_HOLD=1
+        add_signal "Domain SUSPENDED at the registry (RDAP status: $RDAP_STATUS) - the delegation was pulled, which is how an abuse takedown ends" ;;
+    *redemption*|*[Pp]ending[Dd]elete*|*"pending delete"*)
+        add_signal "Domain registration LAPSED (RDAP status: $RDAP_STATUS) - expired and not renewed, so DNS stopped resolving" ;;
+esac
+if [ -n "$EXPIRY_DATE" ] && [ -z "$RDAP_HOLD" ]; then
+    _exp_ts=$(date -d "$EXPIRY_DATE" +%s 2>/dev/null)
+    if [ -n "$_exp_ts" ] && [ "$_exp_ts" -lt "$(date +%s)" ] 2>/dev/null; then
+        add_signal "Domain registration expired on $EXPIRY_DATE (not renewed)"
+    else
+        echo_grey "- Registration expires: $EXPIRY_DATE${RDAP_STATUS:+ (status: $RDAP_STATUS)}"
     fi
 fi
 [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records (suspicious)"
@@ -507,6 +545,7 @@ if [ -z "$SKIP_FETCH" ]; then
         PAGE_ERR_STATUS=$(echo "$PAGE_DATA" | jq -r '.status // 0' 2>/dev/null)
         echo_yellow "[!] Page unreachable or timeout${PAGE_ERR_STATUS:+ (HTTP $PAGE_ERR_STATUS)}"
         [ "$(_fb_live)" != "gone" ] && { _fb_mark gone; echo_grey "- marked gone in the feedback ledger (drops out of the replay corpus)"; }
+        PAGE_DEAD=1   # gates the web-archive lookup below: no live page to read, so go look for an old one
         PAGE_DATA="{}"
     else
         [ "$(_fb_live)" = "gone" ] && { _fb_mark alive; echo_grey "- back up: cleared the gone mark"; }
@@ -572,6 +611,80 @@ if [ -z "$SKIP_FETCH" ]; then
                 [ -f "$CACHE_DIR/login.jpg" ] && SHOT="$CACHE_DIR/login.jpg"
             else
                 LOGIN_URL=""    # nothing to merge; keep the verdict inputs untouched
+            fi
+        fi
+
+        # ponytail: Follow-the-interstitial escalation. A redirect-notice page hands the browser
+        # onward and contains nothing of its own: 0 forms, one outbound link, a "Redirect Notice"
+        # title. Judging it judges the wrapper, not the thing the link opens -- and every wrapper
+        # of this shape scores 0 red flags, so the destination could be anything.
+        # help_genderise_biz-dot-mmemails.appspot.com did exactly that: an aged Google-owned host
+        # with a valid cert, a clean empty shell, and the real destination sitting in ?url= in
+        # cleartext. Phase 1 had already DECODED that destination and then dropped it on the floor.
+        #
+        # This does NOT relax the same-apex cap on scraped links (page-fetch.sh loginLinks): the
+        # destination here is one WE parsed out of the url ourselves, not one the page offered us.
+        # Two guards keep it honest. The page must have no credential form and essentially no
+        # content of its own -- an OAuth consent screen has both, so a genuine
+        # accounts.google.com/o/oauth2/v2/auth?redirect_uri=... is never followed, which is the
+        # whole reason an off-site target is not a signal in the first place. And the redirect
+        # itself is never a signal: only what the DESTINATION contains scores, exactly like the
+        # login-link follow above.
+        REDIR_FOLLOWED=""; REDIR_SCORES=""
+        # Counts read straight from PAGE_DATA: the FORMS/LOGIN_FORMS variables are not derived
+        # until after this whole block closes, so ${FORMS:-0} here would read 0 on every page.
+        if [ -n "$REDIR_OFFSITE" ] && [ "$HAS_LOGIN" != "true" ] \
+           && [ "$(echo "$PAGE_DATA" | jq -r '.counts.forms // 0' 2>/dev/null)" -eq 0 ] 2>/dev/null \
+           && [ "$(echo "$PAGE_DATA" | jq -r '.counts.links // 0' 2>/dev/null)" -le 3 ] 2>/dev/null; then
+            _rd_url=$(redirect_url "$URL")
+            if [ -n "$_rd_url" ]; then
+                if [ -f "$CACHE_DIR/page-redirect.json" ]; then
+                    REDIR_DATA=$(cat "$CACHE_DIR/page-redirect.json")
+                else
+                    echo_grey "- Interstitial with no content of its own; following the decoded destination: $_rd_url"
+                    [ -z "$NO_VISION" ] && REDIR_SHOT="$CACHE_DIR/redirect.jpg"
+                    REDIR_DATA=$(PAGE_SHOT="$REDIR_SHOT" "$SCRIPT_DIR/page-fetch.sh" \
+                        ${PROXY:+-p "$PROXY"} ${EXIT_CC:+-g "$EXIT_CC"} "$_rd_url" 2>/dev/null | tail -1)
+                    echo "$REDIR_DATA" | jq -e '.error' >/dev/null 2>&1 \
+                        || echo "$REDIR_DATA" > "$CACHE_DIR/page-redirect.json"
+                fi
+                if ! echo "$REDIR_DATA" | jq -e '.error' >/dev/null 2>&1 \
+                   && [ -n "$(echo "$REDIR_DATA" | jq -r '.url // empty' 2>/dev/null)" ]; then
+                    REDIR_FOLLOWED="$_rd_url"
+                    add_signal "Interstitial destination fetched: $_rd_url (the wrapper page has no content of its own)"
+                    # WHETHER the destination's findings may score is decided by the destination's
+                    # OWN registrable domain age, not by the wrapper's. Without this the first
+                    # version of this escalation called a genuine Google App Engine email tracker
+                    # to a real LinkedIn company page DANGEROUS: LinkedIn has a sign-in form and
+                    # three iframes, which is a login form plus a red flag once you attribute them
+                    # to the wrapper. Every large legitimate site would do the same, so an
+                    # interstitial pointing at an established domain is the ordinary tracker shape
+                    # and one pointing at a domain registered weeks ago is the kit shape.
+                    # Unknown age reads as established, matching count_red_flags, which does not
+                    # count an unknown age either -- an absent fact must never manufacture one.
+                    # ponytail: age is the whole test. A COMPROMISED aged domain serving a kit
+                    # therefore lands as context; scan the destination url directly to judge it on
+                    # its own facts, which is what the analyst would do anyway.
+                    _rd_age=$(domain_dns "$(apex_of "$REDIR_TARGET")" | grep -oE 'age [0-9]+d' | grep -oE '[0-9]+')
+                    if [ -n "$_rd_age" ] && [ "$_rd_age" -lt 90 ] 2>/dev/null; then
+                        REDIR_SCORES=1
+                        add_signal "Interstitial destination is only ${_rd_age}d old (freshly registered) - its findings score"
+                    else
+                        echo_grey "- destination domain is established (${_rd_age:-unknown} days) -- its findings are context, not flags"
+                    fi
+                    REDIR_SMELLS=$(echo "$REDIR_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev/null)
+                    while IFS= read -r _rs; do
+                        [ -n "$_rs" ] && add_signal "$_rs [on $_rd_url]"
+                    done <<< "$(echo "$REDIR_DATA" | jq -r '.phishingSmells[]?' 2>/dev/null)"
+                    if [ "$(echo "$REDIR_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)" = "true" ]; then
+                        add_signal "Credential form on the redirect destination: $_rd_url"
+                    fi
+                    # The wrapper's screenshot is a "Redirect Notice" and tells the VLM nothing.
+                    # The destination is the page a human would say they visited.
+                    [ -f "$CACHE_DIR/redirect.jpg" ] && SHOT="$CACHE_DIR/redirect.jpg"
+                else
+                    echo_grey "- Interstitial destination unreachable: $_rd_url"
+                fi
             fi
         fi
     fi
@@ -654,6 +767,9 @@ SMELLS=$(echo "$PAGE_DATA" | jq -r '(.phishingSmells // []) | join(", ")' 2>/dev
 # Tunneling-service host (detected in Phase 1) is a deterministic red flag, whether or not the page
 # fetched -- append here so count_red_flags scores it (1 flag -> SUSPICIOUS floor on its own).
 [ -n "$TUNNEL_SVC" ] && SMELLS="${SMELLS:+$SMELLS, }hosted on tunneling service $TUNNEL_SVC"
+# Registry hold (Phase 1 domain info). Appended HERE, below the line that rebuilds SMELLS from
+# PAGE_DATA, or it would be clobbered. Comma-free: count_red_flags splits SMELLS on commas.
+[ -n "$RDAP_HOLD" ] && SMELLS="${SMELLS:+$SMELLS, }domain suspended at the registry (RDAP hold)"
 # Same for the hidden redirect target (Phase 1). One red flag each, and they stack: an obfuscated
 # parameter pointing at a machine-generated host is two. Both are properties of the URL, so they
 # score with no fetch at all -- which is the point, because the fetched page is the real login
@@ -671,6 +787,28 @@ if [ -n "$LOGIN_URL" ]; then
     [ -n "$LOGIN_SMELLS" ] && SMELLS="${SMELLS:+$SMELLS, }$LOGIN_SMELLS"
 fi
 
+# Same merge for the followed interstitial destination (Phase 3.2). The wrapper contributes
+# nothing -- it had no forms and no content -- so the destination's facts ARE the page's facts, and
+# they have to land here for the same reason: both lines above re-derive from PAGE_DATA, which is
+# still the wrapper. HAS_LOGIN re-arms the login-gated floors on the real credential surface.
+# The redirect itself adds no flag of its own; only what the destination contains scores.
+# REDIR_SCORES is set only when the destination's own registrable domain is under 90 days old.
+# Without that gate this merge attributes any large legitimate site's login form and page furniture
+# to the wrapper, which is how the first cut of it called a real LinkedIn tracker DANGEROUS. When
+# it is not set the destination was still fetched and every finding is still printed and handed to
+# the LLM -- it just cannot manufacture a floor.
+if [ -n "$REDIR_FOLLOWED" ] && [ -n "$REDIR_SCORES" ]; then
+    [ "$(echo "$REDIR_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null)" = "true" ] && HAS_LOGIN=true
+    [ -n "$REDIR_SMELLS" ] && SMELLS="${SMELLS:+$SMELLS, }$REDIR_SMELLS"
+    _rd_js=$(echo "$REDIR_DATA" | jq -r '(.suspiciousJs // []) | join(", ")' 2>/dev/null)
+    [ -n "$_rd_js" ] && SUSP_JS="${SUSP_JS:+$SUSP_JS, }$_rd_js"
+fi
+# Deliberately NOT overridden: FINAL_URL and TITLE stay the wrapper's. They feed the
+# brand-lookalike check, and the wrapper host is exactly where an impersonation lure lives on a
+# vanity multi-tenant host -- pointing them at the destination would trade one half of this fix
+# for the other. The destination's own hostile shape is already scored from the URL by REDIR_BAD
+# in Phase 1 (risky TLD / machine-generated host at the far end).
+
 # ponytail: An email-redirector link (detected in Phase 1) is only a red flag when we NEVER left it:
 # the token was dead/expired/bare and we landed back on the service's own placeholder (or the fetch
 # failed) instead of the real destination. A LIVE link redirects off-domain and the landed host's own
@@ -678,7 +816,24 @@ fi
 # the honest "couldn't confirm where this actually goes" verdict -- not the phantom-SAFE placeholder.
 if [ -n "$REDIRECT_SVC" ]; then
     _land_host=$(printf '%s' "${FINAL_URL:-$URL}" | sed -E 's#^[a-z]+://##;s#[/?].*##' | tr 'A-Z' 'a-z')
-    if printf '%s' "$_land_host" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$"; then
+    # "Never left it" cannot be asked of the service NAME, because a branded link never wears one:
+    # url9901.badgerdefence.com serves its own 404 on its own host, so the list never matched and
+    # the finding was silently dropped for exactly the links most likely to be dead. The honest
+    # test is whether we left the ENTRY host at all -- DOMAIN is parsed once from the entry url and
+    # never re-anchored (the landed host lives in FINAL_URL / LANDED_DOMAIN), so a live link that
+    # redirects to its real destination still fails this and is still not punished for its entry.
+    _never_left=""
+    printf '%s' "$_land_host" | grep -qiE "(^|\.)($REDIRECT_SERVICES)\$" && _never_left=1
+    # Capped: the branded branch also needs the page to be unassessable. Every ESP hosts real pages
+    # on the customer's branded CNAME too -- preference centres, unsubscribe confirmations -- and
+    # those legitimately serve their content from the tracker host and never redirect anywhere.
+    # Staying put is only a finding when there was also nothing to see. The service-NAME branch
+    # above keeps firing on a 200, because a bare mjt.lu placeholder is itself the tell.
+    if [ -z "$_never_left" ] && [ "$_land_host" = "$(printf '%s' "$DOMAIN" | tr 'A-Z' 'a-z')" ] \
+       && { [ -z "$PAGE_FETCHED" ] || is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS"; }; then
+        _never_left=1
+    fi
+    if [ -n "$_never_left" ]; then
         # A 4xx from the SERVICE ITSELF is not an expired link, it is a withdrawn one. An ESP does
         # not 404 a click id it issued hours ago; it 404s one whose destination its abuse team has
         # since cut off -- which means somebody has already reported this campaign. Verified on
@@ -688,10 +843,14 @@ if [ -n "$REDIRECT_SVC" ]; then
         # succeeds and PAGE_STATUS holds it) and only sometimes fails outright.
         _svc_status="${PAGE_ERR_STATUS:-${PAGE_STATUS:-0}}"
         if [ "${_svc_status:-0}" -ge 400 ] 2>/dev/null && [ "${_svc_status:-0}" -lt 500 ] 2>/dev/null; then
-            SMELLS="${SMELLS:+$SMELLS, }link-redirection service $REDIRECT_SVC returned HTTP $_svc_status for this link - withdrawn by the service (its destination was cut off) rather than expired"
+            _redir_smell="link-redirection service $REDIRECT_SVC returned HTTP $_svc_status for this link - withdrawn by the service (its destination was cut off) rather than expired"
         else
-        SMELLS="${SMELLS:+$SMELLS, }link-redirection service $REDIRECT_SVC - destination unresolved (dead/expired link on a phishing-prone redirector)"
+            _redir_smell="link-redirection service $REDIRECT_SVC - destination unresolved (dead/expired link on a phishing-prone redirector)"
         fi
+        # add_signal too, not only SMELLS: this scored the floor but never appeared in the output,
+        # so a dead tracker link printed "1 red flag -> SUSPICIOUS" and named nothing.
+        SMELLS="${SMELLS:+$SMELLS, }$_redir_smell"
+        add_signal "$_redir_smell"
     fi
 fi
 
@@ -702,9 +861,13 @@ fi
 # static typosquat check above can't catch these: github.io reads as brand-owned (github IS a brand,
 # line 205), and its brand list is fixed. Feeds SMELLS -> deterministic floor (SUSPICIOUS; DANGEROUS
 # with a login form), so the verdict holds regardless of the LLM.
+# The host list is VANITY_SUFFIXES in verdict.sh, shared with the ledger rollup's is_tenant_suffix.
+# It used to be an inline regex right here, and the two drifted: appspot.com was a tenant suffix
+# for the rollup and not a lookalike host, so a Google App Engine service label spelling out a lure
+# (help_genderise_biz-dot-mmemails.appspot.com) could never trip this.
 LOOKALIKE_HOST=$(printf '%s' "${FINAL_URL:-$URL}" | sed -E 's#^[a-z]+://##;s#[/?].*##' | tr 'A-Z' 'a-z')
-if printf '%s' "$LOOKALIKE_HOST" | grep -qE '\.(github\.io|pages\.dev|web\.app|firebaseapp\.com|netlify\.app|vercel\.app|workers\.dev|glitch\.me|repl\.co|onrender\.com|surge\.sh|blogspot\.com|wordpress\.com|weebly\.com)$'; then
-    _la_apex=$(printf '%s' "$LOOKALIKE_HOST" | grep -oE '[^.]+\.[^.]+$')
+_la_apex=$(printf '%s' "$LOOKALIKE_HOST" | grep -oE '[^.]+\.[^.]+$')
+if is_vanity_suffix "$_la_apex"; then
     _la_sub=$(printf '%s' "${LOOKALIKE_HOST%.$_la_apex}" | tr -cd 'a-z0-9')  # subdomain, alnum-squashed
     _la_title=$(printf '%s' "$TITLE" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')     # the page's declared identity
     # Identity to match: the page title (>=8 chars, specific enough) or a known long brand.
@@ -906,12 +1069,63 @@ if [ -z "$_host_bad" ] && [ -z "$_host_susp" ]; then
         done <<< "$_camp"
         # Same two shapes as the domain rollup: a settled DANGEROUS match is an ordinary red flag,
         # a settled SUSPICIOUS one is capped at SUSPICIOUS by verdict.sh (the wording carries it).
+        # Both branches add_signal as well, so the finding that carried the floor is named in the
+        # output. On a dead tracker link the campaign tag is usually the ONLY evidence there is.
+        _camp_smell=""
         if [ -n "$_camp_bad" ]; then
-            SMELLS="${SMELLS:+$SMELLS, }Confirmed phishing previously inspected under the same campaign tag $_ckey ($(printf '%s' "$_camp_bad" | tr ',' ' '))"
+            _camp_smell="Confirmed phishing previously inspected under the same campaign tag $_ckey ($(printf '%s' "$_camp_bad" | tr ',' ' '))"
         elif [ -n "$_camp_susp" ]; then
-            SMELLS="${SMELLS:+$SMELLS, }A url under the same campaign tag $_ckey was previously inspected as suspicious ($(printf '%s' "$_camp_susp" | tr ',' ' '))"
+            _camp_smell="A url under the same campaign tag $_ckey was previously inspected as suspicious ($(printf '%s' "$_camp_susp" | tr ',' ' '))"
         fi
+        [ -n "$_camp_smell" ] && { SMELLS="${SMELLS:+$SMELLS, }$_camp_smell"; add_signal "$_camp_smell"; }
         CAMPAIGN_LLM=$(printf '%s' "$_camp" | awk -F'\t' '{ printf "%s%s (%s) %s", sep, $1, $2, $3; sep="; " }')
+    fi
+fi
+
+# === Web archive history (automatic, only when there is no live page) ===
+# A dead URL is a factless scan, and a factless scan has nothing to judge -- the phantom-SAFE
+# class. The Wayback CDX index is keyless and answers what the failed fetch could not: how long
+# did this host exist, and did any crawler ever see it. A kit that was up for six days and never
+# captured looks nothing like a four-year-old business whose server happens to be down today.
+# Gated on the page being dead, so a normal scan (and every benchmark run, which scans live URLs)
+# pays nothing. Cached per URL like every other lookup, and -r refreshes it.
+# ponytail: informational only -- an archive gap is NOT evidence of phishing (most of the web is
+# uncrawled), so this feeds the analyst and the LLM and never the safety floor.
+WAYBACK_LLM=""
+if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ]; then
+    echo ""
+    echo "${BOLD}Web archive (no live page to read)${RESET}"
+    if [ ! -s "$CACHE_DIR/wayback.json" ]; then
+        curl -s --max-time 25 -G "http://web.archive.org/cdx/search/cdx" \
+            --data-urlencode "url=$DOMAIN/*" --data-urlencode "output=json" \
+            --data-urlencode "fl=timestamp,original,statuscode" \
+            --data-urlencode "collapse=timestamp:8" --data-urlencode "limit=500" \
+            > "$CACHE_DIR/wayback.json" 2>/dev/null
+        # A rate-limit page is HTML, not JSON. Discard it rather than cache it -- and rather than
+        # let it read as "never archived", which is a claim we would not have earned.
+        jq -e 'type=="array"' "$CACHE_DIR/wayback.json" >/dev/null 2>&1 || rm -f "$CACHE_DIR/wayback.json"
+    fi
+    if [ ! -s "$CACHE_DIR/wayback.json" ]; then
+        WAYBACK_LLM="lookup failed (archive.org unreachable or rate-limited) - NOT a finding"
+        echo_grey "- Wayback: lookup failed (unreachable or rate-limited) - unknown, not 'never archived'"
+    else
+        # CDX returns a header row first, then captures ascending by timestamp.
+        _wb=$(jq -r 'if length>1 then "\(length-1)\t\(.[1][0])\t\(.[-1][0])" else "0" end' \
+              "$CACHE_DIR/wayback.json" 2>/dev/null)
+        IFS=$'\t' read -r _wbn _wbfirst _wblast <<< "$_wb"
+        _fmt_ts() { printf '%s-%s-%s' "${1:0:4}" "${1:4:2}" "${1:6:2}"; }
+        if [ "${_wbn:-0}" -gt 0 ] 2>/dev/null; then
+            _wbf=$(_fmt_ts "$_wbfirst"); _wbl=$(_fmt_ts "$_wblast")
+            _wbdays=$(( ( $(date -d "$_wbl" +%s 2>/dev/null || echo 0) - $(date -d "$_wbf" +%s 2>/dev/null || echo 0) ) / 86400 ))
+            WAYBACK_LLM="$_wbn captures of $DOMAIN, first $_wbf, last $_wbl (${_wbdays}d span)"
+            add_signal "Web archive: $WAYBACK_LLM"
+            echo_grey "- $_wbn captures, $_wbf -> $_wbl (${_wbdays}d span)  (https://web.archive.org/web/*/$DOMAIN/*)"
+            echo_grey "- read the archived page: https://web.archive.org/web/${_wblast}/$URL"
+        else
+            WAYBACK_LLM="never archived - no Wayback capture of $DOMAIN ever"
+            add_signal "Web archive: no capture of $DOMAIN has ever been taken (short-lived or never crawled)"
+            echo_grey "- no capture of $DOMAIN has ever been taken"
+        fi
     fi
 fi
 
@@ -949,13 +1163,32 @@ if [ -n "$VT" ]; then
         fi
         _vtstats=$(jq -r '.data.attributes.last_analysis_stats // empty' "$CACHE_DIR/virustotal.json" 2>/dev/null)
         if [ -z "$_vtstats" ]; then
-            echo_grey "- VirusTotal: $(jq -r '.error.message // "URL not in VirusTotal (never submitted)"' "$CACHE_DIR/virustotal.json" 2>/dev/null)"
+            # A NotFoundError echoes the whole base64url id back, which on a tracker link is ~700
+            # characters of noise that reads like a result. It is not one -- say so in words.
+            # Expect this on every per-recipient link (an ESP click url exists for one mailbox, so
+            # nobody has ever submitted THIS url); the campaign tag is what covers that gap.
+            case "$(jq -r '.error.code // ""' "$CACHE_DIR/virustotal.json" 2>/dev/null)" in
+                NotFoundError|"") echo_grey "- VirusTotal: no record of this exact URL (never submitted)" ;;
+                *) echo_grey "- VirusTotal: $(jq -r '.error.message' "$CACHE_DIR/virustotal.json" 2>/dev/null)" ;;
+            esac
             rm -f "$CACHE_DIR/virustotal.json"   # a miss/error is not a result -> don't cache it
         else
             _vm=$(jq -r '.data.attributes.last_analysis_stats.malicious // 0' "$CACHE_DIR/virustotal.json")
             _vs=$(jq -r '.data.attributes.last_analysis_stats.suspicious // 0' "$CACHE_DIR/virustotal.json")
             _vt=$(jq -r '.data.attributes.last_analysis_stats | add // 0' "$CACHE_DIR/virustotal.json")
             VT_SUMMARY="$_vm/$_vt engines malicious, $_vs suspicious"
+            # Same response, three fields we were throwing away. first->last submission is the
+            # window in which anyone saw this URL at all, which is the closest thing to a
+            # lifespan for a page that is already dead by the time we look at it.
+            _vfirst=$(jq -r '.data.attributes.first_submission_date // empty' "$CACHE_DIR/virustotal.json")
+            _vlast=$(jq -r '.data.attributes.last_submission_date // empty' "$CACHE_DIR/virustotal.json")
+            _vn=$(jq -r '.data.attributes.times_submitted // empty' "$CACHE_DIR/virustotal.json")
+            if [ -n "$_vfirst" ]; then
+                _vfd=$(date -u -d "@$_vfirst" +%F 2>/dev/null)
+                _vld=$(date -u -d "@${_vlast:-$_vfirst}" +%F 2>/dev/null)
+                _vspan=$(( ( ${_vlast:-$_vfirst} - _vfirst ) / 86400 ))
+                VT_SUMMARY="$VT_SUMMARY; first submitted $_vfd, last $_vld (${_vspan}d span, ${_vn:-?} submissions)"
+            fi
             echo_grey "- VirusTotal: $VT_SUMMARY  (https://www.virustotal.com/gui/url/$(printf '%s' "$URL" | sha256sum | cut -d' ' -f1))"
             [ "${_vm:-0}" -gt 0 ] 2>/dev/null && rep_redflag VirusTotal "$_vm vendors"
         fi
@@ -1158,6 +1391,14 @@ URLSCAN_LLM=""; { [ "${_um:-false}" = "true" ] || [ "${_uem:-false}" = "true" ];
 # Must stay ABOVE the CONTEXT build below, which interpolates it.
 FLAGS_LLM=$(count_red_flags "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS")
 
+# The followed destination reaches the LLM whether or not it was allowed to score, so a
+# context-only destination is still visible to it -- the floor is capped, the evidence is not.
+REDIR_LLM=""
+if [ -n "$REDIR_FOLLOWED" ]; then
+    REDIR_LLM="$REDIR_FOLLOWED (registrable domain ${_rd_age:-unknown} days old, credential form: $(echo "$REDIR_DATA" | jq -r '.hasLoginForm // false' 2>/dev/null); findings: ${REDIR_SMELLS:-none})"
+    [ -z "$REDIR_SCORES" ] && REDIR_LLM="$REDIR_LLM - established domain, so these findings are CONTEXT and are NOT red flags"
+fi
+
 CONTEXT="URL: $URL
 Domain: $DOMAIN
 TLD: $TLD
@@ -1174,6 +1415,8 @@ EXTRACTED SIGNALS (these are the ground truth - do not assume anything not liste
 - Deobfuscated JS signals (hidden by obfuscation, revealed by webcrack): ${DEOBFUS_SIGNALS:-none}
 - Phishing smells flagged by scraper: ${SMELLS_LLM:-none}
 - Red flag count: $FLAGS_LLM  (authoritative - already counted from these signals, use as-is)
+- Redirect interstitial destination (this page had no content of its own): ${REDIR_LLM:-not applicable}
+- Web archive history (only looked up when the page is dead): ${WAYBACK_LLM:-not checked}
 - VirusTotal reputation: ${VT_LLM:-not checked}
 - urlscan.io reputation: ${URLSCAN_LLM:-not checked}
 - Prior analyst judgements on this domain: ${HOST_PRIORS_LLM:-none}

@@ -175,6 +175,18 @@ check "anti-analysis never downgrades"    DANGEROUS  "$(cv false com '' '' 'http
 # but the deob signals that ARE proof still behave as before
 check "exfil still outranks it" DANGEROUS "$(cv false com '' '' 'https://x.com/' '' '' "off-domain URL: https://e.vil/c, $AA" SAFE)"
 
+echo "== registry hold (why the domain is dead) =="
+# Capped for the same reason as the signals above: an RDAP clientHold/serverHold is where an abuse
+# takedown ends, but it is also where an unpaid renewal on a legitimate domain ends, and RDAP
+# cannot tell them apart. SUSPICIOUS, never combining with a login form to reach DANGEROUS.
+HOLD='domain suspended at the registry (RDAP hold)'
+check "registry hold is not a red flag"   0          "$(count_red_flags com '' '' "$HOLD" '' '')"
+check "registry hold -> SUSPICIOUS"       SUSPICIOUS "$(cv false com '' '' 'https://x.com/' "$HOLD" '' '' SAFE)"
+check "registry hold + login stays SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://x.com/' "$HOLD" '' '' SAFE)"
+check "registry hold never downgrades"    DANGEROUS  "$(cv false com '' '' 'https://x.com/' "$HOLD" '' '' DANGEROUS)"
+# and it must not mask a real flag sitting beside it
+check "hold + a real smell still counts the smell" 1 "$(count_red_flags com '' '' "$HOLD, Login form submits off-domain" '' '')"
+
 echo "== open-redirect abuse (the phish that hosts nothing) =="
 # The real thing, trimmed: a genuine accounts.google.com authorize url whose redirect_uri is
 # percent-encoded character by character to hide the attacker host.
@@ -193,6 +205,17 @@ expect "a slack host is not random"      no  is_random_label app.slack
 check "no redirect param -> nothing"     ''  "$(redirect_target 'https://x.com/a?b=c')"
 check "param that is not a url"          ''  "$(redirect_target 'https://x.com/a?url=notaurl')"
 check "double-encoded still decodes"     'evil.example' "$(redirect_target 'https://x.com/a?next=https%253A%252F%252Fevil.example%252Fp')"
+# redirect_url gives the WHOLE destination, not just the host: an interstitial hands the browser a
+# url with a path, and fetching the bare host would land on a homepage the link never opened.
+GEN='https://help_genderise_biz-dot-mmemails.appspot.com/em_1atsOJAfqJEKyrGRwosi?url=https://www.linkedin.com/company/genderise-rising-as-equals/'
+check "full destination incl. path" 'https://www.linkedin.com/company/genderise-rising-as-equals/' "$(redirect_url "$GEN")"
+check "host-only view is unchanged"  'www.linkedin.com' "$(redirect_target "$GEN")"
+check "encoded destination decodes whole" 'https://evil.example/p' "$(redirect_url 'https://x.com/a?next=https%253A%252F%252Fevil.example%252Fp')"
+check "no redirect param -> no url"  ''  "$(redirect_url 'https://x.com/a?b=c')"
+check "non-url param -> no url"      ''  "$(redirect_url 'https://x.com/a?url=notaurl')"
+# A javascript:/data: payload in the parameter must never come back as something to fetch.
+check "non-http scheme is refused"   ''  "$(redirect_url 'https://x.com/a?url=javascript%3Aalert(1)')"
+
 OBF='redirect target hidden by gratuitous percent-encoding (evil.example)'
 check "obfuscated redirect is a red flag" 1 "$(count_red_flags com '' '' "$OBF" '' '')"
 check "obfuscated redirect + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://accounts.google.com/o' "$OBF" '' '' SAFE)"
@@ -239,6 +262,22 @@ expect "awsapprunner.com is shared"   yes is_tenant_suffix awsapprunner.com
 expect "pages.dev is shared"          yes is_tenant_suffix pages.dev
 expect "getnew.space is one owner"    no  is_tenant_suffix getnew.space
 expect "zumbocloud.com is one owner"  no  is_tenant_suffix zumbocloud.com
+# The vanity list is a SUBSET, and is_tenant_suffix is the union -- so a rollup stops at blogspot
+# too, which it did not when the two lists were maintained separately.
+expect "blogspot is shared for rollup" yes is_tenant_suffix blogspot.com
+expect "appspot is shared for rollup"  yes is_tenant_suffix appspot.com
+
+echo "== is_vanity_suffix (where the subdomain LABEL is a human choice) =="
+expect "appspot hands out labels"     yes is_vanity_suffix appspot.com
+expect "github.io hands out labels"   yes is_vanity_suffix github.io
+expect "blogspot hands out labels"    yes is_vanity_suffix blogspot.com
+# Kept OUT on purpose: an S3 bucket or CloudFront distribution named after its own owner is
+# ordinary, so the brand-lookalike rule must not read "acmecorp-assets.s3.amazonaws.com" titled
+# "Acme Corp" as impersonation. Still tenant suffixes above -- just not vanity ones.
+expect "s3 buckets are not vanity"    no  is_vanity_suffix amazonaws.com
+expect "cloudfront is not vanity"     no  is_vanity_suffix cloudfront.net
+expect "esp infra is not vanity"      no  is_vanity_suffix maillist-manage.in
+expect "a normal apex is not vanity"  no  is_vanity_suffix linkedin.com
 check "prior host phishing counts once"     1          "$(count_red_flags com '' '' "$PRIOR" '' '')"
 check "prior host phishing -> SUSPICIOUS"   SUSPICIOUS "$(cv false com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
 check "prior host phishing + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/other' "$PRIOR" '' '' SAFE)"
