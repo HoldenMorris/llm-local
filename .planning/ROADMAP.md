@@ -33,6 +33,25 @@ ten kits of mid-2026 and what each one gives a URL scanner:
    rollup key beside host / apex / campaign. Validate against the ledger corpus first.
 5. Registrar out of the RDAP response we already fetch, as a grouping key.
 
+### Phase: Slack scan loop  ← unblocks slack-auto-triage
+**Why:** the automated-triage plan in [phases/slack-auto-triage/INTAKE.md](phases/slack-auto-triage/INTAKE.md)
+has not moved, and its blockers are all **access**, not design: the Slack app has no authorisation
+("contact samg"), the gateway host may not have Docker, and the ledger is machine-local. Holden's
+own Slack session through Claude sidesteps all three — no app authorisation, no gateway deploy, no
+`luca-ecosystem` change, and the scan runs on the machine that already has Docker, Ollama and the
+ledger.
+
+**Goal:** a URL posted in @Luca Phishing Alerts, or sent to Holden, is checked against the ledger
+and — only if unknown — scanned, with a reply **drafted** for him to send. It drafts and never
+posts, which also settles the attribution problem the earlier intake raised: if a human sends every
+reply, `inspected` still means somebody looked.
+
+**Honest limit:** the gateway's biggest win was *suppression* — `poll_once` checks the ledger
+**before posting**, so a settled alert never reaches the channel. Claude sees a message only after
+it is posted, so this route answers the noise rather than preventing it. Suppression still needs the
+gateway; the ledger check, dedupe key and inspection wrapper built here are what it will inherit.
+See [phases/slack-scan-loop/](phases/slack-scan-loop/).
+
 ### Phase: Scan review 2026-08-12 (signal precision + ledger integrity)
 **Why:** two scans on one day exposed the same thing from opposite directions. An adult gateway
 read `SUSPICIOUS (other)` because nothing we run could name a page made entirely of pictures; a
