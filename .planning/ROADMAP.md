@@ -33,6 +33,19 @@ ten kits of mid-2026 and what each one gives a URL scanner:
    rollup key beside host / apex / campaign. Validate against the ledger corpus first.
 5. Registrar out of the RDAP response we already fetch, as a grouping key.
 
+### Phase: Scan review 2026-08-12 (signal precision + ledger integrity)
+**Why:** two scans on one day exposed the same thing from opposite directions. An adult gateway
+read `SUSPICIOUS (other)` because nothing we run could name a page made entirely of pictures; a
+genuine bank e-statement on S3 produced five false signals while the verdict stayed SAFE the whole
+time — and that one still cost a human triage, which then wrote a self-contradicting row into the
+ledger and exported a false label into the replay corpus.
+
+**Goal:** every signal we print has a known precision, the vision model's new ADULT claim is
+measured rather than assumed, and a settled row cannot quietly contradict itself. Everything is
+answerable from artifacts already on disk (293 cache entries, ~290 screenshots, 147 labelled URLs)
+— no new scans of live infrastructure.
+See [phases/scan-review-2026-08-12/](phases/scan-review-2026-08-12/).
+
 ### Phase: Anti-bot rendering (headful + xvfb)
 **Why:** Cloudflare Turnstile and similar anti-bot challenges gate the real credential page
 from our headless scraper (e.g. `zbeem.top/…/login.php` behind Turnstile). Headless Chrome from
