@@ -164,6 +164,22 @@ check "kit signature counts once"        1          "$(count_red_flags com '' ''
 check "kit signature -> SUSPICIOUS"      SUSPICIOUS "$(cv false com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
 check "kit signature + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
 
+echo "== browser-in-the-middle (the page relays instead of submitting) =="
+# A BitM kit never submits: socket.io streams the victim's input to a backend browser and patches
+# the DOM back, so off-domain form action / exfil host / obfuscated call all see nothing. The
+# socket is the handle that survives the kit renaming its scripts -- but some legitimate SPAs open
+# one on a signed-out page, so it is capped like the signals above. The kit signature is a counted
+# flag and is what reaches DANGEROUS.
+WS='Credential page holds a WebSocket to its own origin (evil.test) - input is relayed live rather than submitted (Browser-in-the-Middle)'
+BITMKIT='Known phishing kit: BitM relay (Socket.IO + DOM diffing) (build artifact "socket.io")'
+check "websocket is not a red flag"      0          "$(count_red_flags com '' '' "$WS" '' '')"
+check "websocket -> SUSPICIOUS"          SUSPICIOUS "$(cv false com '' '' 'https://x.com/' "$WS" '' '' SAFE)"
+check "websocket + login stays SUSPICIOUS" SUSPICIOUS "$(cv true com '' '' 'https://x.com/' "$WS" '' '' SAFE)"
+check "websocket never downgrades"       DANGEROUS  "$(cv false com '' '' 'https://x.com/' "$WS" '' '' DANGEROUS)"
+# The full BitM page: kit signature (counted) + socket + credential form.
+check "bitm kit counts once"             1          "$(count_red_flags com '' '' "$BITMKIT, $WS" '' '')"
+check "bitm kit + login -> DANGEROUS"    DANGEROUS  "$(cv true com '' '' 'https://x.com/' "$BITMKIT, $WS" '' '' SAFE)"
+
 echo "== anti-analysis javascript (the kit checking whether it is talking to us) =="
 # Capped like the other "this is bad company, not proof of theft" signals: SUSPICIOUS, excluded
 # from the red-flag count, so commercial bot protection on a real login page cannot reach DANGEROUS.

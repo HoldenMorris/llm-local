@@ -199,6 +199,23 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     req.continue();
   });
 
+  // WebSocket connections. page.on('request') never fires for the WSS upgrade, so ask CDP
+  // directly. This is the one handle on a Browser-in-the-Middle kit: the page is a thin client
+  // for a browser the attacker drives, so it never submits anything. Every check that looks for
+  // theft -- off-domain form action, exfil host, obfuscated network call -- sees nothing, because
+  // input is relayed over the socket and the DOM is patched back. A renamed script file defeats
+  // the kit signature below; the socket is the part it cannot do without.
+  // ponytail: attach mode connects to an ALREADY-loaded tab, so a socket opened before we got
+  // there raises no event and this reads empty. Re-navigate that tab if you need it.
+  const webSockets = [];
+  try {
+    const cdp = await page.createCDPSession();
+    await cdp.send('Network.enable');
+    cdp.on('Network.webSocketCreated', e => {
+      if (webSockets.length < 20 && e && e.url) webSockets.push(String(e.url).slice(0, 300));
+    });
+  } catch {}
+
   // Capture HTTP "Refresh:" headers on document hops -- a silent redirect that never
   // appears as a 3xx Location, used by cloakers. Collected across every hop, since the
   // intermediate gate (not the landed page) is usually what carries it.
@@ -563,6 +580,11 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     // Kratos ships these two svgs together on its login page. Either one alone is too weak, and
     // next.php/save.php alone is a path half the PHP web could use.
     { name: 'Kratos', all: ['barr.svg', 'lg.svg'] },
+    // Browser-in-the-Middle: socket.io relays the victim's keystrokes to a backend browser and
+    // domdiffer (from fiduswriter/diffDOM) patches the returned DOM back into the page. Same
+    // reasoning as Kratos above -- neither token is a kit token on its own, since chat apps ship
+    // socket.io and the real fiduswriter ships diffDOM, so it has to be BOTH on one page.
+    { name: 'BitM relay (Socket.IO + DOM diffing)', all: ['socket.io', 'domdiffer'] },
   ];
   for (const kit of kitSignatures) {
     if (kit.not && (apexDomain === kit.not || domain.endsWith('.' + kit.not))) continue;
@@ -572,6 +594,18 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     if (matched.length)
       smells.push(`Known phishing kit: ${kit.name} (build artifact "${matched[0]}")`);
   }
+
+  // A credential page holding a socket to its OWN origin does not submit -- it streams. That is
+  // the Browser-in-the-Middle shape, and it survives the kit renaming every script file above.
+  // Only same-origin counts: a third-party socket is a chat widget (Intercom, Zendesk, Crisp) on
+  // a page that happens to have a login, which is ordinary. Even so it is capped at SUSPICIOUS in
+  // verdict.sh, because some legitimate SPAs open one; the kit signature is what reaches
+  // DANGEROUS. Host only, no commas -- verdict.sh splits this list on commas to count flags.
+  const wsSameOrigin = [...new Set(webSockets
+    .map(u => { try { return new URL(u).host.toLowerCase(); } catch { return ''; } })
+    .filter(h => h && sameSite(h.split(':')[0])))];
+  if (features.hasLoginForm && wsSameOrigin.length)
+    smells.push(`Credential page holds a WebSocket to its own origin (${wsSameOrigin[0]}) - input is relayed live rather than submitted (Browser-in-the-Middle)`);
 
   // The padding itself is a signal, not just an obstacle. A handful of zero-width characters is
   // ordinary (emoji joiners, CJK line-break hints, a stray BOM), so only bulk padding counts --
@@ -813,6 +847,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     },
     thirdPartyDomains,
     exfilDomains,
+    webSockets,
     loginLinks,
     suspiciousJs: jsSmells,
     phishingSmells: smells,

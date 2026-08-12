@@ -47,6 +47,14 @@ signal earns. A login page plus an off-CDN third-party host is SUSPICIOUS, not D
 Reuse the upstream filtering, such as the `cdnRe` regex in `page-fetch.sh`, so legit CDNs and
 captchas do not trip the floor.
 
+### Where new detection ideas come from
+
+Joe Security publishes deep kit teardowns and has a working feed at **`https://www.joesecurity.org/rss`**
+(the `/blog/feed` and `/blog/rss` paths return the SPA shell, not XML). Recent items map directly onto
+things this toolkit already reasons about: Browser-in-the-Middle relays, sandbox-aware anti-analysis,
+access-code-gated delivery chains. Read it for the **mechanism**, then ask what deterministic artifact
+survives a rebuild — that is the only part worth a signature.
+
 ### Recommended models (CPU-only laptop: 14 cores, 30GB RAM, no GPU)
 
 | Role | Model | Notes |
@@ -396,7 +404,8 @@ not 3B.
 | Urgency language | "suspended", "verify now", "24 hours", and similar |
 | Hidden form fields | More than 3 hidden inputs |
 | Sensitive field names | ssn, credit_card, cvv, routing, and similar |
-| Known phishing kit | Attackers deploy **kits**, and a kit leaks its build. Brand imagery changes per campaign; the scraped design-system class, the hard-coded asset filename and the invented POST field do not, because changing them means rebuilding the kit. Matched against the page markup (classes, hidden input names, asset filenames, inline scripts) **after** invisible-character stripping. Table in `page-fetch.sh` (`kitSignatures`): 1Phish, Tycoon2FA, Kratos. Every entry needs a token distinctive on its own — a build hash, an invented field name, a pair of filenames — never a generic path like `login.php`, and `not` exempts the brand that legitimately owns the artifact (1Password's real site carries its own design-system classes). One red flag: SUSPICIOUS alone, DANGEROUS with a credential form. Provenance for each token is in `.planning/phases/kit-fingerprinting/RESEARCH.md` |
+| Browser-in-the-Middle relay | A **credential page holding a WebSocket to its own origin**. A BitM kit never submits: Socket.IO streams the victim's keystrokes to a browser the attacker drives, and DOM patches come back. So off-domain form action, exfil host and obfuscated network call all see **nothing** — the checks this toolkit leans on are blind by construction. `page.on('request')` never sees the WSS upgrade either, so the socket is read straight off CDP (`Network.webSocketCreated`), which fires on creation: a kit whose backend is already dead still reveals itself. Only **same-origin** counts — a third-party socket is a chat widget (Intercom, Zendesk, Crisp) on a page that happens to have a login. Capped at SUSPICIOUS and excluded from `count_red_flags`, because some legitimate SPAs open one on a signed-out page; the kit signature below is what reaches DANGEROUS. Source: [Joe Security](https://www.joesecurity.org/blog/2909557602925734728) |
+| Known phishing kit | Attackers deploy **kits**, and a kit leaks its build. Brand imagery changes per campaign; the scraped design-system class, the hard-coded asset filename and the invented POST field do not, because changing them means rebuilding the kit. Matched against the page markup (classes, hidden input names, asset filenames, inline scripts) **after** invisible-character stripping. Table in `page-fetch.sh` (`kitSignatures`): 1Phish, Tycoon2FA, Kratos, BitM relay (`socket.io` **and** `domdiffer` on one page — neither is a kit token alone, since chat apps ship Socket.IO and the real fiduswriter ships diffDOM, which is why this entry uses `all` like Kratos). Every entry needs a token distinctive on its own — a build hash, an invented field name, a pair of filenames — never a generic path like `login.php`, and `not` exempts the brand that legitimately owns the artifact (1Password's real site carries its own design-system classes). One red flag: SUSPICIOUS alone, DANGEROUS with a credential form. Provenance for each token is in `.planning/phases/kit-fingerprinting/RESEARCH.md` |
 | Invisible-character padding | Zero-width characters (U+200B-200D, U+2060-2064, U+FEFF, U+00AD) sprinkled through the page. They exist for one reason: to break the string matching that every scanner does — `Micro<zwsp>soft` renders identically and matches nothing. **Stripped before every text comparison**, so brand and urgency matching see through it, and more than 20 of them is itself a smell. Cephas pads its source this way by design and Sneaky2FA breaks up UI labels with it |
 | Clipboard hijacking | `oncopy`, clipboard API usage |
 | Right-click disabled | `oncontextmenu` blocked |

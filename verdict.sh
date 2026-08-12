@@ -322,7 +322,7 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry' | grep -c .) ))
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin' | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it
@@ -427,6 +427,14 @@ classify_verdict() {
     # somebody pulled the plug on this domain, not that this page was harvesting.
     local rdaphold=""
     printf '%s' "$smells" | grep -qi 'domain suspended at the registry' && rdaphold=1
+    # A credential page streaming over its own WebSocket instead of submitting: the
+    # Browser-in-the-Middle shape, where the page is a thin client for a browser the attacker
+    # drives. It is the one handle on that kit that survives a rename of every script file, but
+    # some legitimate SPAs do open a socket on a signed-out page, so it is capped at SUSPICIOUS
+    # and excluded from count_red_flags. The kit signature (Socket.IO + DOM diffing together) is
+    # a counted flag and is what carries a real BitM page to DANGEROUS.
+    local bitm=""
+    printf '%s' "$smells" | grep -qi 'holds a websocket to its own origin' && bitm=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -440,9 +448,9 @@ classify_verdict() {
         floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
-    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ] || [ -n "$rdaphold" ]; then
+    elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ] || [ -n "$rdaphold" ] || [ -n "$bitm" ]; then
         floor=SUSPICIOUS
-        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}${rdaphold:+ + the domain is suspended at the registry (RDAP hold)}"
+        reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}${rdaphold:+ + the domain is suspended at the registry (RDAP hold)}${bitm:+ + credential page relaying over its own websocket (browser-in-the-middle)}"
     fi
 
     if [ -n "$floor" ] && [ "$(_severity "$floor")" -gt "$(_severity "$llm")" ]; then
