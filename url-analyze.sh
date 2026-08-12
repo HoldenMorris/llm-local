@@ -226,6 +226,11 @@ if [[ "$AUTHORITY" == *@* ]]; then USERINFO=${AUTHORITY%@*}; AUTHORITY=${AUTHORI
 DOMAIN=${AUTHORITY%%:*}
 PORT=${AUTHORITY##*:}; [ "$PORT" = "$AUTHORITY" ] && PORT=443
 TLD=$(echo "$DOMAIN" | grep -oE '\.[a-z]+$' | tr -d '.')
+# What the registrant actually chose, and what the public suffix operator supplied (psl.sh). Every
+# check that reads a hostname as a WORD -- typosquat, subdomain depth, entropy -- must judge the
+# head alone, and the fast-flux check below must know whose DNS it is looking at.
+DOMAIN_HEAD=$(head_of "$DOMAIN")
+DOMAIN_SUFFIX=$(suffix_of "$DOMAIN")
 
 # All signals collect here and print as one bullet list before the verdict, instead of
 # being sprinkled through the phases. add_signal appends.
@@ -279,15 +284,22 @@ echo "$TLD" | grep -qiE "^($BRANDS)$" && ! echo "$TLD" | grep -qiE '^ing$' && BR
 #    [a-z]{2} = any ccTLD. Deliberately NOT any TLD: paypal.top / paypal.xyz must still flag.
 echo "$BRAND_SLD" | grep -qiE "^($BRANDS)$" \
     && echo "$TLD" | grep -qiE '^(com|org|net|io|[a-z]{2})$' && BRAND_OWNED=1
-if [ "$BRAND_OWNED" -eq 0 ] && echo "$DOMAIN" | grep -qiE "$TSQ"; then
-    MATCHED=$(echo "$DOMAIN" | grep -oiE "$TSQ" | grep -oiE "($BRANDS)" | head -1)
+# 3. Only what the REGISTRANT chose can be a typosquat. The public suffix is the provider's own
+#    name, so matching the whole hostname read `wfse.s3.us-east-1.amazonaws.com` -- an ordinary S3
+#    bucket -- as "contains 'amazon'". head_of drops the suffix, and a kit still flags, because
+#    `paypal-login.s3.amazonaws.com` puts its brand in the bucket name, left of the suffix.
+if [ "$BRAND_OWNED" -eq 0 ] && echo "$DOMAIN_HEAD" | grep -qiE "$TSQ"; then
+    MATCHED=$(echo "$DOMAIN_HEAD" | grep -oiE "$TSQ" | grep -oiE "($BRANDS)" | head -1)
     add_signal "Possible typosquatting: contains '$MATCHED' but domain is $DOMAIN"
 fi
 
-# ponytail: Excessive subdomains (often used to hide real domain)
-SUBDOMAIN_COUNT=$(echo "$DOMAIN" | tr '.' '\n' | wc -l)
-if [ "$SUBDOMAIN_COUNT" -gt 4 ]; then
-    add_signal "Excessive subdomains ($SUBDOMAIN_COUNT levels)"
+# ponytail: Excessive subdomains (often used to hide real domain). Counted on the head for the same
+# reason: the depth that hides a domain is the depth the registrant added, and AWS regional
+# endpoints are structurally deep before anyone registers anything. >3 here == the old >4 on a
+# single-label suffix, and it is finally right for co.uk and s3.<region>.amazonaws.com alike.
+SUBDOMAIN_COUNT=$(echo "$DOMAIN_HEAD" | tr '.' '\n' | grep -c .)
+if [ "$SUBDOMAIN_COUNT" -gt 3 ]; then
+    add_signal "Excessive subdomains ($SUBDOMAIN_COUNT levels below the public suffix)"
 fi
 
 # ponytail: Homograph detection (mixed scripts in domain)
@@ -296,8 +308,10 @@ if echo "$DOMAIN" | grep -qP '[^\x00-\x7F]'; then
 fi
 
 # ponytail: Random-looking domain (high entropy). is_random_label lives in verdict.sh so the
-# redirect-target check below judges a host by exactly the same rule.
-DOMAIN_BASE=$(echo "$DOMAIN" | sed 's/\.[^.]*$//' | tr -d '.-')
+# redirect-target check below judges a host by exactly the same rule. Same head_of fix: stripping
+# only the last label left the provider's labels glued in, and `s3` + `us-east-1` supplied both
+# digits that is_random_label asks for. It strips dots and dashes itself.
+DOMAIN_BASE="$DOMAIN_HEAD"
 if is_random_label "$DOMAIN_BASE"; then
     add_signal "Random-looking domain: $DOMAIN_BASE"
 fi
@@ -499,8 +513,15 @@ if [ -n "$EXPIRY_DATE" ] && [ -z "$RDAP_HOLD" ]; then
         echo_grey "- Registration expires: $EXPIRY_DATE${RDAP_STATUS:+ (status: $RDAP_STATUS)}"
     fi
 fi
-[ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records (suspicious)"
-[ -n "$TTL" ] && [ "$TTL" -lt 300 ] 2>/dev/null && add_signal "Low TTL: ${TTL}s (fast-flux indicator)"
+# Fast-flux is a claim about the REGISTRANT's DNS: they are rotating hosts to stay ahead of a
+# takedown. On shared cloud/CDN plumbing (an S3 endpoint, a CloudFront distribution) the records
+# are the provider's load balancer, and a big A set with a sub-300s TTL is simply how it works --
+# so the claim cannot be made there. Judged on the public SUFFIX, not the apex: `efast.space`
+# behind Cloudflare is still the registrant's own zone and still flags.
+if ! is_tenant_infra "$DOMAIN_SUFFIX"; then
+    [ "${A_RECORDS:-0}" -gt 5 ] 2>/dev/null && add_signal "Fast-flux: $A_RECORDS A records (suspicious)"
+    [ -n "$TTL" ] && [ "$TTL" -lt 300 ] 2>/dev/null && add_signal "Low TTL: ${TTL}s (fast-flux indicator)"
+fi
 
 # Don't spin up the fetch container if the domain has no DNS A record -- it would just
 # time out. Static + DNS info above still stands. (data: URLs need no DNS, so exempt them.)

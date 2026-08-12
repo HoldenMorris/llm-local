@@ -33,22 +33,22 @@ psl_ensure() {
     [ -s "$PSL_FILE" ]
 }
 
-# apex_of <host> -> the registrable domain: the public suffix plus the one label below it.
-# Echoes the host unchanged when the host IS a public suffix (za.com, github.io, co.uk) -- there
-# is no registrable domain there, and a caller must not read that as an owned apex.
-apex_of() {
+# suffix_of <host> -> the public suffix: the tail NOBODY registers (com, co.uk, github.io,
+# s3.us-east-1.amazonaws.com). Everything a brand or entropy check may judge lies to its left --
+# see head_of. apex_of is this plus the one label below it.
+suffix_of() {
     local host="${1,,}"
     host="${host%.}"
     [ -z "$host" ] && return 0
 
     if ! psl_ensure; then
-        # Fallback = the pre-PSL heuristic: last two labels, or three when the second-to-last is a
-        # known ccTLD second level, so barclays.co.uk stays intact. Wrong for za.com exactly as
-        # before, which is the point: losing the list must change nothing else.
+        # Fallback = the pre-PSL heuristic's implied suffix: a known ccTLD second level (co.uk),
+        # else the last label. apex_of below then rebuilds exactly what it used to return, so
+        # losing the list still changes nothing else.
         if printf '%s' "$host" | grep -qE '\.(co|com|net|org|ac|gov|edu|ne|or|in)\.[^.]+$'; then
-            printf '%s' "$host" | grep -oE '[^.]+\.[^.]+\.[^.]+$'
-        else
             printf '%s' "$host" | grep -oE '[^.]+\.[^.]+$'
+        else
+            printf '%s' "$host" | grep -oE '[^.]+$'
         fi
         return 0
     fi
@@ -69,9 +69,33 @@ apex_of() {
     done
     # No rule matched: the PSL's implicit "*" rule makes the last label the suffix.
     [ -z "$suffix" ] && suffix="${host##*.}"
-    [ "$suffix" = "$host" ] && { printf '%s' "$host"; return 0; }
+    printf '%s' "$suffix"
+}
 
-    local head="${host%.$suffix}"
+# head_of <host> -> the host with its public suffix removed: the part the REGISTRANT chose, and
+# the ONLY part a brand or entropy check may judge. `wfse.s3.us-east-1.amazonaws.com` is `wfse`,
+# not `wfses3useast1amazonaws` -- gluing the provider's own labels on manufactured both a fake
+# amazon typosquat and a fake random domain out of an ordinary S3 bucket. Empty when the host IS
+# a public suffix, because then the registrant chose nothing.
+head_of() {
+    local host="${1,,}" suffix
+    host="${host%.}"
+    [ -z "$host" ] && return 0
+    suffix=$(suffix_of "$host")
+    [ "$suffix" = "$host" ] && return 0
+    printf '%s' "${host%.$suffix}"
+}
+
+# apex_of <host> -> the registrable domain: the public suffix plus the one label below it.
+# Echoes the host unchanged when the host IS a public suffix (za.com, github.io, co.uk) -- there
+# is no registrable domain there, and a caller must not read that as an owned apex.
+apex_of() {
+    local host="${1,,}" suffix head
+    host="${host%.}"
+    [ -z "$host" ] && return 0
+    suffix=$(suffix_of "$host")
+    [ "$suffix" = "$host" ] && { printf '%s' "$host"; return 0; }
+    head="${host%.$suffix}"
     printf '%s.%s' "${head##*.}" "$suffix"
 }
 
@@ -95,5 +119,19 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     t za.com                    za.com          # a bare public suffix has no registrable domain
     t co.uk                     co.uk
     t localhost                 localhost       # single label, no TLD
+
+    h() { # h <host> <expected head>
+        local got; got=$(head_of "$1")
+        if [ "$got" = "$2" ]; then p=$((p+1)); printf 'ok   head %-33s -> %s\n' "$1" "$got"
+        else f=$((f+1)); printf 'FAIL head %-33s -> %s (want %s)\n' "$1" "$got" "$2"; fi
+    }
+    # The registrant chose one word here. Judging the whole hostname invented an amazon typosquat
+    # AND a random domain out of `wfses3useast1amazonaws`.
+    h wfse.s3.us-east-1.amazonaws.com  wfse
+    h xk51.efast.space          xk51.efast      # still the full lure: entropy check must see this
+    h www.google.com            www.google
+    h accounts.barclays.co.uk   accounts.barclays
+    h user.github.io            user
+    h za.com                    ""              # host IS a public suffix: registrant chose nothing
     echo; echo "passed $p, failed $f"; [ "$f" -eq 0 ]
 fi

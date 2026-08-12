@@ -110,6 +110,20 @@ is_tenant_suffix() {
     case " $(printf '%s' "$TENANT_SUFFIXES $VANITY_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
+# is_tenant_infra <public-suffix> -> exit 0 if this public suffix IS shared cloud/CDN plumbing,
+# so the DNS behind it belongs to the provider and not to whoever put a page on it. Tail match,
+# not the exact-apex match above, because the PSL spells AWS out per region
+# (s3.us-east-1.amazonaws.com) while the list names the apex once. co.uk and com.au are registry
+# suffixes and match nothing here, which is the whole point of asking the list instead of
+# counting labels.
+is_tenant_infra() {
+    local t
+    for t in $TENANT_SUFFIXES $VANITY_SUFFIXES; do
+        case "$1" in "$t"|*".$t") return 0 ;; esac
+    done
+    return 1
+}
+
 # url_decode <string> -> one percent-decoding pass. %XX only; a bare % is left alone, and literal
 # backslashes are escaped first so printf %b cannot reinterpret them.
 url_decode() {

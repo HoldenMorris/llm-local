@@ -262,6 +262,16 @@ expect "awsapprunner.com is shared"   yes is_tenant_suffix awsapprunner.com
 expect "pages.dev is shared"          yes is_tenant_suffix pages.dev
 expect "getnew.space is one owner"    no  is_tenant_suffix getnew.space
 expect "zumbocloud.com is one owner"  no  is_tenant_suffix zumbocloud.com
+
+echo "== is_tenant_infra (whose DNS is this?) =="
+# The FP: an S3 endpoint's 8 A records and 297s TTL are the load balancer, not fast-flux.
+expect "regional s3 endpoint is infra"  yes is_tenant_infra s3.us-east-1.amazonaws.com
+expect "bare amazonaws.com is infra"    yes is_tenant_infra amazonaws.com
+expect "cloudfront is infra"            yes is_tenant_infra cloudfront.net
+expect "co.uk is a registry, not infra" no  is_tenant_infra co.uk
+expect "space is a registry, not infra" no  is_tenant_infra space
+# Tail match must not swallow a lookalike: notamazonaws.com is somebody else's domain.
+expect "suffix must end on a boundary"  no  is_tenant_infra notamazonaws.com
 # The vanity list is a SUBSET, and is_tenant_suffix is the union -- so a rollup stops at blogspot
 # too, which it did not when the two lists were maintained separately.
 expect "blogspot is shared for rollup" yes is_tenant_suffix blogspot.com
