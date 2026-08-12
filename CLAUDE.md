@@ -49,11 +49,17 @@ captchas do not trip the floor.
 
 ### Where new detection ideas come from
 
-Joe Security publishes deep kit teardowns and has a working feed at **`https://www.joesecurity.org/rss`**
-(the `/blog/feed` and `/blog/rss` paths return the SPA shell, not XML). Recent items map directly onto
-things this toolkit already reasons about: Browser-in-the-Middle relays, sandbox-aware anti-analysis,
-access-code-gated delivery chains. Read it for the **mechanism**, then ask what deterministic artifact
-survives a rebuild — that is the only part worth a signature.
+`./intel-feed.sh` reads Joe Security's feed and prints what is new since the last run, each item
+tagged with the detections we already have — or `NO MATCHING DETECTION`. Read those for the
+**mechanism**, then ask what deterministic artifact survives a rebuild: that is the only part worth
+a signature.
+
+Two things about the feed itself, both learned the hard way. The working URL is
+**`https://www.joesecurity.org/rss`** — `/blog/feed` and `/blog/rss` return **200 with the SPA
+shell**, which a lenient reader would report as "no new items" forever, so the parser hard-fails on
+non-XML. And the feed is **not well-formed**: Blogger emits bare `&` in titles ("Malware & Phishing
+Analyst"), so bare ampersands are escaped before parsing. A DTD in the prolog is refused outright
+(entity-expansion DoS) rather than pulling in `defusedxml` for a document type no feed needs.
 
 ### Recommended models (CPU-only laptop: 14 cores, 30GB RAM, no GPU)
 
@@ -80,6 +86,7 @@ VLM architectures.
 | `js-signals.sh` | Extract phishing signals from deobfuscated JS (`source` it, `js_signals`) |
 | `benchmark.sh` | Email spam classification benchmark |
 | `test-verdict.sh` | Golden tests that pin the deterministic verdict core (`verdict.sh`). Pure: no LLM, no network |
+| `intel-feed.sh` | Read a threat-intel RSS feed and print what is **new since the last check**, each item tagged with the detections we already have for the mechanism it describes — or `NO MATCHING DETECTION`, which is the only line worth an hour. Matching is keywords over the whole post body, so it over-claims; the matched term is printed next to every claim so a spurious one is visible. `-a` all items, `-n` dry run, `FEED_URL=` another feed. Seen-list in `.cache/intel-feed-seen.txt` |
 | `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag (`FB_CATEGORY=<category>` records what the page is, in column 6). Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. `--host <host> [exclude-url]` prints the settled judgements for one exact host, which is how a scan reuses what the ledger already knows about it. `--settled <url>` answers "have we already looked at this?" for an **alerting pipeline**: exit **0** = settled SAFE (auto-resolve), **2** = settled bad (auto-confirm), **1** = unknown (a human must look), with one TSV line (verdict, category, scope, matched-url, note) when it knows. Only `inspected` rows answer, and the scope is the exact URL then the host — never the apex, because a wrong auto-resolve is a missed phish rather than a noisy alert. Thirty alerts in twenty minutes for a host inspected three hours earlier is how a real detection gets buried | Run `--self-test` for the self-check |
 | `psl.sh` | Public Suffix List helper. `source` it, then `apex_of <host>` (the true registrable domain), `suffix_of <host>` (the public suffix — the tail nobody registers) or `head_of <host>` (the host **minus** that suffix: the only part the registrant chose). Caches the list in `.cache/` and refreshes it every 30 days. Run `./psl.sh` for the self-check |
 | `brand-verify.sh` | Ask if the **brand's own site** links to a host. `PROVEN` suppresses a brand smell. `UNPROVEN` escalates nothing. Run `--self-test` for the self-check |
@@ -585,6 +592,7 @@ page, two webmail logins), all `ADULT: no`.
 - Docker `local-llm-webcrack` image (auto-builds on the first deobfuscation: `node:22-alpine`
   plus `webcrack`)
 - `jq`, `bc`, `dig`, `openssl`, `curl`
+- `python3` (stdlib only) — `intel-feed.sh` alone, to parse feed XML
 
 ## Skills Installed
 
