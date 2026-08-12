@@ -322,7 +322,7 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin' | grep -c .) ))
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin|bot-gate sitekey' | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it

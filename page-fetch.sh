@@ -666,6 +666,23 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   if (reallyGated && !gateMatched && (realHops.length > 1 || attach))
     smells.push(`Unrecognized bot/cloak challenge - real page gated from the scraper`);
 
+  // The one identifier a gate MUST expose to work: its sitekey. A kit-embedded Turnstile /
+  // hCaptcha / reCAPTCHA widget carries it as data-sitekey in the markup, or as ?k= / render= on
+  // the provider request. A sitekey belongs to an ACCOUNT and a kit reuses it across campaigns, so
+  // it is the same class of evidence as the SendGrid tracking blob in campaign_key: the last thing
+  // to change when the domains rotate. We were fetching the page and throwing it away.
+  // Ceiling: Cloudflare's OWN managed challenge (cdn-cgi/challenge-platform) is CF-hosted and
+  // exposes no customer sitekey -- this reads kit-deployed widgets only.
+  // Context, never a floor: a sitekey says who deployed the gate, not that the page steals.
+  const siteKeys = [...new Set([
+    ...(dezw(features.rawHtml || '').match(/data-sitekey\s*=\s*["']([^"']{8,64})["']/gi) || [])
+      .map(m => (m.match(/["']([^"']{8,64})["']/) || [])[1]),
+    ...requests.filter(r => /challenges\.cloudflare\.com|hcaptcha\.com|recaptcha/i.test(r.url))
+      .map(r => { try { const q = new URL(r.url).searchParams; return q.get('k') || q.get('sitekey') || q.get('render') || ''; } catch { return ''; } }),
+  ].map(k => (k || '').trim()).filter(k => /^[A-Za-z0-9_-]{8,64}$/.test(k) && k !== 'explicit'))];
+  if (siteKeys.length)
+    smells.push(`Bot-gate sitekey: ${siteKeys.slice(0, 3).join(' ')}`);
+
   // ponytail: silent Refresh redirects (HTTP "Refresh:" header or <meta refresh>) -- cloaker
   // gates that bounce victims without a visible 3xx Location. Flag when a url= target exists.
   const refreshHit = refreshHeaders.find(rh => /url=/i.test(rh));
@@ -848,6 +865,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     thirdPartyDomains,
     exfilDomains,
     webSockets,
+    siteKeys,
     loginLinks,
     suspiciousJs: jsSmells,
     phishingSmells: smells,

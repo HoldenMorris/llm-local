@@ -164,6 +164,15 @@ check "kit signature counts once"        1          "$(count_red_flags com '' ''
 check "kit signature -> SUSPICIOUS"      SUSPICIOUS "$(cv false com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
 check "kit signature + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
 
+SITEKEY='Bot-gate sitekey: 0x4AAAAAAABkMYinukE8nzYS'
+echo "== bot-gate sitekey (attribution, not evidence of theft) =="
+# Who deployed the gate, not that the page steals -- so it must never score. A kit reuses one
+# sitekey across campaigns, which is what makes it worth extracting at all.
+check "sitekey is not a red flag"        0          "$(count_red_flags com '' '' "$SITEKEY" '' '')"
+check "sitekey alone imposes no floor"   SAFE       "$(cv false com '' '' 'https://x.com/' "$SITEKEY" '' '' SAFE)"
+check "sitekey + login imposes no floor" SAFE       "$(cv true com '' '' 'https://x.com/' "$SITEKEY" '' '' SAFE)"
+check "sitekey does not mask a real smell" 1        "$(count_red_flags com '' '' "Urgency language detected, $SITEKEY" '' '')"
+
 echo "== browser-in-the-middle (the page relays instead of submitting) =="
 # A BitM kit never submits: socket.io streams the victim's input to a backend browser and patches
 # the DOM back, so off-domain form action / exfil host / obfuscated call all see nothing. The

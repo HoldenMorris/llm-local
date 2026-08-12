@@ -305,6 +305,18 @@ group of the launcher. Attach is interactive-only (`[ -t 0 ]`), so it never fire
 benchmarks. The tool **always prompts you before a window opens**. If Brave is missing, or you
 decline attach, or attach fails, the tool falls back to the plain "open in your browser" offer.
 
+**What a gate leaks even unsolved.** Passing the gate is the expensive fight, and the 2026
+benchmarks say it is still not winnable headless from a datacenter IP
+(`.planning/phases/anti-bot-rendering/RESEARCH-2026-08.md`). So two things are harvested instead,
+neither of which needs the gate solved: the **sitekey** of a kit-deployed Turnstile/hCaptcha/
+reCAPTCHA widget (`data-sitekey`, or `?k=`/`render=` on the provider request) — it belongs to an
+*account* and a kit reuses it across campaigns, so it is operator attribution, context-only and
+excluded from `count_red_flags`; and the **web archive**, whose lookup now also runs when a gate
+denied us, because that scan is factless in exactly the way a dead URL is. The CDX query sends
+`url=<host>/*`, the hostname alone, so no victim token leaves the box. urlscan.io would be the
+strongest source of all here — someone else's scan may have rendered what we were denied — but it
+needs the **full** URL, so it stays behind opt-in `-t` rather than firing automatically.
+
 Signal: `Operator attach: analyzed the uncloaked page past the <gate> gate`. Automated bypass
 (patched drivers, xvfb, proxies, solvers) stays on hold, because research showed it unreliable
 and high-maintenance.

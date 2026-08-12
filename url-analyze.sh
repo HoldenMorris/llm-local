@@ -1108,14 +1108,20 @@ fi
 # class. The Wayback CDX index is keyless and answers what the failed fetch could not: how long
 # did this host exist, and did any crawler ever see it. A kit that was up for six days and never
 # captured looks nothing like a four-year-old business whose server happens to be down today.
-# Gated on the page being dead, so a normal scan (and every benchmark run, which scans live URLs)
+# Also runs when a bot gate denied us the real page: that scan is factless for exactly the same
+# reason, and the archive may hold a capture from BEFORE the gate went up, or one a crawler took
+# that got through. Passing the gate is the expensive fight (see RESEARCH-2026-08.md); reading what
+# somebody already captured is free and it is code we already ship.
+# Gated on dead-or-denied, so a normal scan (and every benchmark run, which lands on live pages)
 # pays nothing. Cached per URL like every other lookup, and -r refreshes it.
 # ponytail: informational only -- an archive gap is NOT evidence of phishing (most of the web is
 # uncrawled), so this feeds the analyst and the LLM and never the safety floor.
 WAYBACK_LLM=""
-if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ]; then
+_gate_denied=""
+printf '%s' "$SMELLS" | grep -qi 'gated from the scraper' && _gate_denied=1
+if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ] || [ -n "$_gate_denied" ]; then
     echo ""
-    echo "${BOLD}Web archive (no live page to read)${RESET}"
+    echo "${BOLD}Web archive (${_gate_denied:+bot gate denied us the real page}${_gate_denied:-no live page to read})${RESET}"
     if [ ! -s "$CACHE_DIR/wayback.json" ]; then
         curl -s --max-time 25 -G "http://web.archive.org/cdx/search/cdx" \
             --data-urlencode "url=$DOMAIN/*" --data-urlencode "output=json" \
