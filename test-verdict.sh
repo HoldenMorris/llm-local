@@ -300,6 +300,10 @@ check "nps -> rating"                 rating        "$(co SAFE false 'https://x.
 check "utm link -> marketing"         marketing     "$(co SAFE false 'https://x.com/p?utm_source=mail' '' '')"
 check "plain page -> content"         content       "$(co SAFE false 'https://x.com/about' '' '')"
 check "every guess is in the vocabulary" yes "$(is_category "$(co SAFE false 'https://x.com/about' '' '')" && echo yes)"
+check "vision sees porn -> adult"     adult         "$(co SUSPICIOUS false 'https://xk51.efast.space/Qz' '' '' 'No swiping. No ghosting.' 'BRAND: none. PASSWORD: no. ADULT: yes')"
+check "adult on a safe page too"      adult         "$(co SAFE false 'https://x.com/about' '' '' '' 'ADULT: yes')"
+check "credential form outranks adult" phishing     "$(co DANGEROUS true 'https://x.cfd/' '' '' '' 'ADULT: yes')"
+check "ADULT: no changes nothing"     other         "$(co SUSPICIOUS false 'https://x.com/' '' '' '' 'BRAND: none. PASSWORD: no. ADULT: no')"
 check "UNCLEAR gets no category"      ""            "$(co UNCLEAR false 'https://x.com/survey' '' '')"
 check "empty verdict gets no category" ""           "$(co '' false 'https://x.com/survey' '' '')"
 

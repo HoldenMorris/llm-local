@@ -29,8 +29,13 @@ is_category() { case " $VERDICT_CATEGORIES " in *" $1 "*) return 0 ;; *) return 
 # overrides it, and it is deliberately NOT fed back to the LLM (it is derived from the same
 # signals the LLM already has, so it would only give a small model more to miscount).
 category_of() {
-    local verdict="$1" has_login="$2" url="$3" smells="$4" deobfus="$5" title="${6:-}"
-    local text="$url $title"
+    local verdict="$1" has_login="$2" url="$3" smells="$4" deobfus="$5" title="${6:-}" vision="${7:-}"
+    local text="$url $title" adult=""
+    # The VLM looked at the screenshot and saw explicit imagery. This is the one category with no
+    # trace in scraped text -- the page below titles itself "No swiping. No ghosting." -- so it is
+    # the only one worth reading out of the vision note. It never outranks a credential form: an
+    # adult-baited harvester is still, first, after the password.
+    printf '%s' "$vision" | grep -qiE 'ADULT:?[[:space:]]*yes' && adult=1
     # UNCLEAR / empty: the scan could not judge the page (blank fetch, dead host, no LLM), so it
     # does not get to name it either. A category is a claim, and we have nothing to claim from.
     case "$verdict" in SAFE|SUSPICIOUS|DANGEROUS) ;; *) return 0 ;; esac
@@ -42,17 +47,21 @@ category_of() {
            || printf '%s' "$deobfus" | grep -qi 'off-domain URL'; then
             echo phishing; return 0
         fi
+        [ -n "$adult" ] && { echo adult; return 0; }
         # No form to steal from, so the click itself is the payload: it confirms a live address.
         is_unsub_url "$url" && { echo email-harvest; return 0; }
         printf '%s' "$smells" | grep -qi 'link-redirection service' && { echo spam; return 0; }
         # Money rather than credentials -- a wallet address is the payment rail of a scam page.
         printf '%s' "$deobfus" | grep -qi 'crypto wallet' && { echo scam; return 0; }
         printf '%s' "$smells" | grep -qiE 'crypto wallet|flagged malicious' && { echo scam; return 0; }
-        # adult and malware have no reliable signal in what the scraper extracts, so they are never
-        # guessed here -- they only ever come from an analyst answer or a deep inspection.
+        # malware has no reliable signal in what the scraper extracts, so it is never guessed here
+        # -- it only ever comes from an analyst answer or a deep inspection. adult used to be in
+        # the same boat, and now arrives from the VLM above, because the scraper reads text and
+        # this class is entirely pictures.
         echo other; return 0
     fi
     # Benign shapes. Same evidence, read for what the page is FOR rather than what it steals.
+    [ -n "$adult" ] && { echo adult; return 0; }
     [ "$has_login" = "true" ] && { echo login; return 0; }
     is_unsub_url "$url" && { echo unsubscribe; return 0; }
     # \brate\b, not bare rate: corporate/accurate would swallow half the web

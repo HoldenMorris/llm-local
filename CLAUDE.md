@@ -53,7 +53,7 @@ captchas do not trip the floor.
 |------|-------|-------|
 | Verdict LLM | `qwen2.5:1.5b` | URL benchmark (`14c-30g-cpu`): 100% (5/5), ~18s avg (~4-5s on clean pages), ~2× faster than gemma2:2b. Non-reasoning. `-m auto` picks it. |
 | Runner-up | `gemma2:2b` | Also 100% on the URL corpus, but ~2× slower. Best on the email-spam benchmark (`benchmark.sh` plus `prompts/focused.txt`, 96%). |
-| Vision | `openbmb/minicpm-v4.6:q4_K_M` | The only small VLM. ~50s per screenshot. Login-form escalation only. |
+| Vision | `openbmb/minicpm-v4.6:q4_K_M` | The only small VLM. ~50s per screenshot. Brand clone, missed credential input, and adult imagery (Phase 3.7). |
 | Avoid for verdict | `llama3.2:3b`, `minicpm5` (1B), `minicpm4.1` (8B) | `llama3.2:3b` false-positived a real login page. Reasoning models whiff (1B) or take ~2min (8B). |
 
 Ollama runs in the `llm-spam-test` container, which needs version 0.31 or later for the newer
@@ -143,9 +143,13 @@ free text does not group:
 `category_of` (also `verdict.sh`, pure and golden-tested) makes the deterministic guess from
 evidence already extracted: a credential form means `phishing`, a mailing-list endpoint means
 `email-harvest` when the verdict is bad and `unsubscribe` when it is not, a wallet address or a
-VirusTotal hit means `scam`, and the benign shapes fall out of the URL and the page title. Two
-rules keep it honest: `adult` and `malware` have no reliable signal in what the scraper extracts,
-so they are **never** guessed and only ever come from a person or an inspection; and an UNCLEAR
+VirusTotal hit means `scam`, and the benign shapes fall out of the URL and the page title.
+`adult` is the one category with **no** trace in scraped text — the page is nothing but pictures,
+and this class titles itself "No swiping. No ghosting." — so it comes from the VLM's `ADULT: yes`
+line (see the vision escalation below) and from nowhere else. A credential form still outranks it:
+an adult-baited harvester is `phishing` first. Two rules keep the rest honest: `malware` has no
+reliable signal in what the scraper extracts,
+so it is **never** guessed and only ever comes from a person or an inspection; and an UNCLEAR
 verdict gets **no** category, because a category is a claim and a scan that could not judge the
 page has nothing to claim from. The guess is not fed back to the LLM — it is derived from signals
 the LLM already has, so it would only give a small model more to miscount.
@@ -489,6 +493,37 @@ An off-domain exfil, a JS redirect, or a crypto address counts as a deterministi
 floors to DANGEROUS. The escalation is gated: it only runs on obfuscation markers, and it caches
 per URL. `-D` skips it. To run the deobfuscator standalone: `./js-deobfuscate.sh <file.js>`.
 
+### Phase 3.7: Vision escalation (what the DOM cannot see)
+
+The VLM reads the screenshot and answers three lines: `BRAND` (visual clone of a brand the landed
+domain does not own), `PASSWORD` (a credential input the DOM missed — kits use non-password inputs
+and shadow DOM), and `ADULT` (pornographic imagery). It is the most expensive step in a scan
+(~50s on CPU), so it is gated on three triggers, caches in `vision.txt`, and `-V` turns it off:
+
+1. A detected login form.
+2. A form plus login-ish/exfil context in the title, URL or smells.
+3. **A formless page that already carries a red flag.** Nothing on it to steal, so the only open
+   question is *what it is* — and this is where `category_of` used to shrug and say `other`.
+
+Trigger 3 is what makes the `adult` category possible: an adult gateway is nothing but images, so
+the scraped text says nothing (`xk51.efast.space` titles itself "No swiping. No ghosting. Just
+something that clicks.") and the DOM has zero forms, which disarms every other escalation. The
+screenshot is the only witness left.
+
+Trigger 3 is **category-only**, and that cap is load-bearing rather than tidy. The `PASSWORD` and
+`BRAND` answers move the verdict (they can set `HAS_LOGIN` and push a red flag into `SMELLS`), and
+a weak VLM says `PASSWORD: yes` readily — on a page with **zero forms** that claim is not credible,
+because there is nothing to submit. Ungated it made a `github.io` environment newsletter DANGEROUS
+(phishing) off one hallucinated field. Triggers 1 and 2 both require a form, so restricting the two
+severity-bearing answers to them leaves their behaviour byte-identical.
+
+`ADULT: yes` therefore sets the category and never the floor, which is also the honest reading:
+porn is not phishing, and the severity on that page still comes from the 0-day domain, the
+fast-flux TTL and the `atob()` redirect that earned the look in the first place. The prompt carves out lingerie, swimwear and dating photos, so
+the soft dating-lure sibling on the same campaign (fully clothed, "Thousands of real women") answers
+`ADULT: no` — verified, along with four ordinary pages (a bank e-statement, a competition landing
+page, two webmail logins), all `ADULT: no`.
+
 ### Phase 4: LLM Analysis
 
 - Reads all the signals in context
@@ -528,7 +563,7 @@ per URL. `-D` skips it. To run the deobfuscator standalone: `./js-deobfuscate.sh
 | Var | Default | Effect |
 |-----|---------|--------|
 | `BRAND_MATCH` | `strict` | Brand impersonation match scope. `strict` = title and form action. `body` = also body text |
-| `VISION_MODEL` | `openbmb/minicpm-v4.6:q4_K_M` | VLM for the login-form visual brand check. Set it to `claude-<id>` (for example `claude-haiku-4-5`) to read the screenshot through the Anthropic API instead of local Ollama (needs `ANTHROPIC_API_KEY`) |
+| `VISION_MODEL` | `openbmb/minicpm-v4.6:q4_K_M` | VLM for the Phase 3.7 screenshot read (brand clone, credential input, adult imagery). Set it to `claude-<id>` (for example `claude-haiku-4-5`) to read the screenshot through the Anthropic API instead of local Ollama (needs `ANTHROPIC_API_KEY`) |
 | `NO_COLOR` | (unset) | Turn off ANSI color (`-c mono` does the same) |
 | `VT_API_KEY` | (unset) | VirusTotal key for `-t`, in `.env`. The VT lookup needs it |
 | `URLSCAN_API_KEY` | (unset) | urlscan.io key for `-t`, in `.env`. Optional, it only raises rate limits |

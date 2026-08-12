@@ -1301,6 +1301,14 @@ if [ -z "$VISION_TRIGGER" ] && [ "${FORMS:-0}" -gt 0 ] \
    && printf '%s %s %s' "$TITLE" "$URL" "$SMELLS" | grep -qiE 'log[ -]?in|sign[ -]?in|password|account|webmail|secure|verif|credential|exfil|obfuscated network|excel|office|outlook|microsoft|onedrive'; then
     VISION_TRIGGER=1
 fi
+# (c) a formless page we already distrust. There is no credential form to judge, so the only open
+# question is WHAT it is -- and adult/scam imagery leaves no trace in the DOM (this class titles
+# itself "No swiping. No ghosting."). The screenshot is the only witness. Gated on an existing red
+# flag, so a clean page still pays nothing for the ~1min call.
+if [ -z "$VISION_TRIGGER" ] && [ "${FORMS:-0}" -eq 0 ] \
+   && [ "$(count_red_flags "$TLD" "$AGE_DAYS" "$FINAL_URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS")" -ge 1 ]; then
+    VISION_TRIGGER=category
+fi
 if [ -z "$NO_VISION" ] && [ -n "$VISION_TRIGGER" ]; then
     if [ -f "$CACHE_DIR/vision.txt" ]; then
         # Reuse the cached VLM verdict (the ~1min call is the single most expensive step).
@@ -1312,7 +1320,8 @@ if [ -z "$NO_VISION" ] && [ -n "$VISION_TRIGGER" ]; then
         LANDED_DOMAIN="${LANDED_DOMAIN:-$DOMAIN}"
         VP="This screenshot is the web page served at domain '$LANDED_DOMAIN'. Answer concisely in two lines:
 BRAND: what brand/company does its visual design (logo, colours, layout) imitate, and does it match the domain '$LANDED_DOMAIN'? If a well-known brand's page is served from an unrelated domain, say so.
-PASSWORD: is a password or login/credential input field visible on the page? Reply exactly 'PASSWORD: yes' or 'PASSWORD: no'."
+PASSWORD: is a password or login/credential input field visible on the page? Reply exactly 'PASSWORD: yes' or 'PASSWORD: no'.
+ADULT: does the page show pornographic or sexually explicit imagery (nudity, sex acts)? Lingerie ads, swimwear and dating-app photos are NOT explicit. Reply exactly 'ADULT: yes' or 'ADULT: no'."
         VRESP=""
         if _is_claude "$VISION_MODEL"; then
             echo_grey "- visual check (brand + credential input) via $(_claude_id "$VISION_MODEL") (Anthropic API)..."
@@ -1333,6 +1342,18 @@ PASSWORD: is a password or login/credential input field visible on the page? Rep
     fi
     if [ -n "$VISION_NOTE" ]; then
         echo_grey "- $VISION_NOTE"
+        # Explicit imagery the DOM cannot see. Display + LLM context + the category (via
+        # category_of below) only -- never a floor: porn is not phishing, and severity here comes
+        # from the domain/JS flags that triggered the look in the first place.
+        echo "$VISION_NOTE" | grep -qiE 'ADULT:?[[:space:]]*yes' \
+            && add_signal "Vision: sexually explicit imagery on the page"
+    fi
+    # Everything below MOVES THE VERDICT, so it is off-limits to the formless trigger (c), which
+    # exists to name the page and not to judge it. A weak VLM says PASSWORD: yes readily, and on a
+    # page with zero forms that claim is not credible -- there is nothing to submit. Left ungated,
+    # it made a github.io environment newsletter DANGEROUS (phishing) off one hallucinated field.
+    # Triggers (a) and (b) both require a form, so this keeps their behaviour byte-identical.
+    if [ -n "$VISION_NOTE" ] && [ "$VISION_TRIGGER" != category ]; then
         # Double-check: if the VLM sees a credential field the DOM missed, treat it as a login
         # page so the verdict floor (login + red flag) can fire. Match only 'PASSWORD: yes'.
         if [ "$HAS_LOGIN" != "true" ] && echo "$VISION_NOTE" | grep -qiE 'PASSWORD:?[[:space:]]*yes'; then
@@ -1611,7 +1632,7 @@ fi
 # inspection looked at the page. Computed AFTER the override, never before -- guessing from the
 # machine verdict and then printing the overridden one produced "SAFE (other)", where "other"
 # is a category that only exists for verdicts we are calling bad.
-CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE")
+CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE" "$VISION_NOTE")
 [ -n "$_icat" ] && [ -t 0 ] && CATEGORY="$_icat"
 
 case "$VERDICT" in
