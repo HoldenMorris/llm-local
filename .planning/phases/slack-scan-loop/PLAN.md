@@ -15,7 +15,7 @@ human is driving. Build it in the order below; each task stands alone and commit
 
 ---
 
-## 1. Connect Slack here and find out what it actually gives us
+## 1. Connect Slack here and find out what it actually gives us — DONE (2026-08-13)
 
 **Why first:** this machine has only the `pencil` MCP server. Every task below assumes a way to read
 a channel and post a draft, and nobody has verified which of those the connection exposes. Design
@@ -29,6 +29,46 @@ other PC). Then answer, by calling them, not by reading docs:
 - what is the rate limit shape?
 
 **Done when:** those four answers are written into this file, with the tool names used.
+
+**Answered 2026-08-13, by calling them.** Slack is connected here as Holden (`U024KJMFC`), workspace
+`synaq.slack.com`. The channel is **`#luca-phishing-alerts` = `C099U43SRS5`**, public, created by
+samg 2025-08-07, and live — alerts arriving the morning this was written.
+
+| Question | Answer | Tool |
+|---|---|---|
+| Read the channel, filter since a timestamp? | **Yes.** `oldest`/`latest` take a Slack `ts`, newest-first, 100 max per page with a `next_cursor` | `slack_read_channel` |
+| Read DMs and @-mentions? | **Yes**, via search modifiers (`to:me`, `from:`, `in:`) with `channel_types: im,mpim` | `slack_search_public_and_private` |
+| Post? | Yes | `slack_send_message` |
+| Prepare *without* posting? | **Yes** — saves to the user's Drafts & Sent, never sends. Schema-verified only; no test draft has been created yet | `slack_send_message_draft` |
+| Rate limit shape? | **Still unknown.** No call has surfaced a limit or a header. Treat as unmeasured, which is why the loop interval starts long | — |
+
+Three things learned that the design has to respect:
+
+1. **`response_format: "concise"` omits the message `ts`.** It prints the rendered text and a
+   human-readable local time and nothing else. Seen-state needs the raw `ts`, so the pass that
+   records the watermark must ask for `detailed` — reading only `concise` gives you no watermark to
+   store, and a loop that cannot store one re-reads the same messages forever.
+2. **`oldest` is inclusive**, so the stored `ts` comes back again on the next pass. Add one
+   microsecond (`.969619` → `.969620`) or drop the first message.
+3. **`slack_search_public_and_private` output is large** — one `to:me` query with `limit: 5`
+   returned 61,275 characters, over the tool-result ceiling. Narrow queries, `include_context:
+   false`, or `response_format: "concise"`. This is a real constraint on the DM path, not a nuisance.
+
+**Alert shape** (what task 2's URL extraction parses):
+
+```
+:fishing_pole_and_fish: *Phishing alert* — `https://hn551.revibesocialclub.com/?s1=snm3`
+:white_check_mark: Recorded: <@U024KH6KT|samg> marked this *phishing*.
+```
+
+Posted by the **`Luca Phishing Alerts` bot (`U098UR256TZ`)**, URL in backticks, and a second line
+appearing once a human has ruled. That `Recorded:` line is a **human judgement already in Slack** —
+worth reconciling against the ledger, and not something the earlier intake accounted for.
+
+**Also live now:** a read-only poll of this channel on `/loop 5m`, watermark in
+`.planning/slack-states/slack-luca-alerts-state.json` (gitignored). It summarises new alerts and
+does **not** scan, reply, or open a URL. That is task 3's step 1 running ahead of the rest, and it
+is the safe half — no live infrastructure is fetched.
 
 **If drafting turns out to be impossible** — some integrations only send — stop and re-decide. The
 "draft, do not post" call is what makes the rest of this safe, and it is not mine to overturn.
