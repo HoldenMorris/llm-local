@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/ollama-up.sh"
 source "$SCRIPT_DIR/verdict.sh"
 source "$SCRIPT_DIR/psl.sh"
 source "$SCRIPT_DIR/js-signals.sh"
+source "$SCRIPT_DIR/inspect.sh"
 source "$SCRIPT_DIR/machine.sh"
 # colors.sh is sourced further down, after args are parsed (so -c mono can disable color)
 
@@ -1784,35 +1785,15 @@ if [ -t 0 ]; then
         # for permission mid-run and never touches the live site. Falls back to a typed note.
         if command -v claude >/dev/null 2>&1; then
             echo_grey "deep inspection: claude is reading the cached scan (ctrl-c to skip)..."
-            if _iout=$(claude -p "Deep-inspect one phishing scan from this repo ($SCRIPT_DIR).
-
-URL:      $URL
-Landed:   ${FINAL_URL:-$URL}
-Verdict:  $VERDICT
-Signals:  ${SMELLS:-none}
-Cache:    $CACHE_DIR
-Host facts: $HOST_DIR/meta.env
-
-Read the cached artifacts (page.json, page-login.json, meta.env, scripts/,
-deob-signals.txt, vision.txt, virustotal.json, urlscan.json -- whichever exist) and say
-whether $VERDICT is right. Cite concrete evidence from the artifacts, never guess. If it
-is wrong, name the heuristic gap in verdict.sh / page-fetch.sh that let it through.
-Do not fetch the live URL and do not edit any file.
-End your reply with exactly these three lines:
-VERDICT: <SAFE|SUSPICIOUS|DANGEROUS -- the TRUE verdict, which future scans will report>
-CATEGORY: <what the page IS, one of: $VERDICT_CATEGORIES>
-NOTE: <one-line conclusion, max 200 chars>" \
-                --allowedTools "Read,Grep,Glob" 2>&1); then
+            # Prompt and parsing live in inspect.sh, shared with next-alert.sh -- two copies of a
+            # load-bearing prompt drift, and the two paths would then disagree about one page.
+            if _iout=$(deep_inspect "$URL" "${FINAL_URL:-$URL}" "$VERDICT" "$SMELLS" "$CACHE_DIR" "$HOST_DIR"); then
                 printf '%s\n' "$_iout"
-                _ifound=$(printf '%s\n' "$_iout" | grep -m1 '^NOTE:' | sed 's/^NOTE:[[:space:]]*//')
-                [ -z "$_ifound" ] && _ifound=$(printf '%s\n' "$_iout" | grep -v '^[[:space:]]*$' | tail -1)
+                _ifound=$(inspect_note "$_iout")
                 # The corrected verdict is the point of the inspection: it is what a re-scan
                 # reports. Unparseable -> keep this run's verdict, never guess one.
-                _ivnew=$(printf '%s\n' "$_iout" | grep -m1 '^VERDICT:' \
-                         | grep -oiE 'SAFE|SUSPICIOUS|DANGEROUS' | head -1 | tr 'a-z' 'A-Z')
-                _icnew=$(printf '%s\n' "$_iout" | grep -m1 '^CATEGORY:' \
-                         | sed 's/^CATEGORY:[[:space:]]*//' | tr -d ' ' | tr 'A-Z' 'a-z')
-                is_category "$_icnew" || _icnew=""
+                _ivnew=$(inspect_verdict "$_iout")
+                _icnew=$(inspect_category "$_iout")
             else
                 echo_yellow "claude inspection failed: $(printf '%s' "$_iout" | tail -1)"
             fi

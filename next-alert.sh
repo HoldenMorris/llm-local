@@ -17,6 +17,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 source "$SCRIPT_DIR/colors.sh"
+source "$SCRIPT_DIR/inspect.sh"   # deep_inspect + its parsers, shared with url-analyze.sh
 
 DM_CHANNEL="D0BAMTCJE7K"     # "You're up" prompts land here; the shared channel is mostly settled
 SCAN_FLAGS=(-c mono)         # any flag at all disables url-analyze's interactive prompts
@@ -138,6 +139,32 @@ if [ -z "$VERDICT" ]; then
     # scoops up progress chatter ("- Restarting existing Ollama container...") and reports it as
     # evidence, which is worse than showing nothing.
     EVIDENCE=$(awk '/^Signals \(/{f=1;print;next} f&&/^- /{print;next} f{exit}' "$LOG" | head -9)
+
+    # SUSPICIOUS and UNCLEAR both map to Skip, which hands the work straight back to you. So
+    # before giving up, spend the deep inspection: claude reads the cached artifacts and says
+    # what the page actually is. Same prompt url-analyze.sh's `i` uses (inspect.sh).
+    # MUST run before the wipe below -- the inspection reads exactly the artifacts that removes.
+    case "${VERDICT:-UNCLEAR}" in SUSPICIOUS|UNCLEAR|"")
+        echo ""
+        echo_grey "verdict is a Skip -- running the deep inspection instead of handing it back..."
+        _cache="$SCRIPT_DIR/.cache/$(printf '%s' "$URL" | sha256sum | cut -c1-16)"
+        _hostdir="$SCRIPT_DIR/.cache/host/$(printf '%s' "$URL" | sed -E 's#^[a-z]+://([^/]+).*#\1#' | tr -c 'a-zA-Z0-9.:_-' '_')"
+        _smells=$(printf '%s' "$EVIDENCE" | sed '1d;s/^- //' | paste -sd, -)
+        if _iout=$(deep_inspect "$URL" "$URL" "${VERDICT:-UNCLEAR}" "$_smells" "$_cache" "$_hostdir" </dev/null); then
+            _iv=$(inspect_verdict "$_iout"); INOTE=$(inspect_note "$_iout")
+            _ic=$(inspect_category "$_iout")
+            # Only ever replace the verdict with one the inspection actually stated. An
+            # unparseable reply leaves the scan's own verdict standing rather than inventing one.
+            if [ -n "$_iv" ]; then
+                [ "$_iv" != "$VERDICT" ] && echo_cyan "inspection corrects $VERDICT -> $_iv"
+                VERDICT="$_iv"; SOURCE="fresh scan + deep inspection${_ic:+ ($_ic)}"
+            fi
+        else
+            echo_yellow "deep inspection unavailable -- keeping $VERDICT"
+        fi
+        ;;
+    esac
+
     # ponytail: retention. url-analyze only offers "keep the artifacts?" on a bare run, and we
     # always pass flags, so nothing would ever ask -- and these URLs carry recipient tokens.
     # feedback.txt survives, because a judgement is the one part a re-scan cannot regenerate.
@@ -156,10 +183,13 @@ echo_grey " verdict ${VERDICT:-UNCLEAR} -- $WHY"
 echo_grey " source:  $SOURCE"
 [ -n "${settled:-}" ] && printf '%s\n' " $settled" | sed "s/^/${GREY}/;s/\$/${RESET}/"
 [ -n "${EVIDENCE:-}" ] && printf '%s\n' "$EVIDENCE" | sed "s/^/${GREY}/;s/\$/${RESET}/"
+# The inspection's one-line conclusion is the "real response": what the page actually is, not
+# just how the heuristics scored it.
+[ -n "${INOTE:-}" ] && { echo ""; printf '%s\n' " $INOTE" | fold -s -w 96 | sed "s/^/${CYAN}/;s/\$/${RESET}/"; }
 echo ""
 # Record the answer so the next pass can repeat it instead of saying "nothing new".
 [ "$FROM_SLACK" = 1 ] && printf '%s\t%s\n' "${VERDICT:-UNCLEAR}" "$URL" >>"$SEEN"
 echo ""
 echo_grey "nothing was clicked or posted -- that is yours to do"
 # Say "scanned" only when something was actually fetched; the ledger path touches no network.
-echo "$([ "$SOURCE" = "fresh scan" ] && echo scanned || echo alert): $URL"
+case "$SOURCE" in *scan*) echo "scanned: $URL" ;; *) echo "alert: $URL" ;; esac
