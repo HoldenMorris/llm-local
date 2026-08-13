@@ -106,8 +106,15 @@ if [ -z "$VERDICT" ]; then
         [[ "$_ans" =~ ^[Nn] ]] && { echo_grey "skipped -- nothing scanned"; echo "alert: $URL"; exit 0; }
     fi
     LOG=$(mktemp); trap 'rm -f "$LOG"' EXIT
-    echo_grey "scanning (this fetches the live page)..."
-    ./url-analyze.sh "${SCAN_FLAGS[@]}" "$URL" >"$LOG" 2>&1
+    echo_grey "scanning (this fetches the live page, ~1-2 min)..."
+    # stdin from /dev/null, deliberately. Four prompts in url-analyze.sh (bot-gate attach, open
+    # screenshot, open in browser, "do you agree?") are gated on [ -t 0 ] ALONE -- passing flags
+    # does not disable them. With our stdout on a pipe, such a prompt is invisible and the whole
+    # thing looks hung. Closing stdin makes every one of them self-disable.
+    # It also means no ledger row is written from here, which is what we want: `inspected` has
+    # to mean a human looked, and this tool exists precisely because one has not yet.
+    # tee, not >, so a long scan visibly progresses instead of looking stuck.
+    ./url-analyze.sh "${SCAN_FLAGS[@]}" "$URL" </dev/null 2>&1 | tee "$LOG"
     VERDICT=$(grep -oE 'VERDICT: (SAFE|SUSPICIOUS|DANGEROUS|UNCLEAR)' "$LOG" | tail -1 | awk '{print $2}')
     # The "Signals (N):" block is the scan's actual findings. Grepping every "- " line instead
     # scoops up progress chatter ("- Restarting existing Ollama container...") and reports it as
