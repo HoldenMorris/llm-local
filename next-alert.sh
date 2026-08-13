@@ -34,15 +34,41 @@ button_for() {
     esac
 }
 
+SEEN="$SCRIPT_DIR/.cache/next-alert-seen.txt"
+# Reads the last row for this url, across all three row formats this file has had: a bare url,
+# "<verdict>\t<url>", and today's "<verdict>\t<resolved>\t<url>\t<note>". The url is NOT always the
+# last field -- the note is -- so its position comes from the column count, not from $NF.
+seen_field() {
+    [ -f "$SEEN" ] || return 0
+    awk -F'\t' -v u="$1" -v f="$2" '
+        { urlcol = (NF==1 ? $1 : (NF==2 ? $2 : $3)) }
+        urlcol==u { v = (NF==1 ? "?" : (f=="v" ? $1 : (f=="r" && NF>=3 ? $2 : (f=="n" && NF>=4 ? $4 : "")))) }
+        END { print v }' "$SEEN"
+}
+
 if [ "${1:-}" = "--self-test" ]; then
     for pair in "DANGEROUS:VERIFY PHISH" "SAFE:FALSE POSITIVE" "SUSPICIOUS:SKIP" "UNCLEAR:SKIP" ":SKIP"; do
         got=$(button_for "${pair%%:*}" | cut -d'|' -f1)
         [ "$got" = "${pair#*:}" ] || { echo "FAIL ${pair%%:*} -> $got"; exit 1; }
     done
+    SEEN=$(mktemp)
+    printf 'SUSPICIOUS\thttps://legacy2col\n'                 >>"$SEEN"   # written before the flag existed
+    printf 'SAFE\thttps://legacy-safe\n'                      >>"$SEEN"
+    printf 'https://legacy-bare\n'                            >>"$SEEN"   # the original bare-url row
+    printf 'DANGEROUS\ti\thttps://done\tcredential form\n'   >>"$SEEN"
+    printf 'SUSPICIOUS\t\thttps://unfinished\t\n'            >>"$SEEN"
+    _sf() { [ "$(seen_field "$1" "$2")" = "$3" ] || { echo "FAIL seen_field $1 $2: want [$3] got [$(seen_field "$1" "$2")]"; exit 1; }; }
+    _sf https://done v DANGEROUS; _sf https://done r i; _sf https://done n "credential form"
+    _sf https://unfinished v SUSPICIOUS; _sf https://unfinished r ""
+    _sf https://legacy2col v SUSPICIOUS; _sf https://legacy2col r ""
+    _sf https://legacy-safe v SAFE
+    _sf https://legacy-bare v "?"
+    _sf https://never-seen v ""
+    rm -f "$SEEN"
     echo "self-test ok"; exit 0
 fi
 
-URL=""; FROM_SLACK=0; ALL=0
+URL=""; FROM_SLACK=0; ALL=0; RESOLVED=""
 [ "${1:-}" = "-a" ] && { ALL=1; shift; }
 if [ "${1:-}" = "-u" ]; then
     URL="${2:?-u needs a url}"
@@ -72,30 +98,43 @@ fi
 # On a loop this runs every few minutes against the same open alert, so without a seen-list it
 # nags about one URL forever -- and an alert you have already declined to scan is not news.
 # Same shape as intel-feed.sh's seen-list. `-a` re-offers one you have already been shown.
-# Append-only, "<verdict>\t<url>", latest line wins -- the same shape as feedback.txt, so a URL
-# offered again is re-answered rather than merely suppressed. "?" is written before the scan (so
-# declining still stops the nagging) and the real verdict is appended after it.
-SEEN="$SCRIPT_DIR/.cache/next-alert-seen.txt"
-seen_verdict() {
-    [ -f "$SEEN" ] || return 0
-    awk -F'\t' -v u="$1" '$2==u{v=$1} (NF==1 && $1==u){v="?"} END{print v}' "$SEEN"
-}
-if [ "$FROM_SLACK" = 1 ] && [ "$ALL" = 0 ] && _prev=$(seen_verdict "$URL") && [ -n "$_prev" ]; then
-    echo ""
-    echo_bold "alert: $URL"
-    # Repeating "nothing new" is useless when the answer is already known -- say it again.
-    if [ "$_prev" = "?" ]; then
-        echo_yellow "already offered, but never got a verdict (declined or interrupted)"
-        echo_grey "  ./next-alert.sh -a   to rule on it now"
-    else
+# Append-only, "<verdict>\t<resolved>\t<url>\t<note>", latest line wins -- the same shape as
+# feedback.txt, so a URL offered again is re-answered rather than merely suppressed. "?" is
+# written before the scan (so declining still stops the nagging) and the real answer after it.
+#
+# `resolved` is the field that matters. A stored SUSPICIOUS is NOT an answer -- it is a Skip, the
+# work handed back -- so replaying it as though it were settled is how this tool silently stops
+# doing its job. Only a verdict the deep inspection has already been spent on counts as resolved;
+# anything else is unfinished and gets re-offered. Rows written before the inspection existed
+# carry no flag and are therefore correctly treated as unfinished.
+if [ "$FROM_SLACK" = 1 ] && [ "$ALL" = 0 ] && _prev=$(seen_field "$URL" v) && [ -n "$_prev" ]; then
+    _res=$(seen_field "$URL" r)
+    # Settled means: a real verdict AND the inspection has already been spent on it. Anything
+    # else falls through to a fresh run rather than being replayed as an answer.
+    if [ "$_prev" != "?" ] && { [ "$_res" = i ] || [ "$_prev" = SAFE ] || [ "$_prev" = DANGEROUS ]; }; then
+        echo ""
+        echo_bold "alert: $URL"
         IFS='|' read -r BTN COLOR WHY <<<"$(button_for "$_prev")"
         echo "${COLOR}${BOLD} CLICK: $BTN${RESET}"
         echo_grey " verdict $_prev -- $WHY"
-        echo_grey " source:  the earlier run; no new alert has arrived since"
+        echo_grey " source:  the earlier run (inspected); no new alert has arrived since"
+        _n=$(seen_field "$URL" n)
+        [ -n "$_n" ] && printf '%s\n' " $_n" | fold -s -w 96 | sed "s/^/${CYAN}/;s/\$/${RESET}/"
+        exit 0
     fi
-    exit 0
+    # Unfinished. On a loop, say so and stop -- an unattended re-scan of live phishing every few
+    # minutes is exactly what the seen-list exists to prevent. With a human here, carry on: the
+    # confirm prompt below asks before anything is fetched.
+    if [ ! -t 0 ]; then
+        echo ""
+        echo_bold "alert: $URL"
+        echo_yellow "offered before but never resolved (${_prev/\?/no verdict}) -- needs a person"
+        echo_grey "  ./next-alert.sh -a   to scan and deep-inspect it"
+        exit 0
+    fi
+    echo_grey "offered before but never resolved (${_prev/\?/no verdict}) -- finishing it now"
 fi
-[ "$FROM_SLACK" = 1 ] && { mkdir -p "$SCRIPT_DIR/.cache"; printf '?\t%s\n' "$URL" >>"$SEEN"; }
+[ "$FROM_SLACK" = 1 ] && { mkdir -p "$SCRIPT_DIR/.cache"; printf '?\t\t%s\t\n' "$URL" >>"$SEEN"; }
 
 echo ""
 echo_bold "alert: $URL"
@@ -109,7 +148,7 @@ if settled=$(./feedback-report.sh --settled "$URL" 2>/dev/null); then rc=0; else
 # carries the real severity; use it.
 case "$rc" in
     0|2) VERDICT=$(printf '%s' "$settled" | head -1 | cut -f1)
-         SOURCE="the ledger already settled this"
+         SOURCE="the ledger already settled this"; RESOLVED=i
          case "$VERDICT" in SAFE|SUSPICIOUS|DANGEROUS) ;; *) VERDICT=$([ "$rc" = 0 ] && echo SAFE || echo DANGEROUS) ;; esac ;;
     *)   VERDICT="" ;;
 esac
@@ -151,6 +190,7 @@ if [ -z "$VERDICT" ]; then
         _hostdir="$SCRIPT_DIR/.cache/host/$(printf '%s' "$URL" | sed -E 's#^[a-z]+://([^/]+).*#\1#' | tr -c 'a-zA-Z0-9.:_-' '_')"
         _smells=$(printf '%s' "$EVIDENCE" | sed '1d;s/^- //' | paste -sd, -)
         if _iout=$(deep_inspect "$URL" "$URL" "${VERDICT:-UNCLEAR}" "$_smells" "$_cache" "$_hostdir" </dev/null); then
+            RESOLVED=i   # spent, whatever it concluded -- a re-run would only repeat it
             _iv=$(inspect_verdict "$_iout"); INOTE=$(inspect_note "$_iout")
             _ic=$(inspect_category "$_iout")
             # Only ever replace the verdict with one the inspection actually stated. An
@@ -187,8 +227,14 @@ echo_grey " source:  $SOURCE"
 # just how the heuristics scored it.
 [ -n "${INOTE:-}" ] && { echo ""; printf '%s\n' " $INOTE" | fold -s -w 96 | sed "s/^/${CYAN}/;s/\$/${RESET}/"; }
 echo ""
-# Record the answer so the next pass can repeat it instead of saying "nothing new".
-[ "$FROM_SLACK" = 1 ] && printf '%s\t%s\n' "${VERDICT:-UNCLEAR}" "$URL" >>"$SEEN"
+# Record the answer so the next pass can repeat it instead of re-doing the work. A SAFE or
+# DANGEROUS is final on its own; a Skip only counts as final once the inspection has been spent,
+# otherwise the next pass must pick it back up rather than replay an unfinished result.
+if [ "$FROM_SLACK" = 1 ]; then
+    case "${VERDICT:-UNCLEAR}" in SAFE|DANGEROUS) RESOLVED=i ;; esac
+    printf '%s\t%s\t%s\t%s\n' "${VERDICT:-UNCLEAR}" "${RESOLVED:-}" "$URL" \
+        "$(printf '%s' "${INOTE:-}" | tr '\t\n' '  ')" >>"$SEEN"
+fi
 echo ""
 echo_grey "nothing was clicked or posted -- that is yours to do"
 # Say "scanned" only when something was actually fetched; the ledger path touches no network.
