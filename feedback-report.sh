@@ -81,6 +81,12 @@ if [ -n "$SELFTEST" ]; then
     # -i on an unscanned URL must refuse rather than invent a cache dir
     FB_ROOT="$_t" "$0" -i https://never.scanned "note" >/dev/null 2>&1 \
         && { echo "FAIL -i accepted an unscanned URL"; _fails=1; }
+    # ...unless the judgement came from outside the toolkit (a Slack ruling), where there are no
+    # local artifacts by construction. Must be opt-in, and must still write a real inspected row.
+    FB_ROOT="$_t" FB_EXTERNAL=1 FB_VERDICT=DANGEROUS "$0" -i https://slack.ruled "samg marked this phishing" >/dev/null 2>&1 \
+        || { echo "FAIL FB_EXTERNAL did not accept an unscanned URL"; _fails=1; }
+    grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://slack.ruled)/feedback.txt" 2>/dev/null \
+        || { echo "FAIL FB_EXTERNAL did not write an inspected row"; _fails=1; }
     # FB_VERDICT is what a re-scan reports, so pin that -i writes it (and rejects junk)
     FB_ROOT="$_t" FB_VERDICT=DANGEROUS "$0" -i https://open.example "claude: credential harvester" >/dev/null
     grep -q "DANGEROUS	inspected" "$(FB_ROOT="$_t" _fb_dir https://open.example)/feedback.txt" \
@@ -90,7 +96,9 @@ if [ -n "$SELFTEST" ]; then
     # --corpus: settled + live only. open/requeued = re-opened flags, dead = gone, revived = back.
     # (open.example was just inspected DANGEROUS above, so it is settled and belongs in the corpus.)
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --corpus | grep -v '^#' | sort | tr '\n' '|')
-    _want="DANGEROUS https://a.pages.dev/x|DANGEROUS https://kit.example/login phishing|DANGEROUS https://open.example|DANGEROUS https://revived.example|SAFE https://agreed.example|SUSPICIOUS https://closed.example|SUSPICIOUS https://kit.example/verify|"
+    # slack.ruled is in here deliberately: a judgement harvested from Slack is settled, labelled
+    # data, so the weekly replay must score against it like any other inspection.
+    _want="DANGEROUS https://a.pages.dev/x|DANGEROUS https://kit.example/login phishing|DANGEROUS https://open.example|DANGEROUS https://revived.example|DANGEROUS https://slack.ruled|SAFE https://agreed.example|SUSPICIOUS https://closed.example|SUSPICIOUS https://kit.example/verify|"
     [ "$_got" = "$_want" ] || { echo "FAIL --corpus: want [$_want] got [$_got]"; _fails=1; }
     # --host: other settled urls on the SAME host, the queried url itself excluded
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --host kit.example https://kit.example/verify | tr '\t' ' ')
@@ -158,7 +166,14 @@ if [ -n "$INSPECT" ]; then
     [ -n "${FB_CATEGORY:-}" ] && ! is_category "$FB_CATEGORY" \
         && { echo "FB_CATEGORY must be one of: $VERDICT_CATEGORIES" >&2; exit 2; }
     _d=$(_fb_dir "$_url")
-    if [ ! -d "$_d" ]; then
+    # FB_EXTERNAL=1: the judgement was made OUTSIDE this toolkit -- an analyst ruling on a LUCA
+    # alert in Slack, say. A human looked, which is exactly what `inspected` is supposed to mean,
+    # but they looked at the live URL rather than at our artifacts, so there is no cached scan and
+    # there never will be. The guard below stays the default precisely because it catches a
+    # mistyped URL silently minting a new ledger entry; an external caller has to say so.
+    if [ ! -d "$_d" ] && [ "${FB_EXTERNAL:-}" = 1 ]; then
+        mkdir -p "$_d"
+    elif [ ! -d "$_d" ]; then
         echo_yellow "no scan cached for $_url -- scan it before recording an inspection"; exit 1
     fi
     _v="${FB_VERDICT:-$(awk -F'\t' 'NF>=4 { v=$2 } END { print (v ? v : "?") }' "$_d/feedback.txt" 2>/dev/null)}"
