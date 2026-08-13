@@ -1482,7 +1482,20 @@ RULE 2: the RED FLAG COUNT is exactly 0.
    -> VERDICT: SAFE. This is a normal legitimate login page."
 else
     LOGIN_FACT="This page has NO login form and NO password field on it. There is NO credential form here. Do NOT say a login form is present and do NOT reason about one."
-    RULES="RULE 3: the RED FLAG COUNT is 1 or more, OR this is a mailing-list / unsubscribe endpoint.
+    # Without RULE 2b the formless branch tops out at SUSPICIOUS, so a kit that hides behind a
+    # cloak gate can never be called DANGEROUS by the LLM no matter what else is known about it --
+    # the gate would be protecting the kit from us. Mirrors the `gatedbad` floor in verdict.sh, on
+    # the same two deterministic strings, so both paths move together instead of one covering for
+    # the other. Stated FIRST because a small model parrots the first rule it matches.
+    RULES=""
+    if printf '%s' "$SMELLS" | grep -qi 'gated from the scraper' \
+       && printf '%s' "$SMELLS" | grep -qi 'confirmed phishing previously inspected'; then
+        RULES="RULE 2b: a bot/cloak challenge is hiding the real page from the scraper, AND a url on this same host, domain or campaign tag was already CONFIRMED as phishing by a human analyst.
+   -> VERDICT: DANGEROUS. The gate is the REASON no credential form is visible; its absence is not evidence of safety. You must NOT downgrade this to SUSPICIOUS or SAFE.
+
+"
+    fi
+    RULES="${RULES}RULE 3: the RED FLAG COUNT is 1 or more, OR this is a mailing-list / unsubscribe endpoint.
    -> VERDICT: SUSPICIOUS (e.g. list-validation: a click confirms your address to spammers).
 
 RULE 4: the RED FLAG COUNT is exactly 0.

@@ -435,6 +435,21 @@ classify_verdict() {
     # a counted flag and is what carries a real BitM page to DANGEROUS.
     local bitm=""
     printf '%s' "$smells" | grep -qi 'holds a websocket to its own origin' && bitm=1
+    # A bot/cloak gate hid the real page, so has_login is false BY THE KIT'S DESIGN -- and that
+    # disarms the login-gated DANGEROUS rule above, leaving the cloak to protect the kit. When a
+    # HUMAN has already confirmed phishing on this same host, registrable domain or campaign tag,
+    # the missing credential form is explained rather than absent, and the pair reaches DANGEROUS.
+    # ps092.soakblast.com/?s1=snm3 is the case: cloak gate, atob() redirect, fast-flux TTL, and
+    # s1=snm3 already settled as phishing on another domain -- and it still read SUSPICIOUS.
+    # Both halves are required. A gate alone is ordinary (Cloudflare fronts legitimate sites, and
+    # count_red_flags already counts it once), and a confirmed sibling alone stays SUSPICIOUS
+    # unless a credential form is actually seen. Only `inspected` ledger rows produce the
+    # "Confirmed phishing previously inspected" wording, so this can never bootstrap off this
+    # tool's own verdicts -- the same reason --settled refuses to act on `agree` rows.
+    local gatedbad=""
+    [ "$has_login" != "true" ] \
+        && printf '%s' "$smells" | grep -qi 'gated from the scraper' \
+        && printf '%s' "$smells" | grep -qi 'confirmed phishing previously inspected' && gatedbad=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -448,6 +463,8 @@ classify_verdict() {
         floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
+    elif [ -n "$gatedbad" ]; then
+        floor=DANGEROUS; reason="bot/cloak gate hiding the real page + phishing already confirmed on this host, domain or campaign"
     elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ] || [ -n "$rdaphold" ] || [ -n "$bitm" ]; then
         floor=SUSPICIOUS
         reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}${rdaphold:+ + the domain is suspended at the registry (RDAP hold)}${bitm:+ + credential page relaying over its own websocket (browser-in-the-middle)}"

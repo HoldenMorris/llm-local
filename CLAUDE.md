@@ -321,6 +321,20 @@ Signal: `Operator attach: analyzed the uncloaked page past the <gate> gate`. Aut
 (patched drivers, xvfb, proxies, solvers) stays on hold, because research showed it unreliable
 and high-maintenance.
 
+**A gate must not protect the kit it hides.** Every login-gated floor needs a credential form, and
+a cloak is precisely what stops us seeing one — so a gated kit scored `SUSPICIOUS` however much
+else was known about it. `ps092.soakblast.com/?s1=snm3` had a cloak gate, an `atob()` redirect, a
+297s TTL, no archive capture ever, and the campaign tag `s1=snm3` **already settled as phishing by
+a human on an unrelated domain**, and still read SUSPICIOUS. So a `gated from the scraper` smell
+plus a `Confirmed phishing previously inspected` smell (host, registrable domain **or** campaign
+tag) floors to **DANGEROUS** in `verdict.sh`: the missing form is *explained*, not absent. Both
+halves are required — a gate alone fronts plenty of legitimate sites and already counts once, and a
+confirmed sibling alone stays SUSPICIOUS without a form. Only `inspected` rows produce the
+confirmed wording, so this can never bootstrap off the scanner's own verdicts. The LLM path moves
+with it: the formless branch of the prompt could only ever reach SUSPICIOUS, so it now carries a
+`RULE 2b` on the same two deterministic strings, stated first because a small model parrots the
+first rule it matches. Nine golden cases in `test-verdict.sh` pin both directions.
+
 ### Scanner egress routing (`-p tor`, Wave 1)
 
 Some kits only fire for in-zone (target-country) IPs and cloak to a benign page otherwise.

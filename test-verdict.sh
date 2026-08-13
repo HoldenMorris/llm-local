@@ -154,6 +154,28 @@ check "campaign suspicious is capped too"  SUSPICIOUS "$(cv true com '' '' 'http
 CAMPD='Confirmed phishing previously inspected under the same campaign tag s1=upg12 (https://a.b/x)'
 check "campaign dangerous + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://h.com/y' "$CAMPD" '' '' SAFE)"
 
+echo "== cloak gate + confirmed phishing (the gate is why there is no form) =="
+# ps092.soakblast.com/?s1=snm3: cloak gate, atob() redirect, fast-flux TTL, and s1=snm3 already
+# settled as phishing on another domain -- and it read SUSPICIOUS, because no credential form was
+# visible. The gate is precisely WHY it was not visible, so the kit's own cloak was protecting it.
+GATE='Unrecognized bot/cloak challenge - real page gated from the scraper'
+GATECF='Cloudflare Turnstile challenge - real page gated from the scraper'
+check "gate + confirmed campaign -> DANGEROUS"  DANGEROUS  "$(cv false com '' '' 'https://ps092.soakblast.com/?s1=snm3' "$GATE, $CAMPD" '' '' SAFE)"
+check "gate + confirmed host -> DANGEROUS"      DANGEROUS  "$(cv false com '' '' 'https://h.com/y' "$GATECF, $PRIOR" '' '' SAFE)"
+check "gate + confirmed domain -> DANGEROUS"    DANGEROUS  "$(cv false com '' '' 'https://h.com/y' "$GATE, $PRIORD" '' '' SAFE)"
+# Each half alone must NOT reach DANGEROUS. A gate on its own fronts plenty of legitimate sites,
+# and a confirmed sibling on its own says the domain hosted something bad, not that this page does.
+check "gate alone stays SUSPICIOUS"             SUSPICIOUS "$(cv false com '' '' 'https://real.com/' "$GATECF" '' '' SAFE)"
+check "confirmed sibling alone stays SUSPICIOUS" SUSPICIOUS "$(cv false com '' '' 'https://h.com/y' "$PRIOR" '' '' SAFE)"
+# A merely-suspicious sibling is not a confirmation, so the pair must not fire on it either.
+check "gate + suspicious sibling stays SUSPICIOUS" SUSPICIOUS "$(cv false com '' '' 'https://h.com/y' "$GATE, $PRIORS" '' '' SAFE)"
+# With a credential form the existing login rule already reaches DANGEROUS; this must not be the
+# thing carrying it, and it must not change the answer either.
+check "gate + confirmed + login -> DANGEROUS"   DANGEROUS  "$(cv true com '' '' 'https://h.com/y' "$GATE, $PRIOR" '' '' SAFE)"
+# The floor only ever escalates: an LLM that already said DANGEROUS is not downgraded, and the
+# floor is never applied to a page carrying neither half.
+check "clean gated page keeps LLM SAFE"         SAFE       "$(cv false com 3000 '' 'https://real.com/' '' '' '' SAFE)"
+
 echo "== kit signatures (naming the build, not the brand) =="
 # Deliberately an ORDINARY red flag rather than a VirusTotal-style standalone DANGEROUS: the
 # tokens are strong (build hashes, invented field names, paired filenames) but they are OUR
