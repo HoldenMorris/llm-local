@@ -71,12 +71,30 @@ fi
 # On a loop this runs every few minutes against the same open alert, so without a seen-list it
 # nags about one URL forever -- and an alert you have already declined to scan is not news.
 # Same shape as intel-feed.sh's seen-list. `-a` re-offers one you have already been shown.
+# Append-only, "<verdict>\t<url>", latest line wins -- the same shape as feedback.txt, so a URL
+# offered again is re-answered rather than merely suppressed. "?" is written before the scan (so
+# declining still stops the nagging) and the real verdict is appended after it.
 SEEN="$SCRIPT_DIR/.cache/next-alert-seen.txt"
-if [ "$FROM_SLACK" = 1 ] && [ "$ALL" = 0 ] && [ -f "$SEEN" ] && grep -qxF "$URL" "$SEEN"; then
-    echo_grey "nothing new -- newest open alert ($URL) was already offered"
+seen_verdict() {
+    [ -f "$SEEN" ] || return 0
+    awk -F'\t' -v u="$1" '$2==u{v=$1} (NF==1 && $1==u){v="?"} END{print v}' "$SEEN"
+}
+if [ "$FROM_SLACK" = 1 ] && [ "$ALL" = 0 ] && _prev=$(seen_verdict "$URL") && [ -n "$_prev" ]; then
+    echo ""
+    echo_bold "alert: $URL"
+    # Repeating "nothing new" is useless when the answer is already known -- say it again.
+    if [ "$_prev" = "?" ]; then
+        echo_yellow "already offered, but never got a verdict (declined or interrupted)"
+        echo_grey "  ./next-alert.sh -a   to rule on it now"
+    else
+        IFS='|' read -r BTN COLOR WHY <<<"$(button_for "$_prev")"
+        echo "${COLOR}${BOLD} CLICK: $BTN${RESET}"
+        echo_grey " verdict $_prev -- $WHY"
+        echo_grey " source:  the earlier run; no new alert has arrived since"
+    fi
     exit 0
 fi
-[ "$FROM_SLACK" = 1 ] && { mkdir -p "$SCRIPT_DIR/.cache"; printf '%s\n' "$URL" >>"$SEEN"; }
+[ "$FROM_SLACK" = 1 ] && { mkdir -p "$SCRIPT_DIR/.cache"; printf '?\t%s\n' "$URL" >>"$SEEN"; }
 
 echo ""
 echo_bold "alert: $URL"
@@ -138,6 +156,9 @@ echo_grey " verdict ${VERDICT:-UNCLEAR} -- $WHY"
 echo_grey " source:  $SOURCE"
 [ -n "${settled:-}" ] && printf '%s\n' " $settled" | sed "s/^/${GREY}/;s/\$/${RESET}/"
 [ -n "${EVIDENCE:-}" ] && printf '%s\n' "$EVIDENCE" | sed "s/^/${GREY}/;s/\$/${RESET}/"
+echo ""
+# Record the answer so the next pass can repeat it instead of saying "nothing new".
+[ "$FROM_SLACK" = 1 ] && printf '%s\t%s\n' "${VERDICT:-UNCLEAR}" "$URL" >>"$SEEN"
 echo ""
 echo_grey "nothing was clicked or posted -- that is yours to do"
 # Say "scanned" only when something was actually fetched; the ledger path touches no network.
