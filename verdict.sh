@@ -375,7 +375,22 @@ count_red_flags() {
     # domain placeholder page: parked domains are overwhelmingly ordinary (an expired business, a
     # speculator's inventory), so "there is no site here" is not evidence of phishing. It degrades
     # the scan to UNCLEAR via is_blank_page instead, which is the honest claim.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin|bot-gate sitekey|domain placeholder page' | grep -c .) ))
+    local _skip='hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin|bot-gate sitekey|domain placeholder page'
+    # A shortener's PREVIEW page is the service's own furniture, not evidence about the link.
+    # bit.ly/4xK4QF2 scored a skewed link profile, 4 ad iframes and a base62 path -- three red
+    # flags that EVERY bit.ly link scores -- and read SUSPICIOUS while its destination was an
+    # established vehicle-auction listing. Same shape as is_tenant_infra suppressing fast-flux on
+    # cloud plumbing: the question is whose structure it is, and this structure is Bitly's.
+    # Only those three STRUCTURAL smells are dropped. A credential form, a kit signature or an
+    # exfil endpoint on a shortener page is the shortener serving something it should not, and
+    # still counts in full.
+    # Judged on the LANDED url: a shortener that actually redirected leaves final_url on the
+    # destination, where these same smells describe the destination and must count.
+    local _h="${final_url#*://}"; _h="${_h%%[/?#]*}"; _h="${_h##*@}"; _h="${_h%%:*}"
+    if is_shortener "$_h"; then
+        _skip="$_skip|skewed link profile|iframes - possible clickjacking|random url path"
+    fi
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE "$_skip" | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it

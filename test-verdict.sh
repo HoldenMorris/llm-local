@@ -66,6 +66,16 @@ expect "a subdomain of one is not"    no  is_shortener a.bit.ly
 expect "motusaa.co.za is not"         no  is_shortener motusaa.co.za
 expect "an ESP tracker is not"        no  is_shortener mjt.lu
 
+echo "== shortener structural smells =="
+# Bitly's preview page furniture: every bit.ly link scores these three, so they say nothing about
+# the link. Dropped only on the shortener's OWN landed url, and only these three.
+SHORTSMELL='Skewed link profile: 11 external vs 0 internal, 4 iframes - possible clickjacking, Random URL path: /4xK4QF2/'
+check "shortener furniture scores nothing"   0 "$(count_red_flags ly '' 'https://bit.ly/4xK4QF2' "$SHORTSMELL" '' '')"
+check "same smells elsewhere still score 3"  3 "$(count_red_flags com '' 'https://evil.com/x' "$SHORTSMELL" '' '')"
+check "a real smell on a shortener counts"   1 "$(count_red_flags ly '' 'https://bit.ly/4xK4QF2' "$SHORTSMELL, Off-domain exfil endpoint(s) in page code: evil.com" '' '')"
+check "a resolved shortener judges the destination" 3 "$(count_red_flags space '' 'https://kit.space/login' "$SHORTSMELL" '' '')"
+check "bitly preview no longer floors"       SAFE "$(cv false ly '' 'https://bit.ly/4xK4QF2' 'https://bit.ly/4xK4QF2' "$SHORTSMELL" '' '' SAFE)"
+
 echo "== is_unsub_url =="
 expect "unsubscribe url"   yes is_unsub_url "https://x.com/unsubscribe?e=aGk"
 expect "opt-out url"       yes is_unsub_url "https://x.com/opt-out"
