@@ -35,8 +35,16 @@ BRAND_MATCH="${BRAND_MATCH:-strict}"
 
 CONTAINER_NAME="llm-page-fetch-$$"
 IMAGE="ghcr.io/puppeteer/puppeteer:latest"
+# Per-process, like the container name above. It used to be a fixed /tmp/page-fetch.js, which made
+# two concurrent fetches destroy each other: the first one to finish rm'd the file, and the other's
+# `docker run -v` then found no source path -- so Docker CREATED ONE, as a root-owned directory.
+# Every fetch after that died on "cat: /tmp/page-fetch.js: Is a directory", and page-fetch.sh exits
+# 1 with an empty stdout, which every caller reads as a page that would not load. A whole parallel
+# corpus sweep came back "dead host" that way.
+JS_TMP="/tmp/page-fetch-$$.js"
+trap 'rm -f "$JS_TMP"' EXIT INT TERM
 
-cat << 'SCRIPT' > /tmp/page-fetch.js
+cat << 'SCRIPT' > "$JS_TMP"
 const puppeteer = require('puppeteer');
 const { URL } = require('url');
 const tls = require('tls');
@@ -1063,11 +1071,11 @@ docker run --rm --name "$CONTAINER_NAME" \
   -e BRAND_MATCH="$BRAND_MATCH" \
   "${ATTACH_ARGS[@]}" \
   "${PROXY_ARGS[@]}" \
-  -v /tmp/page-fetch.js:/home/pptruser/script.js:ro \
+  -v "$JS_TMP":/home/pptruser/script.js:ro \
   "${PSL_MOUNT[@]}" \
   "${SHOT_MOUNT[@]}" \
   "${SCRIPTS_MOUNT[@]}" \
   "$IMAGE" \
   node /home/pptruser/script.js "$URL" "$UA_MODE" "$SHOT_ARG" "$SCRIPTS_ARG" 2>/dev/null
 
-rm -f /tmp/page-fetch.js
+rm -f "$JS_TMP"
