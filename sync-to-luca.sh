@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Publish this toolkit's committed files into luca-ecosystem/tools/local-llm on a fresh
+# Publish this toolkit's committed files into luca-ecosystem/tools/local-llm on ONE long-lived
 # branch, ready for a PR. THIS repo stays the source of truth; the luca copy is a
 # point-in-time snapshot -- never hand-edit it there, re-run this after committing here.
 #
-#   ./sync-to-luca.sh                     # branch local-llm-sync-<sha>, push, print PR URL
-#   ./sync-to-luca.sh my-branch           # a specific branch name (reuse to update a PR)
+# The branch name is FIXED and each run adds a commit to it, so a re-sync updates the SAME pull
+# request. It used to default to local-llm-sync-<sha>, a new name every time, which left three
+# unmerged snapshot branches in luca -- each a full copy of the subtree, none of them merged, and
+# no way to tell from the branch list which one was current.
+#
+#   ./sync-to-luca.sh                     # branch local-llm-sync, push, print PR URL
+#   ./sync-to-luca.sh my-branch           # a different branch name (e.g. a one-off)
 #   FORCE=1 ./sync-to-luca.sh my-branch   # overwrite an existing remote branch
 #   DRY_RUN=1 ./sync-to-luca.sh           # build + commit locally, don't push (self-check)
 set -euo pipefail
@@ -15,7 +20,7 @@ EMAIL="${GIT_EMAIL:-holdenm@synaq.com}"
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHA="$(git -C "$SRC" rev-parse --short HEAD)"
-BRANCH="${1:-local-llm-sync-$SHA}"
+BRANCH="${1:-local-llm-sync}"
 
 # The snapshot is HEAD (git archive) -- a dirty tree would silently ship stale files.
 if ! git -C "$SRC" diff --quiet || ! git -C "$SRC" diff --cached --quiet; then
@@ -29,7 +34,15 @@ git clone --depth 1 "$REPO" "$WORK/luca" >/dev/null 2>&1
 cd "$WORK/luca"
 git config user.email "$EMAIL"
 git config user.name "$(git -C "$SRC" config user.name || echo 'Holden Morris')"
-git checkout -b "$BRANCH" >/dev/null 2>&1
+# Continue the remote branch when it already exists, so the push is a fast-forward and the open
+# PR just gains a commit. Branching off main instead would need --force and would throw away the
+# PR's review history. No remote branch (first sync, or the last one was merged) starts from main.
+if git fetch --depth 1 origin "$BRANCH" >/dev/null 2>&1; then
+  echo ">> continuing existing branch $BRANCH"
+  git checkout -b "$BRANCH" FETCH_HEAD >/dev/null 2>&1
+else
+  git checkout -b "$BRANCH" >/dev/null 2>&1
+fi
 
 # Replace the whole subtree from this repo's HEAD. archive = tracked files only, so no
 # .env / .cache / .git ever leaks; rm first so files deleted here get dropped there too.
