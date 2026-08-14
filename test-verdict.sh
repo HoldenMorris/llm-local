@@ -89,6 +89,19 @@ check "brand-lookalike + login -> DANGEROUS"    DANGEROUS  "$(cv true io '' '' '
 check "gate smell (no login) -> SUSPICIOUS"     SUSPICIOUS "$(cv false com '' '' 'https://x.com' 'Unrecognized bot/cloak challenge - real page gated from the scraper' '' '' SAFE)"
 check "gate smell + login -> DANGEROUS"         DANGEROUS  "$(cv true com '' '' 'https://x.com' 'Cloudflare Turnstile challenge - real page gated from the scraper' '' '' SAFE)"
 
+# A password box that is not <input type=password>. witty-run-128215.framer.app was a cPanel
+# Webmail clone whose "Password" field was type="text" name="Email" -- no-code builders (Framer,
+# Wix, Google Forms) cannot emit a password field, so every kit deployed on one looks like this.
+# page-fetch.sh reads the LABEL now, so has_login is true here; the smell itself is an ordinary
+# counted red flag, and the pair is what carries the DANGEROUS floor over an LLM that said SAFE.
+CTP='Password collected in a cleartext input - no <input type=password> on the page (the shape of a kit built on a no-code site builder)'
+check "cleartext password counts as a flag"     1          "$(count_red_flags app '' '' "$CTP" '' '')"
+check "cleartext password + login -> DANGEROUS" DANGEROUS  "$(cv true app '' '' 'https://witty-run-128215.framer.app' "$CTP" '' '' SAFE)"
+check "framer webmail clone (real smells)"      DANGEROUS  "$(cv true app '' '' 'https://witty-run-128215.framer.app' "$CTP, Third-party hosts referenced (scripts/iframes/images/JS): events.framer.com framerusercontent.com framer.com" '' '' SAFE)"
+# The guard on the other side: an ordinary login page with a real password field emits no such
+# smell, and a login form alone is never a red flag.
+check "plain login page stays SAFE"             SAFE       "$(cv true com 4000 '' 'https://github.com/login' '' '' '' SAFE)"
+
 # Email-redirector link (Mailjet mjt.lu etc.) that never left the service -- dead/expired token landed
 # on the "this subdomain is for link redirection" placeholder. The unresolved-destination smell floors
 # it to SUSPICIOUS so a flaky LLM SAFE can't call the placeholder clean.

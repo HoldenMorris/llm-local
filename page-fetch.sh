@@ -376,6 +376,28 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
       return t;
     };
 
+    // Credential detection must not hang on <input type="password">. A page built on a no-code
+    // site builder (Framer, Wix, Google Forms) CANNOT emit one, so a kit deployed there collects
+    // the password in a plain type="text" box: witty-run-128215.framer.app labelled one
+    // "Password" while its name attribute was literally "Email", and hasLoginForm read false, so
+    // every login-gated floor AND all three vision triggers stayed disarmed on a live cPanel
+    // Webmail clone that the screenshot showed plainly.
+    // Attribute names are the kit's to choose. The visible LABEL is not -- the victim has to be
+    // told which box is the password -- so read that instead. Zero-width padding is stripped
+    // first, same evasion class as the brand matching further down.
+    // Short labels only, and scoped to the input's OWN <label>: "Password" is a label, a
+    // paragraph or a "forgot your password?" link is not.
+    const _ZW = /[​-‍⁠-⁤﻿­͏]/g;
+    const PWD_LABEL = /pass\s?word|passwort|contrase|mot de passe|senha|wachtwoord/i;
+    const pwdLabelled = (i) => {
+      const root = i.getRootNode();
+      const l = i.closest('label')
+        || (i.id && root.querySelector ? root.querySelector(`label[for="${CSS.escape(i.id)}"]`) : null);
+      const t = ((l && (l.innerText || l.textContent)) || '').replace(_ZW, '').trim();
+      return t.length <= 40 && PWD_LABEL.test(t);
+    };
+    const isPwdInput = (i) => i.type === 'password' || (i.type === 'text' && pwdLabelled(i));
+
     // Compare APEX domains, not hostnames -- otherwise a site's own subdomains
     // (en.wikipedia.org vs www.wikipedia.org) count as "external" and skew the profile.
     const apex = h => (h || '').split('.').slice(-2).join('.');
@@ -391,7 +413,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
 
     const forms = deepAll('form').map(f => ({
       action: f.action, method: f.method,
-      hasPassword: !!f.querySelector('input[type="password"]'),
+      hasPassword: Array.from(f.querySelectorAll('input')).some(isPwdInput),
       inputs: Array.from(f.querySelectorAll('input')).map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder }))
     }));
 
@@ -424,7 +446,11 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
       title: document.title,
       text: deepText().slice(0, 4000),
       links, forms, scripts, inlineScripts, rawHtml, iframes, images, meta, metaRefresh,
-      hasLoginForm: deepAll('input[type="password"]').length > 0,
+      hasLoginForm: deepAll('input').some(isPwdInput),
+      // The password box is not a password box: it goes in as visible cleartext, no browser or
+      // password manager treats it as a secret. Reported separately because it is a finding in
+      // its own right, not just the reason hasLoginForm is true.
+      cleartextPassword: deepAll('input').some(i => i.type === 'text' && pwdLabelled(i)),
     };
   });
 
@@ -434,18 +460,33 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   for (const frame of page.frames()) {
     if (frame === page.mainFrame()) continue;
     try {
-      const sub = await frame.evaluate(() => ({
-        forms: Array.from(document.forms).map(f => ({
-          action: f.action, method: f.method,
-          hasPassword: !!f.querySelector('input[type="password"]'),
-          inputs: Array.from(f.querySelectorAll('input')).map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder })),
-        })),
-        hasPassword: !!document.querySelector('input[type="password"]'),
-        text: (document.body ? document.body.innerText : '').slice(0, 4000),
-        title: document.title,
-      }));
+      const sub = await frame.evaluate(() => {
+        // Same label-based credential test as the main frame above -- duplicated because an
+        // evaluate() body crosses into the page and takes no closures with it. Keep in sync.
+        const _ZW = /[​-‍⁠-⁤﻿­͏]/g;
+        const PWD_LABEL = /pass\s?word|passwort|contrase|mot de passe|senha|wachtwoord/i;
+        const pwdLabelled = (i) => {
+          const l = i.closest('label') || (i.id ? document.querySelector(`label[for="${CSS.escape(i.id)}"]`) : null);
+          const t = ((l && (l.innerText || l.textContent)) || '').replace(_ZW, '').trim();
+          return t.length <= 40 && PWD_LABEL.test(t);
+        };
+        const isPwdInput = (i) => i.type === 'password' || (i.type === 'text' && pwdLabelled(i));
+        const inputs = Array.from(document.querySelectorAll('input'));
+        return {
+          forms: Array.from(document.forms).map(f => ({
+            action: f.action, method: f.method,
+            hasPassword: Array.from(f.querySelectorAll('input')).some(isPwdInput),
+            inputs: Array.from(f.querySelectorAll('input')).map(i => ({ type: i.type, name: i.name, placeholder: i.placeholder })),
+          })),
+          hasPassword: inputs.some(isPwdInput),
+          cleartextPassword: inputs.some(i => i.type === 'text' && pwdLabelled(i)),
+          text: (document.body ? document.body.innerText : '').slice(0, 4000),
+          title: document.title,
+        };
+      });
       if (sub.forms.length) features.forms.push(...sub.forms);
       if (sub.hasPassword) features.hasLoginForm = true;
+      if (sub.cleartextPassword) features.cleartextPassword = true;
       if (!features.text && sub.text) features.text = sub.text;    // main frame had no body text
       if (!features.title && sub.title) features.title = sub.title;
     } catch {}
@@ -579,6 +620,16 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   const intLinks = features.links.filter(l => !l.isExternal);
   if (extLinks.length > intLinks.length * 2 && extLinks.length > 3)
     smells.push(`Skewed link profile: ${extLinks.length} external vs ${intLinks.length} internal`);
+
+  // The page asks for a password in a box that is not a password box. Nobody who set out to
+  // collect passwords ends up here by accident: the browser will not mask it, a password manager
+  // will not fill it, and the value sits in the DOM in the clear. It is what a credential kit on
+  // a no-code builder looks like -- Framer, Wix, Google Forms -- because those platforms have no
+  // password field to offer. Counted as an ordinary red flag (verdict.sh has no exclusion for
+  // it), so together with the login form it just armed, it carries the DANGEROUS floor.
+  // No commas: verdict.sh counts red flags by splitting SMELLS on them.
+  if (features.cleartextPassword)
+    smells.push('Password collected in a cleartext input - no <input type=password> on the page (the shape of a kit built on a no-code site builder)');
 
   // Login form to external
   for (const f of features.forms) {

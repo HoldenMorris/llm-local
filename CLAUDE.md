@@ -438,7 +438,8 @@ not 3B.
 
 | Detection | Description |
 |-----------|-------------|
-| Login form | Password field present |
+| Login form | A password field — matched on the field's visible **label**, not on `type="password"`. A no-code site builder (Framer, Wix, Google Forms) *cannot* emit a password input, so every kit deployed on one collects the password in a plain `type="text"` box: `witty-run-128215.framer.app` labelled one "Password" while its `name` was literally `Email`, so `hasLoginForm` read false and every login-gated floor **and all three vision triggers** stayed disarmed on a live cPanel Webmail clone. Attribute names are the kit's to choose; the label is not, because the victim has to be told which box is the password. Scoped to the input's own `<label>` and to labels of 40 characters or less, so a "forgot your password?" link or a paragraph never arms it, and zero-width padding is stripped first |
+| Password in a cleartext input | The password box is not a password box, so the browser will not mask it and no password manager will fill it. Nobody who set out to collect passwords arrives here by accident — it is the no-code-builder kit shape above, seen from the other side. An ordinary counted red flag, which with the login form it just armed carries the **DANGEROUS** floor with no LLM and no vision involved |
 | Off-domain form | Login submits to a different domain |
 | IP fingerprinting | api.ipify.org, ipinfo.io, and similar |
 | Compromised WordPress | Redirect to `/wp-include/` or `/wp-content/` with random paths |
