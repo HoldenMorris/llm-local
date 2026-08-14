@@ -508,18 +508,27 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     // Only the registrable apex proves ownership. A brand in the SUBDOMAIN is attacker-controlled
     // (userswix-com-signin.pit-phone.com) -- that IS the typosquat, so it must never excuse the
     // impersonation smell the way testing the full hostname did.
-    const brandInDomain = matched.some(b => apexDomain.includes(b.replace(/\s/g,'')));
+    // Per brand, never `.some()`. A brand is excused only by ITS OWN apex, so one
+    // legitimately-present brand must not cancel the others: an Adobe credential form on
+    // bayon-jakes.github.io matches BOTH "adobe" and "github" -- github really is in the apex, so
+    // .some() returned true and the adobe claim vanished. And the page did not even have to
+    // mention GitHub: brandHaystack includes the form actions, so a same-origin form on any
+    // *.github.io page put "github" in `matched` by itself. That silently disarmed brand
+    // impersonation on every github.io kit, and on every host whose name contains a brand token.
+    const unexplained = matched.filter(b => !apexDomain.includes(b.replace(/\s/g,'')));
     // Check if brand is explained by legitimate OAuth/payment integration.
     // Match on dot-delimited labels, never substrings: "m.stripe.com" first-label was "m", and
     // d.includes("m") is true for every .com domain -- which silently explained away every brand
     // hit on any page loading a single third-party resource.
-    const brandExplainedByOAuth = matched.every(b =>
+    const brandExplainedByOAuth = unexplained.length > 0 && unexplained.every(b =>
       thirdPartyDomains.some(d =>
         new RegExp(`(^|\\.)${b.replace(/\s/g,'')}\\.`, 'i').test(d) ||
         oauthPaymentDomains.some(o => onDomain(d, o)))
     );
-    if (!brandInDomain && !brandExplainedByOAuth)
-      smells.push(`Brand impersonation: "${matched.slice(0,3).join(', ')}" in title/form but domain is "${domain}"`);
+    // Name the UNEXPLAINED brands, not every match -- listing "github" as impersonated on a
+    // github.io page is exactly the confusion this fix is about.
+    if (unexplained.length && !brandExplainedByOAuth)
+      smells.push(`Brand impersonation: "${unexplained.slice(0,3).join(', ')}" in title/form but domain is "${domain}"`);
   }
 
   // ponytail: Hotlinked brand artwork -- the page DISPLAYS an <img> served from a BRAND's own
