@@ -20,7 +20,11 @@ source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/inspect.sh"   # deep_inspect + its parsers, shared with url-analyze.sh
 
 DM_CHANNEL="D0BAMTCJE7K"     # "You're up" prompts land here; the shared channel is mostly settled
-SCAN_FLAGS=(-c mono)         # any flag at all disables url-analyze's interactive prompts
+# any flag at all disables url-analyze's interactive prompts. -m auto picks the best model per
+# results/url_benchmark.csv (without it a flagged run takes whatever model is installed first);
+# -t adds VirusTotal + urlscan, which is what a LUCA alert deserves -- these URLs are already
+# reported as phish, and VT's 5-vendor quorum floors DANGEROUS with no credential form needed.
+SCAN_FLAGS=(-c mono -m auto -t)
 
 # Verdict -> button. UNCLEAR and SUSPICIOUS deliberately do NOT get a confident button: a scan
 # that could not decide is not evidence for either "phish" or "false positive", and Skip is the
@@ -155,14 +159,9 @@ esac
 
 if [ -z "$VERDICT" ]; then
     SOURCE="fresh scan"
-    # The ledger could not answer, so the next step fetches live phishing infrastructure. Ask
-    # first when a human is watching. Non-interactive callers (a loop, cron) are unaffected --
-    # same [ -t 0 ] convention url-analyze.sh uses for its own prompts.
-    if [ -t 0 ]; then
-        printf '\a'
-        read -r -p "${CYAN}Not in the ledger. Scan it? (fetches the live page) [Y/n] ${RESET}" _ans
-        [[ "$_ans" =~ ^[Nn] ]] && { echo_grey "skipped -- nothing scanned"; echo "alert: $URL"; exit 0; }
-    fi
+    # ponytail: no confirm before the live fetch. The whole point of this tool is "tell me which
+    # button to click", and the ledger has already been asked -- an unsettled alert has exactly
+    # one next step, so asking permission for it is a keypress that only ever answers Y.
     LOG=$(mktemp); trap 'rm -f "$LOG"' EXIT
     echo_grey "scanning (this fetches the live page, ~1-2 min)..."
     # stdin from /dev/null, deliberately. Four prompts in url-analyze.sh (bot-gate attach, open
