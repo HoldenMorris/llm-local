@@ -123,6 +123,26 @@ expect "200 with an empty DOM is blank"    yes is_blank_page 200 0
 expect "200 with a real DOM is not blank"  no  is_blank_page 200 12
 expect "attach (status 0) + DOM not blank" no  is_blank_page 0 12
 expect "unknown status + DOM not blank"    no  is_blank_page '' 12
+# A registrar parking page is a healthy 200 with a full DOM that belongs to the REGISTRAR.
+# sportycast.com (a LUCA alert) landed on Spaceship's "Parking Page" and escaped SAFE only because
+# it happened to be served over plain HTTP.
+PARK='Domain placeholder page - no real site here (registrar parking / host default: "parking page")'
+expect "placeholder page is not assessable" yes is_blank_page 200 12 "$PARK"
+expect "no placeholder smell = assessable"  no  is_blank_page 200 12 'Urgency language detected'
+check "placeholder is not a red flag"       0 "$(count_red_flags com '' '' "$PARK" '' '')"
+check "placeholder does not mask a real smell" 1 "$(count_red_flags com '' '' "$PARK
+Urgency language detected" '' '')"
+# It must not manufacture severity either: parked domains are overwhelmingly ordinary (an expired
+# business, a speculator's inventory), so the floor stays out of it and the domain facts decide.
+check "placeholder alone imposes no floor"  ""         "$(cv false com 400 '' 'https://x.com/' "$PARK" '' '' '')"
+check "placeholder + young domain -> SUSPICIOUS" SUSPICIOUS "$(cv false com 3 '' 'https://x.com/' "$PARK" '' '' '')"
+check "placeholder never downgrades the LLM" DANGEROUS "$(cv false com 400 '' 'https://x.com/' "$PARK" '' '' DANGEROUS)"
+# The one claim an unjudgeable page still earns: what it is. A bare UNCLEAR is a shrug, where
+# "UNCLEAR (parked)" is the whole answer -- so this is the exception to the no-category rule.
+check "placeholder named even on UNCLEAR"   parked     "$(category_of UNCLEAR false 'https://x.com/' "$PARK" '')"
+check "placeholder named on a bad verdict"  parked     "$(category_of SUSPICIOUS false 'https://x.com/' "$PARK" '')"
+check "credential form outranks placeholder" phishing  "$(category_of DANGEROUS true 'https://x.com/' "$PARK" '')"
+check "parked is in the vocabulary"         yes        "$(is_category parked && echo yes)"
 
 # Multi-vendor VirusTotal consensus is stronger than any local heuristic and needs no credential
 # form: trencraft.com (11 vendors, scam storefront, no login) capped at SUSPICIOUS before this.

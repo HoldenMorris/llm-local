@@ -499,6 +499,24 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   const title = dezw(features.title).toLowerCase();
   const formActions = features.forms.map(f => dezw(f.action).toLowerCase()).join(' ');
   const body = dezw(features.text).toLowerCase();
+
+  // The link promised a site; what we fetched is a registrar parking page, a for-sale lander, a
+  // web-server default page or a suspension notice. NOTHING on it belongs to the link's target,
+  // so scoring it is the phantom-SAFE shape (is_blank_page in verdict.sh): the scanner saw no
+  // site, which is not the same as seeing a safe one. sportycast.com came in as a LUCA alert,
+  // landed on Spaceship's "Parking Page", and escaped SAFE only because it happened to be served
+  // over plain HTTP. Which way it reads then is up to the DOMAIN facts (age, TLD, ledger priors)
+  // and to the web archive -- was there ever a site here? -- not to this page.
+  // Strong phrases only, and no commas in the smell text (count_red_flags splits on those).
+  // ponytail: deliberately NOT here: bare "coming soon" and "under construction" as standalone
+  // words, which real trading sites say. The parking NETWORKS are matched by request host
+  // instead, which is the artifact a re-skinned lander cannot rename.
+  const parkRe = /parking page|parked (free of charge|domain|by|at)|domain( name)?( \S{1,40})? (is|may be) (for sale|available)|domain parking|(buy|get) this domain|is this your domain|registered (at|with) (spaceship|namecheap|godaddy|porkbun|dynadot|hostinger)|future home of something quite cool|welcome to nginx|apache\d? \S{0,12} ?default page|iis windows server|default web ?site page|this (site|page) is under construction|account has been suspended/i;
+  const parkHostRe = /(sedoparking|parkingcrew|bodis|afternic|hugedomains|undeveloped|parklogic|cashparking|dan\.com|above\.com|sav\.com)/i;
+  const parkHit = (title + ' ' + body).match(parkRe) || thirdPartyDomains.join(' ').match(parkHostRe);
+  if (parkHit)
+    smells.push(`Domain placeholder page - no real site here (registrar parking / host default: "${parkHit[0].replace(/,/g, ' ').slice(0, 60)}")`);
+
   const brandHaystack = brandMatch === 'body'
     ? [title, formActions, body].join(' ')
     : [title, formActions].join(' ');

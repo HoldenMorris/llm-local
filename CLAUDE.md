@@ -117,7 +117,7 @@ therefore stays plain ASCII. Four tools use `colors.sh`: `url-analyze.sh`, `url-
 (`page-login.json`, `login.jpg`), the followed interstitial destination and its screenshot
 (`page-redirect.json`, `redirect.jpg`), inline scripts
 (`scripts/`), deobfuscation signals (`deob-signals.txt`), the vision VLM verdict
-(`vision.txt`), the Wayback capture index (`wayback.json`, dead URLs only), and each LLM answer
+(`vision.txt`), the Wayback capture index (`wayback.json`, factless scans only), and each LLM answer
 (`llm-<hash>.txt`, keyed by model and request). A re-scan
 therefore reuses the fetch, the ~1min vision call, and the LLM verdict instead of a re-compute.
 `-r` forces a full refresh.
@@ -156,7 +156,7 @@ The vocabulary is fixed (`VERDICT_CATEGORIES` in `verdict.sh`), because these ge
 free text does not group:
 
 `phishing` `email-harvest` `scam` `malware` `adult` `spam` `unsubscribe` `marketing`
-`questionnaire` `poll` `rating` `login` `content` `other`
+`questionnaire` `poll` `rating` `login` `parked` `content` `other`
 
 `category_of` (also `verdict.sh`, pure and golden-tested) makes the deterministic guess from
 evidence already extracted: a credential form means `phishing`, a mailing-list endpoint means
@@ -169,7 +169,9 @@ an adult-baited harvester is `phishing` first. Two rules keep the rest honest: `
 reliable signal in what the scraper extracts,
 so it is **never** guessed and only ever comes from a person or an inspection; and an UNCLEAR
 verdict gets **no** category, because a category is a claim and a scan that could not judge the
-page has nothing to claim from. The guess is not fed back to the LLM — it is derived from signals
+page has nothing to claim from. `parked` is the **one** exception to that second rule, named above
+the UNCLEAR guard on purpose: a placeholder page is unjudgeable *and* the only thing the scan did
+establish, so "UNCLEAR (parked)" is a complete answer where a bare UNCLEAR is a shrug. The guess is not fed back to the LLM — it is derived from signals
 the LLM already has, so it would only give a small model more to miscount.
 
 An analyst answer or a deep inspection overrides the guess and is stored in the ledger (column 6),
@@ -235,7 +237,7 @@ one. The interactive model menu lists `0: none (pure heuristic)` plus the instal
 defaults to the best one (press Enter). The LLM analysis line prints which model ran and how
 long it took.
 
-### Web archive history (automatic, dead URLs only)
+### Web archive history (automatic, factless scans only)
 
 A dead URL is a factless scan, and a factless scan has nothing to judge — the phantom-SAFE class
 again. When there is no live page (no DNS A record, or the fetch errored) `url-analyze.sh` queries
@@ -246,8 +248,13 @@ four-year-old business whose server happens to be down today. The output names t
 the first and last dates, the span, and a direct link to **read the archived page** — which is
 often the only way left to see what the kit actually asked for.
 
-It is **gated on the page being dead**, so an ordinary scan and every benchmark run (which scan
-live URLs) pay nothing for it. Caches per URL in `.cache/<hash>/wayback.json` and respects `-r`.
+It is **gated on the scan being factless**, so an ordinary scan and every benchmark run (which land
+on live pages) pay nothing for it. Three shapes qualify, all the same class: no live page, a bot
+gate that denied us the real one, and a **domain placeholder page** — there the archive is the only
+source that answers what the lander cannot, namely whether a site ever existed here.
+`sportycast.com` reads 16 days old at RDAP and carries 86 captures from 2020-11 to 2021-03: a
+lapsed site, re-registered a fortnight before it turned up in a phishing mail. Caches per URL in
+`.cache/<hash>/wayback.json` and respects `-r`.
 
 It is deliberately **informational only** and never touches the safety floor: most of the web is
 uncrawled, so an archive gap is not evidence of phishing. A rate-limited or 503 response (both are
@@ -436,6 +443,7 @@ not 3B.
 | IP fingerprinting | api.ipify.org, ipinfo.io, and similar |
 | Compromised WordPress | Redirect to `/wp-include/` or `/wp-content/` with random paths |
 | Silent refresh redirect | HTTP `Refresh:` response header, or in-body `<meta refresh>`. Not just a 3xx `Location` |
+| Domain placeholder page | A registrar **parking page**, a domain-for-sale lander, a web-server default page (nginx/Apache/IIS/cPanel) or a suspension notice. Nothing on it belongs to the link's target, so this is the phantom-SAFE shape in a healthy 200 with a full DOM: `is_blank_page` treats it as unassessable and the verdict degrades to **UNCLEAR**, exactly like a dead host. `sportycast.com` came in as a LUCA alert, landed on Spaceship's "Parking Page", and escaped SAFE only because it happened to be served over plain HTTP. It is deliberately **not** a red flag (`count_red_flags` excludes it) and imposes **no** floor: parked domains are overwhelmingly ordinary, so what the URL reads as is left to the **domain** facts — age, TLD, ledger priors — and to the web archive, which the placeholder now triggers because "was there ever a site here?" is the whole question. On the same scan: 16-day-old registration, but 86 Wayback captures from 2020-11 to 2021-03, i.e. a lapsed site re-registered a fortnight ago. The vision call is skipped (the screenshot is the registrar's marketing) and the LLM gets `RULE 2c` → UNCLEAR, so neither path can call it clean. Strong phrases only: bare "coming soon" and "under construction" are out (real trading sites say both), and the parking **networks** (Sedo, ParkingCrew, Bodis, Afternic) are matched by request host instead |
 | Random URL path | High-entropy paths like `/kz51odwn/` |
 | Urgency language | "suspended", "verify now", "24 hours", and similar |
 | Hidden form fields | More than 3 hidden inputs |

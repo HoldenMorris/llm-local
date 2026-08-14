@@ -19,7 +19,7 @@ is_risky_tld() {
 # storefront and a credential harvester are both DANGEROUS, a survey and a login page are both
 # SAFE. Every verdict carries one, so the ledger can be mined by kind ("show me every rating page
 # we called SAFE") and not only by severity. Fixed vocabulary, because free text would not group.
-VERDICT_CATEGORIES="phishing email-harvest scam malware adult spam unsubscribe marketing questionnaire poll rating login content other"
+VERDICT_CATEGORIES="phishing email-harvest scam malware adult spam unsubscribe marketing questionnaire poll rating login parked content other"
 
 # is_category <name> -> exit 0 if it is one of the fixed categories above.
 is_category() { case " $VERDICT_CATEGORIES " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
@@ -36,6 +36,14 @@ category_of() {
     # the only one worth reading out of the vision note. It never outranks a credential form: an
     # adult-baited harvester is still, first, after the password.
     printf '%s' "$vision" | grep -qiE 'ADULT:?[[:space:]]*yes' && adult=1
+    # A registrar/host placeholder is the ONE thing worth naming on an unjudgeable page, and it is
+    # named ABOVE the UNCLEAR guard below on purpose: "we could not judge this, because the domain
+    # is parked" is a complete answer, where a bare UNCLEAR is a shrug. It is also the only fact
+    # such a scan actually established -- everything else on that page belongs to the registrar.
+    # Never over a credential form (a followed login page can merge its signals in): a harvester
+    # squatting behind a parking lander is still, first, after the password.
+    [ "$has_login" != "true" ] && printf '%s' "$smells" | grep -qi 'domain placeholder page' \
+        && { echo parked; return 0; }
     # UNCLEAR / empty: the scan could not judge the page (blank fetch, dead host, no LLM), so it
     # does not get to name it either. A category is a claim, and we have nothing to claim from.
     case "$verdict" in SAFE|SUSPICIOUS|DANGEROUS) ;; *) return 0 ;; esac
@@ -299,9 +307,11 @@ is_unsub_url() {
     printf '%s' "$1" | grep -qiE 'unsub|opt[-_]?out|list[-_]?manage|/remove|mailpref|newsletter'
 }
 
-# is_blank_page <http_status> <element_count> -> exit 0 when the fetch produced nothing
-# assessable: an error status, or a DOM with zero links/forms/scripts/images/iframes.
-# Scoring either yields a phantom "clean" verdict -- the scanner saw NO page, which is not
+# is_blank_page <http_status> <element_count> [smells] -> exit 0 when the fetch produced nothing
+# assessable: an error status, a DOM with zero links/forms/scripts/images/iframes, or a domain
+# placeholder page (registrar parking / host default / suspension notice -- a 200 with a full DOM
+# that belongs to the REGISTRAR, not to the link we were asked about).
+# Scoring any of them yields a phantom "clean" verdict -- the scanner saw NO page, which is not
 # the same as seeing a safe one (healthlynotes.com: HTTP 500 "Database Error", empty DOM,
 # zero smells -> SAFE). Callers must degrade the verdict to UNCLEAR; the floor still runs,
 # so static signals (risky TLD, young domain) can still escalate over it.
@@ -309,6 +319,7 @@ is_unsub_url() {
 is_blank_page() {
     [ -n "$1" ] && [ "$1" -ge 400 ] 2>/dev/null && return 0
     [ "${2:-0}" -eq 0 ] 2>/dev/null && return 0
+    printf '%s' "${3:-}" | grep -qi 'domain placeholder page' && return 0
     return 1
 }
 
@@ -322,7 +333,10 @@ count_red_flags() {
     # one flag per phishing smell the scraper reported, EXCEPT hidden-field count:
     # legit sites (GitHub has 40) routinely exceed the scraper's threshold, so it must
     # not by itself force the DANGEROUS floor. Still shown to the LLM as context.
-    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin|bot-gate sitekey' | grep -c .) ))
+    # domain placeholder page: parked domains are overwhelmingly ordinary (an expired business, a
+    # speculator's inventory), so "there is no site here" is not evidence of phishing. It degrades
+    # the scan to UNCLEAR via is_blank_page instead, which is the honest claim.
+    [ -n "$smells" ] && n=$(( n + $(printf '%s' "$smells" | tr ',' '\n' | grep -viE 'hidden form field|third-party hosts referenced|hotlinked brand image|previously inspected as suspicious|domain suspended at the registry|holds a websocket to its own origin|bot-gate sitekey|domain placeholder page' | grep -c .) ))
     # suspicious JS present -- but it's only the TRIGGER for deobfuscation (Phase 3.5). When that
     # ran (deobfus non-empty), line 38 scores the malicious findings and same-domain-only output
     # means the marker was cleared; count the raw marker itself only when deob did NOT adjudicate it

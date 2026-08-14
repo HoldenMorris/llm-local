@@ -1120,9 +1120,17 @@ fi
 WAYBACK_LLM=""
 _gate_denied=""
 printf '%s' "$SMELLS" | grep -qi 'gated from the scraper' && _gate_denied=1
-if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ] || [ -n "$_gate_denied" ]; then
+# A registrar/host placeholder is the third factless shape, and the archive is the ONLY source that
+# answers the question it raises: was there ever a site here? A kit that was up for six days and a
+# ten-year-old business whose registration lapsed both serve the same lander today.
+_placeholder=""
+printf '%s' "$SMELLS" | grep -qi 'domain placeholder page' && _placeholder=1
+_wbwhy="no live page to read"
+[ -n "$_gate_denied" ] && _wbwhy="bot gate denied us the real page"
+[ -n "$_placeholder" ] && _wbwhy="the fetch landed on a placeholder -- was there ever a site here?"
+if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ] || [ -n "$_gate_denied" ] || [ -n "$_placeholder" ]; then
     echo ""
-    echo "${BOLD}Web archive (${_gate_denied:+bot gate denied us the real page}${_gate_denied:-no live page to read})${RESET}"
+    echo "${BOLD}Web archive ($_wbwhy)${RESET}"
     if [ ! -s "$CACHE_DIR/wayback.json" ]; then
         curl -s --max-time 25 -G "http://web.archive.org/cdx/search/cdx" \
             --data-urlencode "url=$DOMAIN/*" --data-urlencode "output=json" \
@@ -1333,7 +1341,9 @@ fi
 # question is WHAT it is -- and adult/scam imagery leaves no trace in the DOM (this class titles
 # itself "No swiping. No ghosting."). The screenshot is the only witness. Gated on an existing red
 # flag, so a clean page still pays nothing for the ~1min call.
-if [ -z "$VISION_TRIGGER" ] && [ "${FORMS:-0}" -eq 0 ] \
+# Not on a placeholder page: the screenshot is the registrar's marketing, so the ~1min call can only
+# describe THAT. sportycast.com spent it to be told the parking lander "resembles a tech brand".
+if [ -z "$VISION_TRIGGER" ] && [ "${FORMS:-0}" -eq 0 ] && [ -z "$_placeholder" ] \
    && [ "$(count_red_flags "$TLD" "$AGE_DAYS" "$FINAL_URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS")" -ge 1 ]; then
     VISION_TRIGGER=category
 fi
@@ -1496,6 +1506,16 @@ else
 
 "
     fi
+    # The floor already forces UNCLEAR here (is_blank_page), but the LLM must not be left arguing
+    # the opposite: on a parked domain every counted flag is 0, so RULE 4 handed it a confident SAFE
+    # that then had to be overridden. UNCLEAR parses to empty in _parse_verdict, which is exactly
+    # "could not judge" -- and any real red flag still floors this to SUSPICIOUS underneath.
+    if [ -n "$_placeholder" ]; then
+        RULES="${RULES}RULE 2c: the page that was fetched is a DOMAIN PLACEHOLDER - a registrar parking page, a domain-for-sale lander, a web-server default page or a suspension notice.
+   -> VERDICT: UNCLEAR. This is NOT the site the link pointed at; everything on it belongs to the registrar or the host. There is nothing here to judge, so you must NOT call it SAFE. Answer exactly \"VERDICT: UNCLEAR\".
+
+"
+    fi
     RULES="${RULES}RULE 3: the RED FLAG COUNT is 1 or more, OR this is a mailing-list / unsubscribe endpoint.
    -> VERDICT: SUSPICIOUS (e.g. list-validation: a click confirms your address to spammers).
 
@@ -1633,8 +1653,12 @@ fi
 # from the LLM or from the no-signal default -- a phantom, so drop it to UNCLEAR here and let the
 # floor below still escalate on whatever static signals exist. Same failure shape as the data: URL
 # guard in page-fetch.sh: a dead target reads as a clean page.
-if [ -n "$PAGE_FETCHED" ] && is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS"; then
-    echo_yellow "[!] No assessable page (HTTP ${PAGE_STATUS:-?}, ${PAGE_ELEMS:-0} DOM elements) -- cannot call this SAFE"
+if [ -n "$PAGE_FETCHED" ] && is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS" "$SMELLS"; then
+    # A placeholder page is a 200 with a real DOM, so name the actual reason instead of printing
+    # element counts that make it look like a healthy page we simply disliked.
+    _why="HTTP ${PAGE_STATUS:-?} / ${PAGE_ELEMS:-0} DOM elements"
+    [ -n "$_placeholder" ] && _why="a registrar/host placeholder - not the linked site"
+    echo_yellow "[!] No assessable page ($_why) -- cannot call this SAFE"
     VERDICT=""
 fi
 # Same rule one step earlier: the host did not resolve, so there was no page to fetch at all. The
