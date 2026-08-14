@@ -248,7 +248,7 @@ if [ -n "$HOSTQ" ] || [ -n "$APEXQ" ] || [ -n "$CAMPQ" ]; then
             print lab[u]"\t"st[u]"\t"u"\t"note[u]"\t"cat[u] } }')
     if [ -n "$CAMPQ" ]; then
         [ -n "$_rows" ] && while IFS=$'\t' read -r _v _st _u _n _c; do
-            [ "$(campaign_key "$_u")" = "$_want" ] \
+            campaign_match "$(campaign_key "$_u")" "$_want" \
                 && printf '%s\t%s\t%s\t%s\t%s\n' "$_v" "$_st" "$_u" "$_n" "$_c"
         done <<< "$_rows"
     else

@@ -111,6 +111,20 @@ azurewebsites.net awsapprunner.com base44.app sealos.app myportfolio.com"
 # is_vanity_suffix <apex> -> exit 0 if that apex hands out customer-chosen subdomain labels.
 is_vanity_suffix() { case " $(printf '%s' "$VANITY_SUFFIXES" | tr '\n' ' ') " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+# Public url shorteners: hosts whose entire product is a redirect to somewhere else. Distinct
+# from the ESP link-trackers in url-analyze.sh (REDIRECT_SERVICES), which wrap one sender's
+# campaign -- these are open to anyone, so a shortener link says nothing about who sent it and a
+# dead one is not the "withdrawn by the service" tell a dead tracker link is.
+# Exact apex match, so "bit.ly" never matches "notbit.ly".
+SHORTENER_HOSTS="bit.ly tinyurl.com t.co goo.gl ow.ly buff.ly rebrand.ly is.gd cutt.ly lnkd.in
+shorturl.at rb.gy t.ly bl.ink snip.ly tiny.cc trib.al dlvr.it s.id v.gd shorte.st"
+
+# is_shortener <host> -> exit 0 if this host is a public url shortener.
+is_shortener() {
+    local h="${1,,}"; h="${h#www.}"
+    case " $(printf '%s' "$SHORTENER_HOSTS" | tr '\n' ' ') " in *" $h "*) return 0 ;; *) return 1 ;; esac
+}
+
 # is_tenant_suffix <apex> -> exit 0 if that apex is shared hosting rather than one owner.
 # Union of both lists: every vanity host is also multi-tenant, so an apex-wide rollup must stop at
 # blogspot.com and wordpress.com too -- one blogspot kit says nothing about the next blog.
@@ -201,6 +215,23 @@ redirect_target() {
     printf '%s' "${d,,}"
 }
 
+# campaign_match <keys-a> <keys-b> -> exit 0 if the two key SETS share at least one key.
+# campaign_key emits one key per line, so a link carrying a per-victim token alongside the
+# operator's tag still groups on the tag. Any single shared key is a match: the tags are already
+# filtered to opaque alnum tokens, and only `inspected` rows ever reach a verdict with this.
+campaign_match() {
+    local a blist="
+$2
+"
+    while IFS= read -r a; do
+        [ -n "$a" ] || continue
+        case "$blist" in *"
+$a
+"*) return 0 ;; esac
+    done <<< "$1"
+    return 1
+}
+
 # has_gratuitous_encoding <string> -> exit 0 if an UNRESERVED character was percent-encoded.
 # RFC 3986 says unreserved characters (A-Z a-z 0-9 - . _ ~) must not be encoded, and no normal
 # tool does it. "h%74tps://" is a plain 't' hidden from anything that reads the url as text, which
@@ -227,10 +258,18 @@ has_gratuitous_encoding() {
 # per-recipient keys are dropped outright: utm_campaign really is shared by unrelated legitimate
 # sites in one mailshot, which is the one false grouping this could produce.
 # Pure bash, no forks: this runs once per ledger row.
-# ponytail: pairs keep their url order rather than being sorted, so ?a=x1&b=y2 and ?b=y2&a=x1 do
-# not group. Sort them if a kit ever shuffles its own query order.
+#
+# ONE KEY PER QUALIFYING PAIR, newline-separated -- never one composite. Gluing them together made
+# the key unique per LINK instead of per campaign, which silently destroyed the whole rollup:
+# gbq17.ecandy.space/?s1=upg12&email=...&s3=pvx4g keyed as "s1=upg12&s3=pvx4g" and
+# oen666.ouronly.space/?s1=upg12&email=...&s3=3j78q as "s1=upg12&s3=3j78q", while the 30
+# human-INSPECTED DANGEROUS rows in the ledger carry the bare s1=upg12. Exact-string matching on
+# the composite therefore never fired -- the s3 token is minted per link, so the composite could
+# never match anything, not even itself twice. Two live kits scanned SUSPICIOUS with the strongest
+# evidence this toolkit holds sitting unreachable in the ledger.
+# Matching is set intersection (campaign_match), so any one shared tag groups them.
 campaign_key() {
-    local url="$1" q pair k v out="" oldifs
+    local url="$1" q pair k v out="" oldifs _NL=$'\n'
     # Shape 2 first, because it needs no query string at all: the leading subdomain label repeated
     # as the first path segment. u5xb.eaotocephalic.digital/u5xb and
     # u5xb.iaoerheartwounding.digital/u5xb are one campaign on two unrelated registered domains, so
@@ -258,7 +297,7 @@ campaign_key() {
         case "$v" in *[!a-zA-Z0-9]*) continue ;; esac      # opaque means alnum only
         case "$v" in *[a-zA-Z]*) ;; *) continue ;; esac    # ... with letters
         case "$v" in *[0-9]*) ;; *) continue ;; esac       # ... and digits
-        out="${out:+$out&}$k=$v"
+        out="${out:+$out$_NL}$k=$v"
     done
     # Nothing matched by value? Try SHAPE. A kit that mints a fresh token per victim can never be
     # grouped by an exact value, but its generator still leaves a fingerprint: both hops of the
@@ -464,6 +503,22 @@ classify_verdict() {
     [ "$has_login" != "true" ] \
         && printf '%s' "$smells" | grep -qi 'gated from the scraper' \
         && printf '%s' "$smells" | grep -qi 'confirmed phishing previously inspected' && gatedbad=1
+    # Phishing CONFIRMED BY A HUMAN under this exact campaign tag, on some other domain. The tag is
+    # the operator's own affiliate/sub-id: it is not a property of the domain, it is the thing the
+    # operator carries across the rotation, so a new 0-day domain wearing it is the same kit. Two
+    # live adult-dating kits (gbq17.ecandy.space, oen666.ouronly.space, s1=upg12) read SUSPICIOUS
+    # with THIRTY inspected-DANGEROUS siblings in the ledger, and both needed a human to correct
+    # them -- there is no credential form on an affiliate lure, so the login-gated rule cannot fire
+    # and nothing else could carry it.
+    # Both halves required, exactly like gatedbad above: the campaign flag plus at least one
+    # independent one (flags >= 2, since the campaign smell counts as one itself). A lone campaign
+    # hit on an otherwise clean established domain stays SUSPICIOUS -- that is the grouping being
+    # right about the operator but saying nothing about THIS page. Only `inspected` rows produce
+    # this wording, so it can never bootstrap off the scanner's own verdicts, and the campaign
+    # rollup only runs when the domain itself is unknown to us, so the two flags are never the same
+    # piece of evidence counted twice.
+    local campbad=""
+    printf '%s' "$smells" | grep -qi 'previously inspected under the same campaign tag' && campbad=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -479,6 +534,8 @@ classify_verdict() {
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
     elif [ -n "$gatedbad" ]; then
         floor=DANGEROUS; reason="bot/cloak gate hiding the real page + phishing already confirmed on this host, domain or campaign"
+    elif [ -n "$campbad" ] && [ "$flags" -ge 2 ]; then
+        floor=DANGEROUS; reason="phishing already confirmed by inspection under this campaign tag + $flags red flag(s)"
     elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ] || [ -n "$rdaphold" ] || [ -n "$bitm" ]; then
         floor=SUSPICIOUS
         reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}${rdaphold:+ + the domain is suspended at the registry (RDAP hold)}${bitm:+ + credential page relaying over its own websocket (browser-in-the-middle)}"

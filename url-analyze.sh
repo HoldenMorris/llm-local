@@ -653,17 +653,53 @@ if [ -z "$SKIP_FETCH" ]; then
         # itself is never a signal: only what the DESTINATION contains scores, exactly like the
         # login-link follow above.
         REDIR_FOLLOWED=""; REDIR_SCORES=""
+        # A public shortener that showed the BROWSER a preview interstitial instead of the 301.
+        # bit.ly/4xK4QF2 answered headless Chrome with a 200 preview page -- "Here's a preview of
+        # your destination", an 8-second timer, ad iframes and a cookie wall -- while a plain
+        # no-follow request to the SAME url returned 301 to the real destination. So the scan
+        # judged Bitly's own furniture (skewed link profile, 4 iframes, random path: 4 red flags,
+        # all of them structural) and the page the link actually opens was fetched by nothing.
+        # Neither half of the interstitial follow below can reach that case. The destination is
+        # not in a query parameter -- the token is opaque, so redirect_url returns nothing -- and
+        # a preview page carries ads and nav, so it fails the "3 links or fewer" contentless test.
+        # One HEAD answers it: no DOM parsing, no anchor-text guessing, no waiting out the timer.
+        # Gated on the LANDED host, so a shortener that did redirect us has already been followed
+        # by the browser and costs nothing here.
+        SHORT_DEST=""
+        _land_h=$(echo "$PAGE_DATA" | jq -r '.domain // empty' 2>/dev/null)
+        if is_shortener "${_land_h:-$DOMAIN}"; then
+            SHORT_DEST=$(curl -s -I --max-time 10 -o /dev/null -w '%{redirect_url}' "$URL" 2>/dev/null)
+            case "$SHORT_DEST" in
+                # Same host back = it did not resolve to anywhere else; not a destination.
+                "http://${_land_h}"*|"https://${_land_h}"*) SHORT_DEST="" ;;
+                http://*|https://*) ;;
+                *) SHORT_DEST="" ;;
+            esac
+        fi
         # Counts read straight from PAGE_DATA: the FORMS/LOGIN_FORMS variables are not derived
         # until after this whole block closes, so ${FORMS:-0} here would read 0 on every page.
-        if [ -n "$REDIR_OFFSITE" ] && [ "$HAS_LOGIN" != "true" ] \
-           && [ "$(echo "$PAGE_DATA" | jq -r '.counts.forms // 0' 2>/dev/null)" -eq 0 ] 2>/dev/null \
-           && [ "$(echo "$PAGE_DATA" | jq -r '.counts.links // 0' 2>/dev/null)" -le 3 ] 2>/dev/null; then
-            _rd_url=$(redirect_url "$URL")
+        if [ -n "$SHORT_DEST" ] \
+           || { [ -n "$REDIR_OFFSITE" ] && [ "$HAS_LOGIN" != "true" ] \
+                && [ "$(echo "$PAGE_DATA" | jq -r '.counts.forms // 0' 2>/dev/null)" -eq 0 ] 2>/dev/null \
+                && [ "$(echo "$PAGE_DATA" | jq -r '.counts.links // 0' 2>/dev/null)" -le 3 ] 2>/dev/null; }; then
+            _rd_url="${SHORT_DEST:-$(redirect_url "$URL")}"
+            # The age guard below reads REDIR_TARGET, which only the query-parameter path fills in.
+            # Without this the shortener destination would read "age unknown" -> established by
+            # default, and a kit behind bit.ly could never score even when its domain is a day old.
+            if [ -n "$SHORT_DEST" ]; then
+                REDIR_TARGET="${SHORT_DEST#*://}"; REDIR_TARGET="${REDIR_TARGET%%[/?#]*}"
+                REDIR_TARGET="${REDIR_TARGET##*@}"; REDIR_TARGET="${REDIR_TARGET%%:*}"
+                REDIR_TARGET="${REDIR_TARGET,,}"
+            fi
             if [ -n "$_rd_url" ]; then
                 if [ -f "$CACHE_DIR/page-redirect.json" ]; then
                     REDIR_DATA=$(cat "$CACHE_DIR/page-redirect.json")
                 else
-                    echo_grey "- Interstitial with no content of its own; following the decoded destination: $_rd_url"
+                    if [ -n "$SHORT_DEST" ]; then
+                        echo_grey "- Url shortener showed the browser a preview page; a plain request 301s to: $_rd_url"
+                    else
+                        echo_grey "- Interstitial with no content of its own; following the decoded destination: $_rd_url"
+                    fi
                     [ -z "$NO_VISION" ] && REDIR_SHOT="$CACHE_DIR/redirect.jpg"
                     REDIR_DATA=$(PAGE_SHOT="$REDIR_SHOT" "$SCRIPT_DIR/page-fetch.sh" \
                         ${PROXY:+-p "$PROXY"} ${EXIT_CC:+-g "$EXIT_CC"} "$_rd_url" 2>/dev/null | tail -1)

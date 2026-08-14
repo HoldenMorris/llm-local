@@ -33,6 +33,39 @@ expect "xyz is risky"      yes is_risky_tld xyz
 expect "zip is risky"      yes is_risky_tld zip
 expect "com is not risky"  no  is_risky_tld com
 
+# A human already inspected another domain under this campaign tag and called it phishing. An
+# affiliate lure has no credential form, so the login-gated rule can never fire on one -- these two
+# adult-dating kits read SUSPICIOUS against 30 inspected-DANGEROUS siblings until this rule.
+CAMPBAD='Confirmed phishing previously inspected under the same campaign tag s1=upg12 (https://a.space/?s1=upg12)'
+check "campaign confirmed + young domain -> DANGEROUS" DANGEROUS  "$(cv false space 0 '' 'https://x.space/?s1=upg12' "$CAMPBAD" '' '' SAFE)"
+check "campaign confirmed alone stays SUSPICIOUS"      SUSPICIOUS "$(cv false com 4000 '' 'https://x.com/?s1=upg12' "$CAMPBAD" '' '' SAFE)"
+check "campaign confirmed + login is DANGEROUS anyway" DANGEROUS  "$(cv true com 4000 '' 'https://x.com/?s1=upg12' "$CAMPBAD" '' '' SAFE)"
+CAMPSUSP='A url under the same campaign tag s1=upg12 was previously inspected as suspicious (https://a.space/?s1=upg12)'
+check "campaign SUSPICIOUS sibling never floors up"    SUSPICIOUS "$(cv false space 0 '' 'https://x.space/?s1=upg12' "$CAMPSUSP" '' '' SAFE)"
+
+echo "== campaign_key / campaign_match =="
+UPG='https://gbq17.ecandy.space/?s1=upg12&email=georgen@pesca.co.za&s3=pvx4g'
+UPG2='https://oen666.ouronly.space/?s1=upg12&email=x@y.co.za&s3=3j78q'
+BARE='https://ul590.getmypair.space/?s1=upg12'
+check "one key per line not a composite" "s1=upg12
+s3=pvx4g" "$(campaign_key "$UPG")"
+check "email= is still dropped"          ""  "$(campaign_key 'https://x.space/?email=a@b.co')"
+expect "per-link s3 still groups on s1"  yes campaign_match "$(campaign_key "$UPG")" "$(campaign_key "$BARE")"
+expect "two links of one campaign group" yes campaign_match "$(campaign_key "$UPG")" "$(campaign_key "$UPG2")"
+expect "unrelated tags do not group"     no  campaign_match "s1=upg12" "s1=zzz99"
+expect "empty key set never matches"     no  campaign_match "" "s1=upg12"
+expect "empty other side never matches"  no  campaign_match "s1=upg12" ""
+
+echo "== is_shortener =="
+expect "bit.ly is a shortener"        yes is_shortener bit.ly
+expect "www.bit.ly too"               yes is_shortener www.bit.ly
+expect "case insensitive"             yes is_shortener BIT.LY
+expect "t.co is a shortener"          yes is_shortener t.co
+expect "notbit.ly is not"             no  is_shortener notbit.ly
+expect "a subdomain of one is not"    no  is_shortener a.bit.ly
+expect "motusaa.co.za is not"         no  is_shortener motusaa.co.za
+expect "an ESP tracker is not"        no  is_shortener mjt.lu
+
 echo "== is_unsub_url =="
 expect "unsubscribe url"   yes is_unsub_url "https://x.com/unsubscribe?e=aGk"
 expect "opt-out url"       yes is_unsub_url "https://x.com/opt-out"

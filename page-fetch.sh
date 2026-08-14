@@ -42,7 +42,16 @@ IMAGE="ghcr.io/puppeteer/puppeteer:latest"
 # 1 with an empty stdout, which every caller reads as a page that would not load. A whole parallel
 # corpus sweep came back "dead host" that way.
 JS_TMP="/tmp/page-fetch-$$.js"
-trap 'rm -f "$JS_TMP"' EXIT INT TERM
+# A wall-clock cap on the whole fetch. Puppeteer's own timeouts bound individual steps (goto 60s,
+# readyState 10s) and NOT the fetch as a whole: one live page held a 220-url corpus replay for five
+# minutes, and this script is the step an alert pipeline would sit behind, where five minutes is a
+# stalled queue rather than a slow scan. On expiry the caller sees an empty stdout and a non-zero
+# exit -- which is already how it reads a fetch that failed, so a timed-out scan degrades to
+# UNCLEAR the same way a dead host does, and never to SAFE.
+# The container is killed explicitly: --rm only fires when the client exits normally, so a killed
+# client would otherwise leave a container (and a docker-held /out mount) behind.
+PAGE_TIMEOUT="${PAGE_TIMEOUT:-180}"
+trap 'rm -f "$JS_TMP"; docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1' EXIT INT TERM
 
 cat << 'SCRIPT' > "$JS_TMP"
 const puppeteer = require('puppeteer');
@@ -1060,6 +1069,8 @@ source "$SCRIPT_DIR/psl.sh"
 PSL_MOUNT=()
 psl_ensure && PSL_MOUNT=(-v "$PSL_FILE":/home/pptruser/psl.dat:ro)
 
+_rc=0
+timeout -k 10 "$PAGE_TIMEOUT" \
 docker run --rm --name "$CONTAINER_NAME" \
   --cap-drop ALL \
   --cap-add SYS_ADMIN \
@@ -1076,6 +1087,12 @@ docker run --rm --name "$CONTAINER_NAME" \
   "${SHOT_MOUNT[@]}" \
   "${SCRIPTS_MOUNT[@]}" \
   "$IMAGE" \
-  node /home/pptruser/script.js "$URL" "$UA_MODE" "$SHOT_ARG" "$SCRIPTS_ARG" 2>/dev/null
+  node /home/pptruser/script.js "$URL" "$UA_MODE" "$SHOT_ARG" "$SCRIPTS_ARG" 2>/dev/null || _rc=$?
 
-rm -f "$JS_TMP"
+# 124 = timeout expired, 137 = it needed the KILL. Name it on stderr: an empty stdout otherwise
+# reads as "the page would not load", and a scan that ran out of time is a different fact from a
+# page that was never there.
+if [ "$_rc" -ge 124 ]; then
+  echo "page-fetch: timed out after ${PAGE_TIMEOUT}s (container killed) - $URL" >&2
+fi
+exit "$_rc"
