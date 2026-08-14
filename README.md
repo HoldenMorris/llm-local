@@ -57,7 +57,7 @@ forces a refresh.
 | `url-benchmark.sh` | Accuracy-vs-time matrix over a labeled URL corpus, per machine |
 | `js-deobfuscate.sh` / `js-signals.sh` | Sandboxed webcrack runner and the signal extractor over its output |
 | `psl.sh` / `brand-verify.sh` / `machine.sh` / `colors.sh` | Shared helpers (`source` them; each has a self-check) |
-| `sync-to-luca.sh` | Publish this repo's HEAD into `luca-ecosystem/tools/local-llm` on a fresh branch |
+| `sync-to-luca.sh` | Publish this repo's HEAD into `luca-ecosystem/tools/local-llm` on a fresh branch. Lives in the source repo only — it is `export-ignore`d, so it is absent from the luca snapshot |
 | `benchmark.sh` / `llm-test.sh` / `show_results.sh` | The original email-spam classification benchmark over `test-corpus/` |
 
 ## The feedback ledger

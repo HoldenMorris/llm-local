@@ -62,4 +62,6 @@ wrong and nobody has triaged yet.
 `./sync-to-luca.sh` exports this repo's **HEAD** into `luca-ecosystem/tools/local-llm` on a fresh
 branch and prints a PR link. This repo stays the source of truth; never hand-edit the copy there.
 It refuses to run on a dirty tree, and it exports tracked files only, so `.env` and `.cache/` can
-never leak.
+never leak. The script itself is `export-ignore`d, so if you are reading this **inside**
+`luca-ecosystem` you are looking at a point-in-time snapshot: the changes go in the source repo,
+and a re-sync brings them here.
