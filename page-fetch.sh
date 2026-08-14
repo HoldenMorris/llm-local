@@ -913,6 +913,30 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
   // ponytail: optional viewport screenshot for the vision-model escalation (argv[4] = container path)
   const shotPath = process.argv[4];
   if (shotPath) {
+    // A template preloader hides itself on window 'load', and network idle does NOT imply that.
+    // stl-hk.net had two Google font files still in flight ("Slow network is detected" in the
+    // console), so load never fired and the shot was a spinner on white -- while the DOM behind it
+    // was complete (15 links, 3 images, the real title). The DOM signals were fine; what was lost
+    // is the vision phase and the human read, which is exactly the evidence a "cloak or just slow?"
+    // call needs. So wait for the condition the preloader is actually waiting on, not for silence.
+    await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 }).catch(() => {});
+    // Still covered? Then load is not coming. Hide the overlay rather than photograph it -- the
+    // page underneath is already rendered, so this recovers a usable screenshot instead of
+    // spending the ~1min vision call on a spinner. Named preloaders ONLY, and only while one
+    // actually covers the viewport, so a real full-screen element (a login modal, a cloak gate --
+    // the thing we most want to see) is never touched.
+    // ponytail: the id/class naming IS the whole test. An unnamed overlay still gets photographed;
+    // upgrade path is comparing two shots a second apart and only then removing what did not move.
+    await page.evaluate(() => {
+      const viewport = innerWidth * innerHeight;
+      const named = '[id*="load" i],[class*="load" i],[id*="preload" i],[class*="preload" i],[id*="spin" i],[class*="spin" i]';
+      for (const el of document.querySelectorAll(named)) {
+        const s = getComputedStyle(el), r = el.getBoundingClientRect();
+        if (s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) continue;
+        if ((s.position === 'fixed' || s.position === 'absolute') && r.width * r.height > viewport * 0.6)
+          el.style.display = 'none';
+      }
+    }).catch(() => {});
     const isJpeg = /\.jpe?g$/i.test(shotPath);
     await page.screenshot({ path: shotPath, ...(isJpeg ? { quality: 70 } : {}) }).catch(() => {});
   }

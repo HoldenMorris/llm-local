@@ -577,6 +577,20 @@ the soft dating-lure sibling on the same campaign (fully clothed, "Thousands of 
 `ADULT: no` — verified, along with four ordinary pages (a bank e-statement, a competition landing
 page, two webmail logins), all `ADULT: no`.
 
+**The screenshot waits for the page, not for the network.** A template preloader hides itself on
+window `load`, and the `waitForNetworkIdle` before the shot does **not** imply that:
+`www.stl-hk.net/index.php` had two Google font files still in flight ("Slow network is detected" in
+the console), so `load` never fired and the screenshot was a spinner on white — while the DOM
+behind it was complete (15 links, 3 images, the real title). Nothing was wrong with the signals;
+what was lost was the vision phase and the human read, which is exactly the evidence a "cloak, or
+just slow?" call needs. So `page-fetch.sh` waits for `document.readyState === 'complete'` (bounded,
+10s) — the condition the preloader is actually waiting on — and if an overlay is *still* covering
+the viewport it hides it rather than photograph it, because the page underneath is already
+rendered. Named preloaders only (`id`/`class` matching load/preload/spin), and only while one
+covers 60% or more of the viewport, so a genuine full-screen element — a login modal, a cloak gate,
+the thing we most want to see — is never touched. A normal page pays nothing: `github.com/login`
+still shoots in 8s.
+
 ### Phase 4: LLM Analysis
 
 - Reads all the signals in context
