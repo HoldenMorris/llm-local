@@ -42,7 +42,12 @@ caches per URL in `.cache/<url-hash>/`.
 
 | Capability | Script | Output an agent can consume |
 |------------|--------|------------------------------|
-| **Deterministic verdict core** | `verdict.sh` (`classify_verdict`) | A safety **floor** from the signals that *escalates over* the LLM and **never downgrades** — so a flaky small model can't talk a threat down. Pure, no network. Pinned by `test-verdict.sh` (45 golden cases). |
+| **Deterministic verdict core** | `verdict.sh` (`classify_verdict`) | A safety **floor** from the signals that *escalates over* the LLM and **never downgrades** — so a flaky small model can't talk a threat down. Pure, no network. Pinned by `test-verdict.sh` (188 golden cases). |
+| **Verdict category** | `verdict.sh` (`category_of`) | Alongside the severity, *what the page is*, from a fixed vocabulary: `phishing`, `email-harvest`, `scam`, `malware`, `adult`, `spam`, `unsubscribe`, `marketing`, `questionnaire`, `poll`, `rating`, `login`, `content`, `other`. Mineable; free text is not. |
+| **Analyst ledger + `--settled`** | `feedback-report.sh` | Every human ruling, append-only, latest row wins. **`--settled <url>` is the alerting hook**: exit `0` = settled SAFE (auto-resolve), `2` = settled bad (auto-confirm), `1` = unknown (a human must look), with a TSV line of verdict/category/scope/matched-url/note. Scope is the exact URL then the host — never the apex, because a wrong auto-resolve is a missed phish. 365 responses, 134 inspected today. |
+| **Prior-judgement rollups** | `verdict.sh` + the ledger | A settled verdict on the same host, registrable domain, or **campaign tag** (`?s1=…`, a SendGrid tracking blob) is evidence about the next URL — which is what survives a domain rotation. |
+| **Slack alert triage** | `next-alert.sh`, `slack-harvest.sh` | `next-alert.sh` reads the newest **unruled** alert in `#luca-phishing-alerts`, asks the ledger before any network, scans only the unknown, and says which button to click — it never clicks, because a recorded verdict must mean a human looked. `slack-harvest.sh` imports rulings already made in Slack back into the ledger (first run: 98). |
+| **Weekly replay** | `feedback-report.sh --corpus` + `url-benchmark.sh` | The settled rows are labelled data, so accuracy is re-measured against real analyst verdicts, not a static fixture set. Dead URLs drop out (liveness rows) so the scanner is scored on detection, not uptime. |
 | **Sandboxed page fetch** | `page-fetch.sh <url>` | JSON on stdout: `{finalUrl, redirects[], title, hasLoginForm, counts{}, thirdPartyDomains[], exfilDomains[], suspiciousJs[], phishingSmells[], console[]}`. Never executes attacker JS. |
 | **Static URL analysis** | `url-analyze.sh` (phase 1) | risky TLD, typosquat, homograph, high-entropy/random domain, free-tunnel host (ngrok/trycloudflare/…). |
 | **Domain intel** | `url-analyze.sh` (phase 2) | IP geo (ip-api), domain age (RDAP), SSL cert age/issuer (openssl), fast-flux DNS. |
@@ -60,6 +65,14 @@ sub-second for `-H`. **Batch/async, not the inline request path.**
 ---
 
 ## Integration roadmap (phased, cheapest first)
+
+**Phase 0 — suppression, and it is one call.** Before `poller.poll_once` posts an alert, ask
+`./feedback-report.sh --settled <url>`: exit `0` auto-resolves, `2` auto-confirms, `1` posts to the
+channel as today. This is already built and already answering — the same check is what
+`next-alert.sh` runs. It is the cheapest phase and the biggest win, because the volume problem is
+repeats: **thirty alerts in twenty minutes for a host a human inspected three hours earlier** is how
+a real detection gets buried. It needs the ledger reachable from the gateway host (see the ceiling
+below), not a new service.
 
 **Phase A — deterministic evidence on the alert (no LLM).**
 A worker consumes new high-confidence `ClassificationAttempt` rows, runs
@@ -90,6 +103,14 @@ screenshot rather than a blank cloak.
 - **Secrets.** `-t` and the Claude path need `.env` keys (`VT_API_KEY`, `URLSCAN_API_KEY`,
   `ANTHROPIC_API_KEY`) — `.env` is gitignored; `.env.sample` is the template.
 - **Timing.** Never inline in a request; enrichment is async/batch.
+- **The ledger is machine-local.** It lives in `.cache/*/feedback.txt` on Holden's box, so Phase 0
+  needs it moved somewhere the gateway can read — a shared volume, or a table. The row format is
+  append-only TSV and `feedback-report.sh -i` is the only writer, so this is a storage decision, not
+  a rewrite.
+- **Nothing here clicks a Slack button, by design.** `next-alert.sh` names the button and stops. An
+  `inspected` row asserts that a human looked, and the weekly replay is scored against those rows —
+  so if the machine records its own verdicts, the corpus starts grading the scanner on its own
+  output.
 
 ---
 
@@ -100,6 +121,11 @@ screenshot rather than a blank cloak.
 ./url-analyze.sh -H <url>             # → deterministic verdict only (SAFE|SUSPICIOUS|DANGEROUS), fast.
 ./url-analyze.sh -m qwen2.5:1.5b <url>   # → + small-LLM rationale
 ./url-analyze.sh -t -m claude <url>   # → + VirusTotal/urlscan + Claude verdict
+
+./feedback-report.sh --settled <url>  # → exit 0 settled-SAFE / 2 settled-bad / 1 unknown, + TSV.
+                                      #   Ask this BEFORE any scan and before any alert posts.
+./feedback-report.sh --host <host>    # → what the ledger already knows about this host
+./next-alert.sh                       # → the newest unruled Slack alert + which button it earns
 ```
 
 Verdict values: `SAFE | SUSPICIOUS | DANGEROUS`. Cache: `.cache/<sha256(url)[:16]>/` (`-r` to

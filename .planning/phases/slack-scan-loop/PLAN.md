@@ -73,7 +73,7 @@ is the safe half — no live infrastructure is fetched.
 **If drafting turns out to be impossible** — some integrations only send — stop and re-decide. The
 "draft, do not post" call is what makes the rest of this safe, and it is not mine to overturn.
 
-## 2. `feedback-report.sh --settled` over one channel message
+## 2. `feedback-report.sh --settled` over one channel message — DONE (2026-08-13, `next-alert.sh`)
 
 **Why:** the cheapest half of the whole plan, and the earlier intake's first proposal. Most alerts
 are hosts we have already judged.
@@ -85,7 +85,20 @@ already settled bad, **1** → unknown. Draft the answer straight from the TSV l
 **Done when:** a message naming a host already in the ledger produces a drafted reply quoting the
 prior inspection, with no scan run at all.
 
-## 3. The pass itself, as a skill
+## 3. The pass itself — SHIPPED AS A SCRIPT, NOT A SKILL (2026-08-13)
+
+**What actually shipped:** `next-alert.sh`, one alert per invocation, run by hand. It reads the
+channel through `claude -p`, picks the newest alert with **no `Recorded:` line** (LUCA rewrites its
+own message when somebody rules, so the buttons still showing *is* the open-worklist filter — a
+watermark was not needed), asks `--settled`, scans only the unknown, and prints the button the
+evidence earns. `-u <url>` rules on one URL, `-a` re-offers one already shown.
+
+Two things the plan below got wrong, both found by building it: the seen-state file was
+unnecessary (the message carries its own state), and the scans must **close stdin** — four prompts
+in `url-analyze.sh` are gated on `[ -t 0 ]` alone, so a scripted caller hangs on a question nobody
+can see. A periodic `/loop` pass is still open, and is the cheap add when volume asks for it.
+
+**Original shape (kept for the reasoning):**
 
 **Do:** `.claude/skills/scan-slack/SKILL.md`, one pass:
 
@@ -103,7 +116,8 @@ than a rate-limit ban.
 **Done when:** one pass over a channel with a known-settled URL, a known-bad URL and a fresh URL
 produces exactly one scan and three drafts.
 
-## 4. Retention — the part a loop breaks
+## 4. Retention — DONE (2026-08-13). `next-alert.sh` wipes the page artifacts of a scan it ran
+itself and keeps `feedback.txt`; `KEEP=1` overrides. A human's own scan keeps its prompt.
 
 **Why:** `url-analyze.sh` asks "keep the artifacts?" only on a bare run, and **any** flag turns that
 off. A loop always passes flags. So an unattended loop silently accumulates `page.json`, screenshots
@@ -119,7 +133,10 @@ cannot regenerate. Make it the default for loop-initiated scans; a human scan ke
 **Not optional, and not last because it is least important** — it is last because it needs the
 loop to exist to be testable.
 
-## 5. Deep inspection for the unknowns
+## 5. Deep inspection for the unknowns — DONE (2026-08-14). The prompt moved into `inspect.sh` so
+the `i` branch of `url-analyze.sh` and `next-alert.sh` share one copy; a scan that lands on Skip is
+resolved by that inspection instead of being handed back unfinished. It still writes no
+`inspected` row — the row gets written when a human rules, for the reason below.
 
 **Why:** the intake's second proposal. The `i` prompt in `url-analyze.sh` already runs a headless
 `claude -p` over the cached artifacts and returns `VERDICT:`/`NOTE:`.
@@ -131,6 +148,14 @@ loop to exist to be testable.
 rows for precisely that reason. If the loop writes inspections, the ledger starts asserting human
 review that did not happen — and the corpus those rows feed is what the weekly replay scores
 against. The row gets written when Holden sends the reply, not when the machine drafts it.
+
+## 6. Harvest the rulings that only ever lived in Slack — SHIPPED (2026-08-14), not in the original plan
+
+A click on a LUCA alert is a real human judgement, and it was invisible to us: `--settled` could not
+answer with it and the weekly replay never scored against it. `slack-harvest.sh` reads those
+`Recorded:` lines and writes them through `feedback-report.sh -i` (`FB_EXTERNAL=1`), deduped on the
+message `ts`. It guesses **no** category — a button press says a page is bad, not what it is. First
+run: 98 rulings, and the earlier alert sample went from **0 of 22** settled to **19 of 22**.
 
 ---
 

@@ -1,82 +1,65 @@
 # AGENTS.md
 
-## Project Overview
+Agent-facing brief. **[`CLAUDE.md`](CLAUDE.md) is the source of truth** for what this toolkit
+detects and why each detection is capped where it is — read it before changing detection code.
+This file only covers how to work in the repo.
 
-This is a local LLM spam detection benchmarking toolkit. It tests SLMs (Small Language Models) against a labeled corpus of `.eml` files to measure classification accuracy.
+## What this is
 
-## Key Files
+A URL/page phishing detection toolkit. `./url-analyze.sh <url>` renders the page in a sandbox and
+prints `SAFE | SUSPICIOUS | DANGEROUS` plus a category and the signals behind both. Two layers:
 
-| File | Purpose |
-|------|---------|
-| `benchmark.sh` | Main script - runs full test suite against corpus |
-| `llm-test.sh` | Single email test with detailed output |
-| `show_results.sh` | Renders results table from CSV |
-| `page-fetch.sh` | Sandboxed page scraper - extracts phishing signals |
-| `url-analyze.sh` | LLM-based URL safety analysis |
-| `prompts/*.txt` | System prompts - modify these to improve accuracy |
-| `test-corpus/*/` | Labeled test emails organized by category |
-| `results/*.csv` | Benchmark results stored for comparison |
+- **Deterministic core** — `verdict.sh` (`classify_verdict`, `category_of`, `campaign_key`,
+  `redirect_url`). Pure: no network, no LLM. It sets a safety **floor** that escalates over the
+  LLM and never downgrades. Pinned by `test-verdict.sh` (188 golden cases).
+- **Agentic shell** — `url-analyze.sh` orchestrates the phases and calls the LLM last, for a
+  rationale on top of the floor. See [`docs/determinism-plan.md`](docs/determinism-plan.md).
 
-## How the Benchmark Works
+The email-spam benchmark (`benchmark.sh`, `test-corpus/`, `prompts/`) is the original tool and
+still works, but it is not where the work is.
 
-1. Reads all `.eml` files from `test-corpus/` categories
-2. Extracts email body text
-3. Sends to Ollama API with system prompt + email content
-4. Parses response for "SPAM" or "HAM"
-5. Compares against expected category label
-6. Calculates accuracy and timing metrics
-7. Appends results to CSV
+## Rules that are not negotiable
 
-## Adding Test Cases
+1. **A detection fix ratchets BOTH paths forward.** Deterministic floor *and* LLM prompt, never one
+   traded against the other. A one-sided patch just moves the false result around. Full reasoning:
+   CLAUDE.md → "Detection changes drive forward".
+2. **Pin every fix with a golden case** in `test-verdict.sh`, and confirm a known-good page does not
+   regress.
+3. **Cap each new floor at the severity the signal earns.** A login page plus one off-CDN host is
+   SUSPICIOUS, not DANGEROUS.
+4. **A factless scan degrades to UNCLEAR, never SAFE.** "Saw nothing, called it clean" is the
+   recurring bug class in this repo.
+5. **Never commit scan artifacts.** `.cache/` and `url-corpus-live.txt` are gitignored because live
+   phishing URLs carry recipient email addresses and reset tokens. Grep before you add a fixture.
+6. **Ponytail mode** — see the ladder at the top of CLAUDE.md. Shortest working diff, reuse before
+   writing, mark deliberate shortcuts with a `ponytail:` comment.
 
-1. Create `.eml` file in appropriate `test-corpus/` subdirectory
-2. Use realistic email format (From, Subject, Body)
-3. Ensure category matches expected classification
-4. Run benchmark to include in results
-
-## Improving Accuracy
-
-If a model performs poorly:
-
-1. **Try different prompts** - Edit files in `prompts/`
-2. **Add more test cases** - Especially false positives/negatives
-3. **Try larger models** - gemma2:2b > qwen2.5:0.5b
-4. **Adjust num_predict** - Higher values may reduce truncation
-
-## Running Tests
+## Before you commit
 
 ```bash
-# Basic benchmark
-./benchmark.sh
-
-# Specific model
-./benchmark.sh gemma2:2b
-
-# With prompt
-./benchmark.sh qwen2.5:0.5b prompts/detailed.txt
-
-# Single test
-./llm-test.sh qwen2.5:0.5b
+./test-verdict.sh          # 188 golden cases, pure
+./feedback-report.sh --self-test
+./next-alert.sh --self-test
+./brand-verify.sh --self-test
+./psl.sh && ./inspect.sh   # self-checks
+bash -n page-fetch.sh      # and node --check the embedded JS if you touched it
 ```
 
-## Common Issues
+None of these touch the network or a live site.
 
-| Issue | Solution |
-|-------|----------|
-| Empty detection | Check API response format, model may be overloaded |
-| Slow inference | Normal for first run; model loads once then stays warm |
-| Model not found | Container downloads automatically, or pull manually |
-| Container conflicts | `docker rm -f llm-spam-test` then rerun |
+## Where new detection ideas come from
 
-## Performance Targets
+`./intel-feed.sh` prints what is new in the threat-intel feed, each item tagged with the detections
+we already have — or `NO MATCHING DETECTION`, which is the line worth an hour. Read the post for the
+**mechanism**, then ask what deterministic artifact survives a kit rebuild. That is the only part
+worth a signature.
 
-- **Accuracy**: >85% is good, >95% is excellent
-- **Speed**: <2s per email is acceptable for SLMs
-- **False positives**: Minimize clean emails classified as spam
+The other source is the ledger: `./feedback-report.sh -f` lists the scans an analyst flagged as
+wrong and nobody has triaged yet.
 
-## Prompt Engineering Tips
+## Publishing
 
-- Be explicit: "Respond with exactly SPAM or HAM"
-- Include spam indicators: urgency, links, requests for info
-- Test prompts with both true positives and true negatives
-- Temperature 0.0 for deterministic results
+`./sync-to-luca.sh` exports this repo's **HEAD** into `luca-ecosystem/tools/local-llm` on a fresh
+branch and prints a PR link. This repo stays the source of truth; never hand-edit the copy there.
+It refuses to run on a dirty tree, and it exports tracked files only, so `.env` and `.cache/` can
+never leak.
