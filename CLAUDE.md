@@ -88,7 +88,7 @@ VLM architectures.
 | `test-verdict.sh` | Golden tests that pin the deterministic verdict core (`verdict.sh`). Pure: no LLM, no network |
 | `intel-feed.sh` | Read a threat-intel RSS feed and print what is **new since the last check**, each item tagged with the detections we already have for the mechanism it describes — or `NO MATCHING DETECTION`, which is the only line worth an hour. Matching is keywords over the whole post body, so it over-claims; the matched term is printed next to every claim so a spurious one is visible. `-a` all items, `-n` dry run, `FEED_URL=` another feed. Seen-list in `.cache/intel-feed-seen.txt` |
 | `feedback-report.sh` | Mine analyst feedback (the "Do you agree?" prompt in `url-analyze.sh`) from `.cache/*/feedback.txt` into an agreement-rate and disagreement report. `-f` prints only the **open** flags, one per line. `-i <url> <note>` records a deep inspection: it appends an `inspected` row with what you found, which closes the flag (`FB_CATEGORY=<category>` records what the page is, in column 6). Rows are append-only and the **latest row wins**, so an inspection supersedes the flag but never erases it, and a later re-flag re-opens the URL. The prompt also takes `i` (inspect now): it writes the flag, then runs headless `claude -p` (read-only tools) over the cached scan artifacts to triage the verdict, and records the `VERDICT:` and `NOTE:` lines it returns as the inspection that closes the flag. No `claude` on PATH, or a failed run, falls back to a note you type. `FB_VERDICT=<SAFE\|SUSPICIOUS\|DANGEROUS>` on `-i` writes that **corrected** verdict into the row, and an **interactive** re-scan then reports it in the banner instead of the freshly computed one, with the machine verdict named underneath. Benchmarks are non-interactive, so they always measure the raw core and an inspection can never hide a regression. `--corpus` exports every **settled and live** URL as a labeled `VERDICT URL` corpus for `url-benchmark.sh`, which is the weekly replay. `--host <host> [exclude-url]` prints the settled judgements for one exact host, which is how a scan reuses what the ledger already knows about it. `--settled <url>` answers "have we already looked at this?" for an **alerting pipeline**: exit **0** = settled SAFE (auto-resolve), **2** = settled bad (auto-confirm), **1** = unknown (a human must look), with one TSV line (verdict, category, scope, matched-url, note) when it knows. Only `inspected` rows answer, and the scope is the exact URL then the host — never the apex, because a wrong auto-resolve is a missed phish rather than a noisy alert. Thirty alerts in twenty minutes for a host inspected three hours earlier is how a real detection gets buried. `FB_EXTERNAL=1` on `-i` accepts a URL with **no cached scan**, for a judgement made outside this toolkit (an analyst ruling on a LUCA alert in Slack): a human looked, which is what `inspected` means, but they looked at the live URL rather than at our artifacts, so there are no local artifacts and there never will be. It is opt-in because the default guard is what stops a mistyped URL silently minting a ledger entry | Run `--self-test` for the self-check |
-| `next-alert.sh` | Take the newest LUCA alert **nobody has ruled on** and say which button to click (`Verify phish` / `False positive` / `Skip`). Reads Slack through `claude -p` (the connector lives in Claude, not in the shell), asks `--settled` **before** any network, and scans only what the ledger cannot answer. The open-worklist filter is the **absence of a `Recorded:` line** — LUCA rewrites its own message in place when somebody rules, so an alert still showing buttons is still waiting. It **never clicks**: there is no block-action tool, and a recorded verdict must mean a human looked. SUSPICIOUS and UNCLEAR map to `Skip`, because a scan that could not decide is not evidence for either other button. Scans close stdin — four prompts in `url-analyze.sh` are gated on `[ -t 0 ]` **alone** and flags do not disable them, so a scripted caller hangs on an invisible question. Artifacts are wiped after a scan (`KEEP=1` keeps them); these URLs carry recipient tokens. `-u <url>` rules on one URL, `-a` re-offers one already shown, `--self-test`
+| `next-alert.sh` | Take the newest LUCA alert **nobody has ruled on** and say which button to click (`Verify phish` / `False positive` / `Skip`). Reads Slack through `claude -p` (the connector lives in Claude, not in the shell), asks `--settled` **before** any network, and scans only what the ledger cannot answer. The open-worklist filter is the **absence of a `Recorded:` line** — LUCA rewrites its own message in place when somebody rules, so an alert still showing buttons is still waiting. It **never clicks**: there is no block-action tool, and a recorded verdict must mean a human looked. SUSPICIOUS and UNCLEAR map to `Skip`, because a scan that could not decide is not evidence for either other button — and those two spend the deep inspection automatically rather than handing the work straight back. Every **other** verdict is then offered it: `Disagree? Run the deep inspection on this verdict`. A confident SAFE reading `False positive` is exactly the answer an analyst overrules, and before this the only way to challenge one was to go and run `url-analyze.sh` by hand. It re-prints the banner afterwards, because the **button** is what changes, and then offers to write the correction to the ledger as an `inspected` row — the one place this tool writes one, and only because a human asked for the inspection and is reading its answer. Offered on the replay path too (a repeated answer is the one most likely to be wrong), where it scans first if the artifacts are gone. Scans close stdin — the prompts in `url-analyze.sh` are gated on the terminal (`can_prompt`) and **not** on flags, so a scripted caller would otherwise hang on an invisible question. Before you press a button that is supposed to mean a human looked, it offers to **open the screenshot** the scan already took (`login.jpg` / `redirect.jpg` / `page.jpg`, in that order — the followed credential page is the one worth seeing). Interactive terminals with a GUI only, and it is offered on the ledger path too, where a kept screenshot from an earlier run may be all there is. Artifacts are wiped after a scan (`KEEP=1` keeps them); these URLs carry recipient tokens. The wipe moved to the **very end** for this: it now runs after the screenshot offer, and viewing one waits for an Enter rather than racing the image out from under the viewer. `-u <url>` rules on one URL, `-a` re-offers one already shown, `--self-test`
 | `slack-harvest.sh` | Harvest the verdicts analysts **already recorded in Slack** back into the ledger. A click on a LUCA alert is a real human judgement that lived only in Slack: `--settled` could not answer with it and the weekly replay never scored against it. Writes through `feedback-report.sh -i` (`FB_EXTERNAL=1`), which owns the row format — nothing here touches `feedback.txt` directly. Dedupes on the **message ts**, so one ruling is harvested once even when the URL recurs, and no category is guessed, because a button press says a page is bad, not what it is. **`-n` first**: it previews without writing. First run imported 98 rulings and took the earlier alert sample from **0 of 22** settled to **19 of 22**
 | `inspect.sh` | Deep inspection: a headless `claude -p` reads the **cached artifacts** of one scan (read-only tools, no live fetch) and says whether the verdict is right, as `VERDICT:` / `CATEGORY:` / `NOTE:`. `source` it, then `deep_inspect` plus the three parsers. Shared because two callers need the **same** prompt — the `i` branch of `url-analyze.sh`, where a human asked for it, and `next-alert.sh`, which runs it to resolve a Skip. Two copies would drift and the two paths would start disagreeing about the same page for no visible reason. Run `./inspect.sh` for the self-check (parsers only: pure, no claude, no network) |
 | `psl.sh` | Public Suffix List helper. `source` it, then `apex_of <host>` (the true registrable domain), `suffix_of <host>` (the public suffix — the tail nobody registers) or `head_of <host>` (the host **minus** that suffix: the only part the registrant chose). Caches the list in `.cache/` and refreshes it every 30 days. Run `./psl.sh` for the self-check |
@@ -104,7 +104,19 @@ Any tool can `source "$SCRIPT_DIR/colors.sh"` after it parses args. That gives:
 - Readable helpers: `echo_red "..."`, `echo_green`, `echo_yellow`, `echo_blue`,
   `echo_cyan`, `echo_grey`, `echo_bold`, and `cecho <color> <text>`.
 
-The helpers print color **only** when stdout is a terminal and color stays on. Three things
+It also owns **`can_prompt`**, the guard every interactive `read -r -p` in the repo now uses —
+same file, because this is where "is a human watching this terminal?" is answered. `[ -t 0 ]` is
+not that test: a job started with `&` (or pushed back with `bg`) still has the terminal on stdin,
+so the prompt prints, the `read` earns a **SIGTTIN**, and the run stops dead at a question nobody
+can answer — `[1]+ Stopped ./url-analyze.sh ...`, with a two-minute live scan sitting there needing
+an `fg` to survive. `can_prompt` compares the terminal's foreground process group (`ps -o tpgid=`)
+with our own (`ps -o pgid=`), so a backgrounded run silently skips its questions and finishes
+instead. No `ps`, no answer: it falls back to the old behaviour rather than muting prompts on a
+terminal that would have worked. The two recorded-verdict overrides in `url-analyze.sh` keep plain
+`[ -t 0 ]` on purpose — those ask "is this an analyst run", not "may I read the keyboard", and a
+backgrounded scan must still report the same verdict.
+
+The color helpers print color **only** when stdout is a terminal and color stays on. Three things
 turn color off: the `-c mono` flag (the tool sets `MONO=1` before it sources the file), the
 `NO_COLOR` env var, and a non-terminal stdout (a pipe or a capture). Machine-parsed output
 therefore stays plain ASCII. Four tools use `colors.sh`: `url-analyze.sh`, `url-benchmark.sh`,
@@ -210,7 +222,7 @@ Flags:
 - `-r` ignores the cache.
 - `-c mono` turns off color.
 - `-D` skips JS deobfuscation.
-- `-t` adds third-party reputation (VirusTotal plus urlscan.io). Off by default, opt-in, not in
+- `-t` adds third-party reputation (VirusTotal, urlscan.io and Spamhaus DBL). Off by default, opt-in, not in
   the benchmarks. See below.
 - `-p tor` routes scanner egress through Tor. `-g <cc>` sets the exit country. See below.
 
@@ -249,9 +261,16 @@ the first and last dates, the span, and a direct link to **read the archived pag
 often the only way left to see what the kit actually asked for.
 
 It is **gated on the scan being factless**, so an ordinary scan and every benchmark run (which land
-on live pages) pay nothing for it. Three shapes qualify, all the same class: no live page, a bot
-gate that denied us the real one, and a **domain placeholder page** — there the archive is the only
-source that answers what the lander cannot, namely whether a site ever existed here.
+on live pages) pay nothing for it. Four shapes qualify, all the same class: no live page, a bot
+gate that denied us the real one, a **domain placeholder page** — there the archive is the only
+source that answers what the lander cannot, namely whether a site ever existed here — and a fetch
+that **succeeded but returned nothing judgeable**. That last one is the gate widening to match the
+UNCLEAR degrade it was always meant to shadow: a deleted Netlify deploy answers **404 with a real
+DOM**, so `PAGE_DEAD` is false and none of the placeholder phrases match, and the archive skipped
+the one scan that had nothing else to go on (`frolicking-otter-7daeb4.netlify.app`, which the deep
+inspection had to point out). The condition is now `is_blank_page` itself — the same call the
+UNCLEAR degrade makes further down — so a scan too factless to judge is always a scan that asks the
+archive, and the two cannot drift apart.
 `sportycast.com` reads 16 days old at RDAP and carries 86 captures from 2020-11 to 2021-03: a
 lapsed site, re-registered a fortnight before it turned up in a phishing mail. Caches per URL in
 `.cache/<hash>/wayback.json` and respects `-r`.
@@ -291,6 +310,58 @@ confirmed-malicious hit from either source feeds the deterministic safety floor 
 scam storefronts and droppers take money rather than passwords. **Rate limits:** the
 VirusTotal free tier allows 4 requests per minute and 500 per day. The per-URL cache means a
 re-scan costs zero API calls.
+
+**Spamhaus DBL** is the third source and the cheapest one: one `dig` of
+`<host>.dbl.spamhaus.org`, no key, no account, nothing cached. It is a **domain** blocklist, which
+is why it is worth having next to two URL services — VirusTotal and urlscan can only answer for a
+URL somebody already submitted, and a per-recipient tracker link has never been submitted by
+anyone, while the domain behind it may well be listed. The DBL wildcard means the single hostname
+query also matches a listing on the parent domain, so there is no second lookup for the apex.
+
+The [return code](https://www.spamhaus.org/blocklists/domain-blocklist/) carries the severity, and
+the three tiers are deliberately different claims:
+
+| Code | Meaning | Effect |
+|------|---------|--------|
+| `127.0.1.4` `.5` `.6` | phish / malware / botnet C&C domain | **DANGEROUS floor** on its own (`dbl` in `verdict.sh`), no credential form needed — same shape and same reasoning as the VirusTotal quorum, and it is exactly the dead or cloaked page where every local heuristic has gone quiet |
+| `127.0.1.2`, `127.0.1.104-106` | spam domain, or an **abused legitimate** phish/malware/botnet host | one ordinary red flag: SUSPICIOUS alone, DANGEROUS with a credential form. A hacked WordPress is real evidence but it is not the claim "this domain was registered to phish" |
+| `127.0.1.102` `.103` | abused legit spam, spammed redirector | context only, no flag — that is the shortener/ESP shape, and it says nothing about *this* link |
+
+The wording is what separates them, so it is load-bearing: `lists this domain as a phish domain`
+floors, `lists this domain as compromised - abused legit phish` does not. `RULE 2a` in the formless
+branch of the LLM prompt mirrors the floor on the same string, so both paths move together.
+
+**A refused query is not a clean result.** Spamhaus fair use requires the query to leave through a
+resolver with attributable reverse DNS; a public resolver answers `127.255.255.254` and an
+over-quota one `127.255.255.255`. Both are reported as a failed lookup and neither ever reaches
+`SMELLS` — reading a refused query as "not listed" is the phantom-SAFE class one lookup further
+out. If this box ever lands behind such a resolver, a free
+[DQS key](https://www.spamhaus.com/free-trial/sign-up-for-a-free-data-query-service-account/) makes
+the hostname `<key>.dbl.dq.spamhaus.net` and it works again. IP literals are skipped: the DBL is
+domain-only and answers `127.0.1.255`.
+
+**Not used: OpenPhish, PhishTank, ZEN.** The OpenPhish community feed forbids commercial use
+without written consent ([terms](https://openphish.com/terms.html)), and this toolkit is heading
+into LUCA, so it is licence-blocked rather than technically unsuitable. PhishTank needs an
+approved API key and its registration has been intermittently closed for years. Spamhaus **ZEN** is
+an *IP* blocklist about mail-sending hosts (PBL simply means "this IP should not send mail"), which
+says nothing about a web server — the DBL is the list that answers a URL scanner's question.
+
+### Hosting geolocation is context, never a flag
+
+The IP's country and org are looked up, printed and handed to the LLM, and they impose **no** floor
+and count as **no** red flag. That is a measurement, not caution: of the 219 labeled URLs in the
+ledger, **99 resolve to Cloudflare and geolocate to "Canada"** — 63 DANGEROUS, 29 SUSPICIOUS, 7
+SAFE. The IP belongs to the CDN edge, so on nearly half the corpus the country is a fact about
+Cloudflare's anycast and not about the operator, and any country floor would be a coin flip
+weighted by CDN market share. ip-api's `hosting` flag does not rescue it either (it reads `false`
+for Azure App Service), and it split 3/4/4 across the eleven hosts it claimed were not datacentres.
+
+What was missing was smaller and real: the LLM never saw the hosting facts at all. It now gets one
+`Hosting:` line in the context, stating the country and org **and** that they describe where the
+server or its CDN edge sits rather than where the operator sits. A ccTLD-versus-hosting-country
+mismatch is the one geo rule that might still earn a signal, but only on hosts that are not behind
+a CDN, and the ledger currently holds too few of those to tell noise from signal.
 
 ### Operator attach mode (bot gates: Turnstile / hCaptcha / reCAPTCHA)
 
@@ -426,7 +497,7 @@ not 3B.
 
 | Detection | Source |
 |-----------|--------|
-| IP geolocation | ip-api.com (country, org, ISP) |
+| IP geolocation | ip-api.com (country, org, ISP). **Context only, never a red flag** — see below |
 | Domain age | RDAP (flags less than 30 days as high risk). The lookup uses the **registrable domain** from `psl.sh`, not the last two labels. `smithpower.autoit.za.com` gave `za.com` before, so the age read 28 years (the CentralNic registry) and every `*.za.com` phish inherited an "aged domain" pass. A host that sits directly on a shared namespace has no RDAP record, so the age reads unknown, which is the honest answer. Verisign is authoritative for `.com`/`.net`/`.org`; **every other TLD** goes through the `rdap.org` bootstrap. Two bugs used to make that whole branch dead: the lookup only ran for com/net/org at all, and `rdap.org` **302s** to the authoritative registry while the curl had no `-L`, so it returned an empty body. Every `.space`, `.co.ke`, `.icu` domain therefore read "age unknown", and `count_red_flags` does not count an unknown age — a structural aged-domain pass for exactly the TLDs kits prefer. A one-day-old `.space` host now scores the young-domain flag |
 | Registry status / expiry | The `status[]` and `expiration` event on the **same** RDAP response. A failed fetch cannot tell a takedown from an unpaid invoice from a kit that was never really there; RDAP can. `client hold` / `server hold` means a registrar or registry pulled the delegation, which is how an abuse report ends — but it is also how an unpaid renewal on a legitimate domain ends, and RDAP cannot separate them, so it is **capped at SUSPICIOUS** in `verdict.sh` and excluded from `count_red_flags`. `redemption period` / `pending delete` / a past expiry date means the registration simply lapsed: display and LLM context only, because a lapse is not evidence of anything bad |
 | SSL cert age | openssl (flags less than 7 days as suspicious) |

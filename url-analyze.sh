@@ -171,7 +171,7 @@ _bell() {
 URL="${1:-$URL}"
 
 # Prompt for a URL when none was given (interactive only, so piped/benchmark runs don't hang)
-if [ -z "$URL" ] && [ -t 0 ]; then
+if [ -z "$URL" ] && can_prompt; then
     read -r -p "${CYAN}Enter URL to analyze: ${RESET}" URL
 fi
 if [ -z "$URL" ]; then
@@ -199,7 +199,7 @@ _purge_cache() {
 # verdict was made from -- but a phishing page changes under you, so "is this still what I saw
 # yesterday" has to be one keypress away.
 REUSED_CACHE=""
-if [ -n "$BARE_RUN" ] && [ -t 0 ] && [ -d "$CACHE_DIR" ]; then
+if [ -n "$BARE_RUN" ] && can_prompt && [ -d "$CACHE_DIR" ]; then
     _cached=$(find "$CACHE_DIR" -maxdepth 1 ! -name feedback.txt ! -path "$CACHE_DIR" \
               -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
     if [ -n "$_cached" ]; then
@@ -758,7 +758,7 @@ fi
 # Brave, the human clears the gate and lands on the real page, then we re-scan by CDP-attaching to
 # that cleared tab. The tool opens AND closes the browser; the operator just solves + presses Enter.
 # All gate smells end with "gated from the scraper", so one match covers every provider.
-if [ -z "$SKIP_FETCH" ] && [ -t 0 ] \
+if [ -z "$SKIP_FETCH" ] && can_prompt \
    && printf '%s' "$PAGE_DATA" | jq -e '(.phishingSmells // []) | any(test("gated from the scraper"))' >/dev/null 2>&1; then
     _brave=""
     for _b in /snap/bin/brave brave brave-browser; do
@@ -1161,10 +1161,19 @@ printf '%s' "$SMELLS" | grep -qi 'gated from the scraper' && _gate_denied=1
 # ten-year-old business whose registration lapsed both serve the same lander today.
 _placeholder=""
 printf '%s' "$SMELLS" | grep -qi 'domain placeholder page' && _placeholder=1
+# The fourth shape, and the one the list above missed: the fetch SUCCEEDED and returned nothing
+# judgeable. A deleted Netlify deploy answers 404 with a real DOM, so PAGE_DEAD is false, the
+# placeholder phrases do not match, and the archive never ran on the one scan that had nothing
+# else -- frolicking-otter-7daeb4.netlify.app, where the deep inspection had to point this out.
+# is_blank_page is the SAME test the UNCLEAR degrade uses further down, so the two cannot drift:
+# every scan that is too factless to judge is now also one that asks the archive.
+_unassessable=""
+[ -n "$PAGE_FETCHED" ] && is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS" "$SMELLS" && _unassessable=1
 _wbwhy="no live page to read"
+[ -n "$_unassessable" ] && _wbwhy="the page that answered has nothing to judge (HTTP ${PAGE_STATUS:-?} / ${PAGE_ELEMS:-0} elements)"
 [ -n "$_gate_denied" ] && _wbwhy="bot gate denied us the real page"
 [ -n "$_placeholder" ] && _wbwhy="the fetch landed on a placeholder -- was there ever a site here?"
-if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ] || [ -n "$_gate_denied" ] || [ -n "$_placeholder" ]; then
+if [ -n "$NO_DNS" ] || [ -n "$PAGE_DEAD" ] || [ -n "$_gate_denied" ] || [ -n "$_placeholder" ] || [ -n "$_unassessable" ]; then
     echo ""
     echo "${BOLD}Web archive ($_wbwhy)${RESET}"
     if [ ! -s "$CACHE_DIR/wayback.json" ]; then
@@ -1296,6 +1305,58 @@ if [ -n "$VT" ]; then
         elif [ "$_uem" = "true" ]; then
             rep_redflag "urlscan.io engines" "ML score $_uesc"
         fi
+    fi
+
+    # --- Spamhaus DBL (free public mirror, one DNS query, no key, no account) ---
+    # A DOMAIN blocklist, which is the question a URL scanner actually asks -- and unlike VirusTotal
+    # and urlscan it can answer for a url nobody has ever submitted, because what is listed is the
+    # domain. The DBL wildcard means one query on the full hostname also matches a listing on the
+    # parent domain, so there is no second lookup for the apex. IP literals are unsupported.
+    #
+    # Fair use: the query must leave through a resolver with attributable reverse DNS. A public
+    # resolver (8.8.8.8 and friends, and whole clouds like Oracle/Hetzner/Vultr) answers
+    # 127.255.255.254, and an over-quota one 127.255.255.255. Both are ERRORS, never "not listed",
+    # so they are reported as a failed lookup -- reading a refused query as clean is the
+    # phantom-SAFE shape, one lookup further out. If this box ever lands behind such a resolver,
+    # a free Spamhaus DQS key turns the hostname into <key>.dbl.dq.spamhaus.net and it works again.
+    if printf '%s' "$DOMAIN" | grep -qE '^[0-9.]+$'; then
+        echo_grey "- Spamhaus DBL: skipped (the DBL is domain-only and this is an IP literal)"
+    else
+        _dbl=$(dig +short +time=3 +tries=1 "$DOMAIN.dbl.spamhaus.org" A 2>/dev/null | grep -E '^127\.' | head -1)
+        case "$_dbl" in
+            "")            echo_grey "- Spamhaus DBL: not listed" ;;
+            127.255.255.*) echo_grey "- Spamhaus DBL: lookup REFUSED ($_dbl) -- fair-use block or over quota. This is not a clean result" ;;
+            127.0.1.255)   echo_grey "- Spamhaus DBL: IP queries are not supported" ;;
+            *)
+                # Return codes: https://www.spamhaus.org/blocklists/domain-blocklist/
+                # The 127.0.1.10x half means an ABUSED LEGITIMATE domain (hacked site, spammed
+                # redirector), which is a different claim from "the operator registered this to
+                # phish" -- hence the different wording, which is what keeps it away from the
+                # DANGEROUS floor in verdict.sh while still counting as a red flag where it earns one.
+                case "$_dbl" in
+                    127.0.1.2)   _dblwhat="a spam domain" ;;
+                    127.0.1.4)   _dblwhat="a phish domain" ;;
+                    127.0.1.5)   _dblwhat="a malware domain" ;;
+                    127.0.1.6)   _dblwhat="a botnet C&C domain" ;;
+                    127.0.1.102) _dblwhat="compromised - abused legit spam" ;;
+                    127.0.1.103) _dblwhat="compromised - abused spammed redirector" ;;
+                    127.0.1.104) _dblwhat="compromised - abused legit phish" ;;
+                    127.0.1.105) _dblwhat="compromised - abused legit malware" ;;
+                    127.0.1.106) _dblwhat="compromised - abused legit botnet C&C" ;;
+                    *)           _dblwhat="listed ($_dbl)" ;;
+                esac
+                echo_grey "- Spamhaus DBL: $DOMAIN listed as $_dblwhat ($_dbl)  (https://check.spamhaus.org/results/?query=$DOMAIN)"
+                add_signal "Spamhaus DBL lists this domain as $_dblwhat"
+                # SMELLS directly rather than through rep_redflag: the floor in verdict.sh reads
+                # this exact wording, and rep_redflag rewrites it into "flagged malicious (...)".
+                # A spammed redirector or an abused-legit spam listing is context only -- that is
+                # the shortener/ESP shape, and it says nothing about THIS link.
+                case "$_dbl" in
+                    127.0.1.10[23]) : ;;
+                    *) SMELLS="${SMELLS:+$SMELLS, }Spamhaus DBL lists this domain as $_dblwhat" ;;
+                esac
+                ;;
+        esac
     fi
 fi
 
@@ -1501,6 +1562,7 @@ TLD: $TLD
 EXTRACTED SIGNALS (these are the ground truth - do not assume anything not listed here):
 - URL type: $URL_KIND
 - Domain age (days): ${AGE_DAYS:-unknown}
+- Hosting: ${COUNTRY:-unknown} (${ORG:-unknown}) -- where the server or its CDN edge sits, NOT where the operator sits. A hosting country is NEVER by itself a red flag; it is background only.
 - SSL cert age (days): ${CERT_AGE_DAYS:-unknown}
 - A records / DNS TTL: ${A_RECORDS:-?} records, TTL ${TTL:-?}s
 - Login or password form present: $HAS_LOGIN
@@ -1535,9 +1597,19 @@ else
     # the same two deterministic strings, so both paths move together instead of one covering for
     # the other. Stated FIRST because a small model parrots the first rule it matches.
     RULES=""
+    # Same shape and same reason as 2b: without it the formless branch tops out at SUSPICIOUS, so
+    # an outside authority naming the domain could never carry a dead or gated page -- and the DBL
+    # answers precisely where our local heuristics see nothing. Mirrors the `dbl` floor in
+    # verdict.sh on the same deterministic string, so the two paths move together.
+    if printf '%s' "$SMELLS" | grep -qiE 'DBL lists this domain as a (phish|malware|botnet)'; then
+        RULES="RULE 2a: the Spamhaus Domain Blocklist lists this DOMAIN itself as a phishing, malware or botnet domain.
+   -> VERDICT: DANGEROUS. That is an outside authority naming the domain, and it does not need a credential form on the page to be true. You must NOT downgrade this to SUSPICIOUS or SAFE.
+
+"
+    fi
     if printf '%s' "$SMELLS" | grep -qi 'gated from the scraper' \
        && printf '%s' "$SMELLS" | grep -qi 'confirmed phishing previously inspected'; then
-        RULES="RULE 2b: a bot/cloak challenge is hiding the real page from the scraper, AND a url on this same host, domain or campaign tag was already CONFIRMED as phishing by a human analyst.
+        RULES="${RULES}RULE 2b: a bot/cloak challenge is hiding the real page from the scraper, AND a url on this same host, domain or campaign tag was already CONFIRMED as phishing by a human analyst.
    -> VERDICT: DANGEROUS. The gate is the REASON no credential form is visible; its absence is not evidence of safety. You must NOT downgrade this to SUSPICIOUS or SAFE.
 
 "
@@ -1679,7 +1751,7 @@ fi
 # Offer to open the page screenshot for human validation (interactive terminal + GUI only).
 # After the signals list; outside the LLM guard so heuristic mode offers it too. The
 # screenshot persists in the cache dir.
-if [ -f "$SHOT" ] && [ -t 0 ] && command -v xdg-open >/dev/null 2>&1; then
+if [ -f "$SHOT" ] && can_prompt && command -v xdg-open >/dev/null 2>&1; then
     echo ""
     read -r -p "${CYAN}Open page screenshot for manual review? [y/N] ${RESET}" _ans
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
@@ -1765,7 +1837,7 @@ fi
 # browser -- a residential IP + real browser usually passes the gate.
 # ponytail: opening a live phishing URL is risky; explicit opt-in, default No, shown AFTER the
 # verdict so the analyst decides with full context. Rings the bell before the prompt.
-if [ -t 0 ] && command -v xdg-open >/dev/null 2>&1 \
+if can_prompt && command -v xdg-open >/dev/null 2>&1 \
    && printf '%s' "$SMELLS" | grep -qi 'gated from the scraper'; then
     echo ""
     _bell
@@ -1775,7 +1847,7 @@ fi
 
 # Analyst feedback: agree with the verdict? Recorded per-URL to refine the tool later.
 # ponytail: interactive-only so benchmarks never prompt; one TSV line appended to the cache.
-if [ -t 0 ]; then
+if can_prompt; then
     # _ask_category [default] -> one of VERDICT_CATEGORIES, chosen by number or by name.
     # Fixed vocabulary rather than free text, because these are mined later and free text
     # would not group (see verdict.sh).
@@ -1886,7 +1958,7 @@ fi
 # on disk, and that is not always what you want after a one-off look. Asked last, because the deep
 # inspection above reads those very artifacts. The feedback ledger always survives -- the judgement
 # is the part that cannot be re-fetched.
-if [ -n "$BARE_RUN" ] && [ -t 0 ] && [ -z "$REUSED_CACHE" ]; then
+if [ -n "$BARE_RUN" ] && can_prompt && [ -z "$REUSED_CACHE" ]; then
     echo ""
     read -r -p "${CYAN}Keep this scan cached (page, screenshot, scripts, LLM answers)? [Y/n] ${RESET}" _ans
     case "$_ans" in

@@ -16,6 +16,26 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' CYAN='' GREY='' BOLD='' DIM='' RESET=''
 fi
 
+# can_prompt -> true when it is safe to ASK the human something (`read -r -p`).
+#
+# `[ -t 0 ]` alone is not that test. A job started with `&`, or pushed back with `bg`, still has
+# the terminal on stdin -- so the prompt prints, `read` earns a SIGTTIN, and the whole run STOPS
+# dead at a question nobody can answer ("[1]+ Stopped ./url-analyze.sh ..."). A scan that has
+# already spent two minutes on a live fetch is then sitting there needing an `fg` to survive.
+# tpgid is the foreground process group of our controlling terminal; when that is our own pgid we
+# are the one the keyboard is talking to. It is -1 with no controlling terminal, which `-t 0`
+# has already excluded.
+# Same home as the color test above on purpose: this file is where "is a human watching this
+# terminal?" is answered, and both callers of it already source it.
+can_prompt() {
+    [ -t 0 ] || return 1
+    local _t _p
+    _t=$(ps -o tpgid= -p $$ 2>/dev/null | tr -d ' ')
+    _p=$(ps -o pgid=  -p $$ 2>/dev/null | tr -d ' ')
+    # No ps (or no answer) -> fall back to the old behaviour rather than silently muting prompts.
+    [ -z "$_t" ] || [ -z "$_p" ] || [ "$_t" = "$_p" ]
+}
+
 # cecho <color> <text...>  -> echo text wrapped in the given color var.
 cecho() { local c="$1"; shift; echo "${c}$*${RESET}"; }
 

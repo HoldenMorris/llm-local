@@ -52,6 +52,7 @@ category_of() {
         # also exfils and also spoofs a brand is still, first, after the password.
         if [ "$has_login" = "true" ] \
            || printf '%s' "$smells" | grep -qiE 'exfil|obfuscated network call' \
+           || printf '%s' "$smells" | grep -qi 'DBL lists this domain as a phish' \
            || printf '%s' "$deobfus" | grep -qi 'off-domain URL'; then
             echo phishing; return 0
         fi
@@ -534,6 +535,15 @@ classify_verdict() {
     # piece of evidence counted twice.
     local campbad=""
     printf '%s' "$smells" | grep -qi 'previously inspected under the same campaign tag' && campbad=1
+    # Spamhaus DBL listed the domain itself as a phish / malware / botnet domain. Same shape as the
+    # VirusTotal quorum above and for the same reason: it is an outside authority naming the
+    # domain, it needs no credential form to be true, and a dead or gated page (where every local
+    # heuristic sees nothing) is exactly where it still answers. Only the DIRECT codes
+    # (127.0.1.4/5/6) reach here -- an "abused legit" listing (127.0.1.10x) says a hijacked
+    # legitimate domain, which is real evidence but not this claim, so it arrives as an ordinary
+    # smell and is worded differently on purpose. A DBL spam listing is likewise just a red flag.
+    local dbl=""
+    printf '%s' "$smells" | grep -qiE 'DBL lists this domain as a (phish|malware|botnet)' && dbl=1
     local vtquorum="" _vtn
     _vtn=$(printf '%s' "$smells" | grep -oiE 'VirusTotal flagged malicious \([0-9]+ vendors?\)' \
            | grep -oE '[0-9]+' | head -1)
@@ -545,6 +555,8 @@ classify_verdict() {
         floor=DANGEROUS; reason="data exfil (obfuscated / off-domain network call)"
     elif [ -n "$vtquorum" ]; then
         floor=DANGEROUS; reason="$vtquorum VirusTotal vendors flagged this URL malicious"
+    elif [ -n "$dbl" ]; then
+        floor=DANGEROUS; reason="Spamhaus DBL lists this domain as a phish/malware/botnet domain"
     elif [ "$has_login" = "true" ] && [ "$flags" -ge 1 ]; then
         floor=DANGEROUS; reason="login form + $flags red flag(s)"
     elif [ -n "$gatedbad" ]; then

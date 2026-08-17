@@ -208,6 +208,24 @@ check "VT below quorum stays SUSPICIOUS"    SUSPICIOUS "$(cv false com '' '' 'ht
 check "VT quorum never downgrades an LLM DANGEROUS" DANGEROUS "$(cv false com '' '' 'https://x.com' "$VT11" '' '' DANGEROUS)"
 check "clean page, no VT line -> SAFE kept"  SAFE      "$(cv false com '' '' 'https://x.com' '' '' '' SAFE)"
 
+# Spamhaus DBL. Same shape as the VT quorum: an outside authority naming the DOMAIN, so it needs
+# no credential form -- which is the point, because a dead or cloaked page is where every local
+# heuristic goes quiet and the DBL still answers.
+DBLP='Spamhaus DBL lists this domain as a phish domain'
+check "DBL phish (no login) -> DANGEROUS"   DANGEROUS  "$(cv false com 400 '' 'https://x.com/' "$DBLP" '' '' SAFE)"
+check "DBL malware -> DANGEROUS"            DANGEROUS  "$(cv false com 400 '' 'https://x.com/' 'Spamhaus DBL lists this domain as a malware domain' '' '' SAFE)"
+check "DBL never downgrades an LLM DANGEROUS" DANGEROUS "$(cv false com '' '' 'https://x.com' "$DBLP" '' '' DANGEROUS)"
+# A DBL SPAM listing, and an ABUSED-LEGIT listing (a hacked site or a spammed redirector), are
+# real evidence but not the same claim -- they ride the ordinary red-flag counter instead, which
+# is SUSPICIOUS alone and DANGEROUS only with a credential form. That is what the different
+# wording buys: "as a phish domain" floors, "as compromised - abused legit phish" does not.
+check "DBL spam listing stays SUSPICIOUS"   SUSPICIOUS "$(cv false com 400 '' 'https://x.com/' 'Spamhaus DBL lists this domain as a spam domain' '' '' SAFE)"
+check "DBL abused-legit stays SUSPICIOUS"   SUSPICIOUS "$(cv false com 400 '' 'https://x.com/' 'Spamhaus DBL lists this domain as compromised - abused legit phish' '' '' SAFE)"
+check "DBL abused-legit + login -> DANGEROUS" DANGEROUS "$(cv true com 400 '' 'https://x.com/' 'Spamhaus DBL lists this domain as compromised - abused legit phish' '' '' SAFE)"
+# The refused-query wording must never reach the floor: a fair-use block is not a listing, and it
+# is not a clean result either -- it is display text, which is why it never enters SMELLS.
+check "DBL not-listed page -> SAFE kept"    SAFE       "$(cv false com 400 '' 'https://x.com/' '' '' '' SAFE)"
+
 # Prior-judgement rollup: url-analyze.sh appends this smell when the ledger holds an INSPECTED
 # DANGEROUS for another url on the same host (feedback-report.sh --host). It rides the ordinary
 # red-flag counter, so the cap is structural: one flag -> SUSPICIOUS alone, DANGEROUS with a
@@ -425,6 +443,11 @@ check "unsub + bad -> email-harvest"  email-harvest "$(co SUSPICIOUS false 'http
 check "unsub + safe -> unsubscribe"   unsubscribe   "$(co SAFE false 'https://x.com/unsubscribe?id=1' '' '')"
 check "wallet -> scam"                scam          "$(co DANGEROUS false 'https://x.com/' '' 'crypto wallet BTC revealed')"
 check "VT hit -> scam"                scam          "$(co DANGEROUS false 'https://x.com/' 'VirusTotal flagged malicious (7 vendors)' '')"
+# The DBL says what KIND of domain it listed, so a phish listing names the category on a page that
+# has no form of its own to read it from. Only the direct listing: "abused legit phish" is a
+# hacked host, which says nothing about what this particular page is.
+check "DBL phish -> phishing"         phishing      "$(co DANGEROUS false 'https://x.com/' 'Spamhaus DBL lists this domain as a phish domain' '')"
+check "DBL abused-legit is not a category claim" other "$(co SUSPICIOUS false 'https://x.com/' 'Spamhaus DBL lists this domain as compromised - abused legit phish' '')"
 check "nothing recognisable -> other" other         "$(co SUSPICIOUS false 'https://x.com/' '' '')"
 check "safe login page -> login"      login         "$(co SAFE true 'https://x.com/signin' '' '')"
 check "survey -> questionnaire"       questionnaire "$(co SAFE false 'https://x.com/s/abc' '' '' 'Customer Survey 2026')"
