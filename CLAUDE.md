@@ -350,9 +350,9 @@ says nothing about a web server — the DBL is the list that answers a URL scann
 ### Hosting geolocation is context, never a flag
 
 The IP's country and org are looked up, printed and handed to the LLM, and they impose **no** floor
-and count as **no** red flag. That is a measurement, not caution: of the 219 labeled URLs in the
-ledger, **99 resolve to Cloudflare and geolocate to "Canada"** — 63 DANGEROUS, 29 SUSPICIOUS, 7
-SAFE. The IP belongs to the CDN edge, so on nearly half the corpus the country is a fact about
+and count as **no** red flag. That is a measurement, not caution: of the 210 labeled URLs in the
+ledger that carry cached host facts, **102 resolve to Cloudflare and geolocate to "Canada"** — 64
+DANGEROUS, 31 SUSPICIOUS, 7 SAFE. The IP belongs to the CDN edge, so on nearly half the corpus the country is a fact about
 Cloudflare's anycast and not about the operator, and any country floor would be a coin flip
 weighted by CDN market share. ip-api's `hosting` flag does not rescue it either (it reads `false`
 for Azure App Service), and it split 3/4/4 across the eleven hosts it claimed were not datacentres.
@@ -636,7 +636,7 @@ JS. It then re-scans the cleartext for the signals the obfuscation hid.
 | Cookie / storage theft | `document.cookie`, localStorage/sessionStorage reads that feed a send |
 | JS redirect | `location.href/replace/assign`, `window.location=` |
 | Revealed crypto address | BTC/ETH/TRX wallet decoded from the string array |
-| Anti-analysis code | The kit checking whether it is talking to **us**: enumerating browser-automation artifacts (`webdriver`, `__nightmare`, `callPhantom`, `_Selenium_IDE_Recorder`, …), a `debugger` trap inside a timer, blocked devtools keys, `ipapi.is` datacentre/VPN filtering, or a script deleting itself from the DOM. The **probe list** is the discriminator, not any one name: legitimate bot protection tests `navigator.webdriver`, kits enumerate the whole family in a fixed order, so the threshold is 4 distinct names. Zero of the 177 pages in the local cache trip it. Capped: **SUSPICIOUS**, excluded from the red-flag count, because commercial bot protection does some of this on real login pages — "hiding from analysis" is not the same claim as "harvesting credentials" |
+| Anti-analysis code | The kit checking whether it is talking to **us**: enumerating browser-automation artifacts (`webdriver`, `__nightmare`, `callPhantom`, `_Selenium_IDE_Recorder`, …), a `debugger` trap inside a timer, blocked devtools keys, `ipapi.is` datacentre/VPN filtering, or a script deleting itself from the DOM. The **probe list** is the discriminator, not any one name: legitimate bot protection tests `navigator.webdriver`, kits enumerate the whole family in a fixed order, so the threshold is 4 distinct names. Zero of the 333 pages in the local cache trip it. Capped: **SUSPICIOUS**, excluded from the red-flag count, because commercial bot protection does some of this on real login pages — "hiding from analysis" is not the same claim as "harvesting credentials" |
 
 An off-domain exfil, a JS redirect, or a crypto address counts as a deterministic red flag (see
 `verdict.sh`). An obfuscated **login** page that deobfuscates to off-domain exfil therefore
