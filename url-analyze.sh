@@ -261,8 +261,13 @@ EU_BANKS="ing|bnp|deutsche|commerzbank|rabobank|abn|unicredit|intesa|creditsuiss
 AFRICA_BANKS="nedbank|standardbank|fnb|absa|capitec|investec|firstrand|oldmutual|discovery|africanbank"
 # APAC Banks
 APAC_BANKS="dbs|ocbc|uob|maybank|cimb|icici|hdfc|sbi|kotak|axis|commonwealth|anz|westpac|nab"
+# Products this toolkit's own users get phished as. Securemail is a SYNAQ product, so the brand
+# lives on synaq.com and NOT on a "securemail" apex -- listing the owner apex as a brand too is
+# what makes BRAND_OWNED fire for the real portal (securemail.synaq.com) while
+# securemailupgrade.com still reads as a typosquat.
+PRODUCTS="securemail|synaq"
 
-BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|$APAC_BANKS"
+BRANDS="$TECH_BRANDS|$CRYPTO_BRANDS|$US_BANKS|$UK_BANKS|$EU_BANKS|$AFRICA_BANKS|$APAC_BANKS|$PRODUCTS"
 # Long brand names (>=5 chars) are unambiguous as substrings (paypalsecure, microsoftlogin).
 # Short ones (ing, dbs, ubs, anz, amex, citi, ally...) false-match inside ordinary words
 # (stag'ing', bear'ings', 'ally'ourbase, 'dbs'chenker), so require them to be a whole dot/dash-

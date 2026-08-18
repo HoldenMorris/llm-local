@@ -705,6 +705,7 @@ still shoots in 8s.
 | EU Banks | ing, bnp, deutsche, ubs, creditsuisse |
 | African Banks | nedbank, standardbank, fnb, absa, capitec, investec |
 | APAC Banks | dbs, ocbc, maybank, icici, hdfc, anz, westpac |
+| Products | securemail, synaq — Securemail is a **SYNAQ** product, so the brand does not live on a `securemail` apex. `synaq` is listed as a brand too (that is what makes `BRAND_OWNED` fire for the real portal `securemail.synaq.com`), and `brandOwner` in `page-fetch.sh` maps `securemail -> synaq` so the impersonation check excuses the same page. `securemailupgrade.com` still reads as a typosquat |
 
 ## Commands
 

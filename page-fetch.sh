@@ -532,8 +532,13 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     // African Banks
     'nedbank','standardbank','fnb','absa','capitec','investec','firstrand','oldmutual',
     // APAC Banks
-    'dbs','ocbc','maybank','icici','hdfc','commonwealth','anz','westpac'
+    'dbs','ocbc','maybank','icici','hdfc','commonwealth','anz','westpac',
+    // Products our own users get phished as
+    'securemail','synaq'
   ];
+  // A brand that does NOT live on its own apex. Securemail is a SYNAQ product, so the real portal
+  // is *.synaq.com and `apexDomain.includes('securemail')` would call it impersonation forever.
+  const brandOwner = { securemail: 'synaq' };
   // ponytail: OAuth/payment providers whose presence explains brand mentions
   const oauthPaymentDomains = ['accounts.google.com','apis.google.com','facebook.com','login.microsoftonline.com',
     'appleid.apple.com','amazon.com','paypal.com','stripe.com','js.stripe.com','m.stripe.com','github.com',
@@ -591,7 +596,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     // mention GitHub: brandHaystack includes the form actions, so a same-origin form on any
     // *.github.io page put "github" in `matched` by itself. That silently disarmed brand
     // impersonation on every github.io kit, and on every host whose name contains a brand token.
-    const unexplained = matched.filter(b => !apexDomain.includes(b.replace(/\s/g,'')));
+    const unexplained = matched.filter(b => !apexDomain.includes(brandOwner[b] || b.replace(/\s/g,'')));
     // Check if brand is explained by legitimate OAuth/payment integration.
     // Match on dot-delimited labels, never substrings: "m.stripe.com" first-label was "m", and
     // d.includes("m") is true for every .com domain -- which silently explained away every brand
