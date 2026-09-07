@@ -1,0 +1,19 @@
+{# The live view of one job.
+
+   The phase timeline and the log are both driven by EventSource against /job/<id>/stream --
+   the scripts already narrate phase by phase over 18s-2min, and `-c mono` means what arrives is
+   plain text, so this is the script's own output rather than a second logging format invented
+   for the web. No polling, and no htmx SSE extension to vendor: EventSource is a browser API. #}
+<div class="jobview" data-job="{{ job }}" {% if h %}data-hash="{{ h }}"{% endif %}>
+  <div class="jobhead">
+    <span class="state {{ state }}">{{ state }}</span>
+    {% if rc is not none %}<span class="dim">exit {{ rc }}</span>{% endif %}
+    {% if state == 'queued' and not worker_up %}<span class="bad">nothing runs until the host worker is started</span>{% endif %}
+    <span class="spacer"></span>
+    {% if h %}<a class="btn open-when-done" href="/scan/{{ h }}">open the workbench &#8629;</a>{% endif %}
+  </div>
+  <div class="jobcols">
+    <ol class="phases" hidden></ol>
+    <pre class="log">{{ log }}</pre>
+  </div>
+</div>

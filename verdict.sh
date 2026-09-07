@@ -575,3 +575,21 @@ classify_verdict() {
         printf '%s' "$llm"
     fi
 }
+
+# floor_parts <the notice above> -> "<reason>\t<forced>\t<llm said>", or nothing when no floor
+# fired. Which rule fired and what the LLM said instead is the most useful line a scan produces,
+# and url-analyze.sh puts it in verdict.json -- so something has to read this prose back.
+#
+# It lives HERE, three lines under the printf that writes it, because a parser in another file is
+# a parser that silently stops matching the first time the wording is improved. Same reason
+# feedback-report.sh owns the ledger row format. test-verdict.sh pins the pair together.
+#
+# The notice is written for a terminal, so the colour escapes come off first.
+floor_parts() {
+    local m; m=$(printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g')
+    case "$m" in *"Safety floor: "*) ;; *) return 0 ;; esac
+    printf '%s\t%s\t%s' \
+        "$(printf '%s' "$m" | sed -n 's/.*Safety floor: \(.*\) -> forcing .*/\1/p')" \
+        "$(printf '%s' "$m" | sed -n 's/.* -> forcing \([A-Z]*\) .*/\1/p')" \
+        "$(printf '%s' "$m" | sed -n 's/.*(LLM said \([A-Z]*\)).*/\1/p')"
+}

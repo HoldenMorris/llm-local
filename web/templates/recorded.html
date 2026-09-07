@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% set tab = 'ledger' %}
+{% block body %}<section class="pad">
+  <div class="headrow">
+    <a class="btn back" href="{{ back }}">&#8592; esc &middot; back</a>
+    <h1>{% if inspecting %}Deep inspection{% else %}Recording {{ verdict }}{% if category %} ({{ category }}){% endif %}{% endif %}</h1>
+  </div>
+  {{ url|inert|safe }}
+  {% if inspecting %}
+    <p class="dim small">claude -p reads the cached artifacts of this scan &mdash; read-only tools,
+    no live fetch. It answers <code>VERDICT:</code> / <code>CATEGORY:</code> / <code>NOTE:</code>,
+    and recording that answer is still yours to do.</p>
+  {% else %}
+    <p class="dim small">Written by <code>feedback-report.sh -i</code>, which owns the row format.
+    Once it lands, <code>--settled</code> answers with it and the weekly replay corpus includes it.</p>
+  {% endif %}
+  {% include "_job.html" %}
+</section>{% endblock %}

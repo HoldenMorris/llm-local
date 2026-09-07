@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% set tab = 'scan' %}
+{% block body %}<section class="pad">
+  <h1>Scan a URL</h1>
+  {% if error %}<p class="bad">{{ error }}</p>{% endif %}
+  <form method="post" action="/scan" class="scanform">
+    <input class="urlin" type="text" name="url" value="{{ url }}" placeholder="https://..." autofocus>
+    <label><input type="checkbox" name="flags" value="-t" checked> -t reputation</label>
+    <label><input type="checkbox" name="flags" value="-r"> -r refresh</label>
+    <label><input type="checkbox" name="flags" value="-V"> -V no vision</label>
+    <label><input type="checkbox" name="flags" value="-H"> -H heuristic only</label>
+    <label><input type="checkbox" name="flags" value="-D"> -D no deobfuscation</label>
+    <input class="modelin" type="text" name="model" value="auto" size="14" title="-m">
+    <button class="btn go" type="submit">scan</button>
+  </form>
+  <p class="dim small">Egress routing (<code>-p tor</code>) and the Anthropic backend
+  (<code>-m claude-*</code>) stay on the command line: both are operator decisions the worker
+  refuses to take from a web form.</p>
+
+  {% if job %}{% include "_job.html" %}{% endif %}
+</section>{% endblock %}

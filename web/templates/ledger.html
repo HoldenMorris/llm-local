@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% set tab = 'ledger' %}
+{% block body %}<section class="pad">
+
+{% if key %}
+  <div class="headrow">
+    <h1>{{ scope }} = <code>{{ key }}</code></h1>
+    <span class="dim">{{ rollup|length }} settled row(s) &middot; <a href="/ledger">whole report</a></span>
+  </div>
+  {% if rollup %}
+    <table class="rows">
+      {% for r in rollup %}
+      <tr>
+        <td class="w-verdict"><span class="v {{ (r[0] or '')|lower }}">{{ r[0] }}</span></td>
+        <td class="w-cat dim">{{ r[4] if r|length > 4 else '' }}</td>
+        <td class="w-url">{{ r[2]|inert|safe if r|length > 2 }}</td>
+        <td class="note dim">{{ r[3] if r|length > 3 else '' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="dim">Nothing settled under that {{ scope }}{% if not worker_up %} &mdash; or the host
+    worker is not running, so nothing could be read{% endif %}.</p>
+  {% endif %}
+
+{% elif report %}
+  <div class="headrow"><h1>Ledger</h1>
+    <span class="dim">{{ report.urls }} urls &middot; {{ report.responses }} responses</span></div>
+
+  <div class="tiles">
+    <div class="tile"><span class="tl">SETTLED &middot; LABELLED CORPUS</span>
+      <span class="tn">{{ report.inspected }}</span>
+      <span class="ts">inspected rows &middot; {{ report.gone }} gone</span></div>
+    <div class="tile{% if report.open_flags %} warn{% endif %}"><span class="tl">OPEN FLAGS</span>
+      <span class="tn">{{ report.open_flags }}</span>
+      <span class="ts">waiting on a deep inspection</span></div>
+    <div class="tile"><span class="tl">DISAGREEMENTS</span>
+      <span class="tn">{{ report.disagree }}</span>
+      <span class="ts">the retune list, not a score</span></div>
+    <div class="tile"><span class="tl">ANALYST RESPONSES</span>
+      <span class="tn">{{ report.responses }}</span>
+      <span class="ts">{{ report.agree }} agree &middot; {{ report.skip }} skip</span></div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h2>Agreement by verdict</h2>
+      {% for v, d in report.by_verdict|dictsort %}
+        <div class="meter">
+          <div class="mrow">
+            <span><span class="swatch {{ v|lower }}"></span><span class="mono">{{ v }}</span></span>
+            <span class="mono">{{ d.rate }}% <span class="dim">&nbsp;{{ d.agree }} of {{ d.agree + d.disagree }} judged &middot; {{ d.total }} scans</span></span>
+          </div>
+          <div class="track"><div class="fill {{ v|lower }}" style="width: {{ d.rate }}%"></div></div>
+        </div>
+      {% endfor %}
+
+      {% if report.disagreements %}
+        <h2>Disagreements</h2>
+        <ul class="signals">{% for d in report.disagreements %}<li>{{ d }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+
+    <aside>
+      <h2>What the ledger holds</h2>
+      {% set most = (report.by_category.values()|list|max) if report.by_category else 1 %}
+      {% for c, n in report.by_category|dictsort(by='value', reverse=true) %}
+        <div class="catrow"><span class="mono dim clabel">{{ c }}</span>
+          <div class="track"><div class="fill blue" style="width: {{ (100 * n / most)|round|int }}%"></div></div>
+          <span class="mono cnum">{{ n }}</span></div>
+      {% endfor %}
+    </aside>
+  </div>
+
+  {% if report.flags %}
+  <h2>Open flags &mdash; awaiting a deeper look</h2>
+  <table class="rows">
+    {% for f in report.flags %}
+    <tr>
+      <td class="w-verdict"><span class="v {{ (f.verdict or 'none')|lower }}">{{ f.verdict or '?' }}</span></td>
+      <td class="w-cat dim">{{ f.category }}{% if f.gone %} <span class="dim">[gone]</span>{% endif %}</td>
+      <td class="w-url">{{ f.url|inert|safe }}</td>
+      <td class="w-open">
+        <form method="post" action="/inspect" class="inline">
+          <input type="hidden" name="url" value="{{ f.url }}">
+          <input type="hidden" name="back" value="/ledger">
+          <button class="btn" type="submit">inspect</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+{% else %}
+  <h1>Ledger</h1>
+  <p class="bad">Could not read the report.{% if not worker_up %} The host worker is not running &mdash;
+  start it with <code>./web/worker.sh</code>.{% endif %}</p>
+{% endif %}
+
+</section>{% endblock %}

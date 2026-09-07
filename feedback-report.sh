@@ -33,6 +33,7 @@ HOSTQ="";      [ "$1" = "--host" ] && { HOSTQ=1; shift; }
 APEXQ="";      [ "$1" = "--apex" ] && { APEXQ=1; shift; }
 CAMPQ="";      [ "$1" = "--campaign" ] && { CAMPQ=1; shift; }
 SETTLED="";    [ "$1" = "--settled" ] && { SETTLED=1; shift; }
+JSONOUT="";    [ "$1" = "--json" ] && { JSONOUT=1; MONO=1; shift; }
 SELFTEST="";   [ "$1" = "--self-test" ] && { SELFTEST=1; shift; }
 source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/verdict.sh"   # VERDICT_CATEGORIES / is_category: the ledger owns no vocabulary of its own
@@ -132,6 +133,25 @@ if [ -n "$SELFTEST" ]; then
         || { echo "FAIL FB_CATEGORY not recorded"; _fails=1; }
     FB_ROOT="$_t" FB_CATEGORY=nonsense "$0" -i https://agreed.example "note" >/dev/null 2>&1 \
         && { echo "FAIL -i accepted a junk FB_CATEGORY"; _fails=1; }
+    # --json: the same arithmetic as the prose report, for a reader that is not a terminal. It has
+    # to BE the same arithmetic -- the web dashboard computing its own agreement rate is how two
+    # answers to "how accurate is this" start disagreeing and only one of them gets fixed.
+    _j=$(FB_ROOT="$_t" "$0" --json)
+    printf '%s' "$_j" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
+        || { echo "FAIL --json is not valid json: $_j"; _fails=1; }
+    _pa=$(FB_ROOT="$_t" NO_COLOR=1 "$0" | awk '/^ *agree [0-9]/ { print $2; exit }')
+    _ja=$(printf '%s' "$_j" | python3 -c 'import json,sys; print(json.load(sys.stdin)["agree"])' 2>/dev/null)
+    [ "$_pa" = "$_ja" ] || { echo "FAIL --json agree ($_ja) disagrees with the prose report ($_pa)"; _fails=1; }
+
+    # A ledger note is free text a human typed, so it can carry the characters that break a
+    # hand-built json document. The report must stay parseable.
+    mkdir -p "$_t/jsonesc"
+    printf '2026-01-04T00:00:00Z\tSAFE\tflag\thttps://quote.example/a\the said "look \\ here"\tcontent\n' \
+        > "$_t/jsonesc/feedback.txt"
+    FB_ROOT="$_t" "$0" --json | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null \
+        || { echo "FAIL --json broke on a quote/backslash in a note"; _fails=1; }
+    rm -rf "$_t/jsonesc"
+
     # --settled: the alerting contract, where the exit code IS the answer. Pin every branch.
     # (agreed.example was inspected SAFE by the FB_CATEGORY case just above.)
     _row https://onlyagree.example/a 2026-01-01T00:00:00Z SAFE agree https://onlyagree.example/a
@@ -139,6 +159,36 @@ if [ -n "$SELFTEST" ]; then
     [ $? -eq 0 ] || { echo "FAIL --settled did not clear a settled SAFE"; _fails=1; }
     FB_ROOT="$_t" "$0" --settled https://kit.example/anything-new >/dev/null 2>&1
     [ $? -eq 2 ] || { echo "FAIL --settled did not flag a settled-bad host"; _fails=1; }
+
+    # --settled, campaign scope. Asymmetric on purpose: a confirmed-DANGEROUS campaign tag answers
+    # for an unseen domain, a SAFE or SUSPICIOUS one never does. Eleven live alerts on one tag went
+    # unanswered while thirty human inspections named the operator, which is what this closes.
+    mkdir -p "$_t/camp1"
+    printf '2026-01-01T00:00:00Z\tDANGEROUS\tinspected\thttps://aa11.rotate-one.example/?s1=upg12\tharvester\tphishing\n' \
+        > "$_t/camp1/feedback.txt"
+    FB_ROOT="$_t" "$0" --settled 'https://zz99.never-seen-before.example/?s1=upg12' >/dev/null 2>&1
+    [ $? -eq 2 ] || { echo "FAIL --settled did not auto-confirm a confirmed-DANGEROUS campaign sibling"; _fails=1; }
+    _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --settled 'https://zz99.never-seen-before.example/?s1=upg12' | cut -f3)
+    [ "$_got" = campaign ] || { echo "FAIL --settled campaign scope not named: got [$_got]"; _fails=1; }
+
+    # A SAFE sibling on the same tag must NOT clear an unseen domain: an affiliate tag is not a
+    # certificate of innocence, and this is the direction where being wrong is a missed phish.
+    mkdir -p "$_t/camp2"
+    printf '2026-01-02T00:00:00Z\tSAFE\tinspected\thttps://bb22.benign-lander.example/?s1=clean9\tordinary\tmarketing\n' \
+        > "$_t/camp2/feedback.txt"
+    FB_ROOT="$_t" "$0" --settled 'https://cc33.unseen.example/?s1=clean9' >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled cleared an unseen url from a SAFE campaign sibling"; _fails=1; }
+
+    # A SUSPICIOUS sibling is the verdict that means "could not decide", so it settles nothing.
+    mkdir -p "$_t/camp3"
+    printf '2026-01-03T00:00:00Z\tSUSPICIOUS\tinspected\thttps://dd44.maybe.example/?s1=grey77\tunsure\tother\n' \
+        > "$_t/camp3/feedback.txt"
+    FB_ROOT="$_t" "$0" --settled 'https://ee55.unseen.example/?s1=grey77' >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled answered from a SUSPICIOUS campaign sibling"; _fails=1; }
+
+    # A url with no campaign tag at all must still read unknown rather than matching everything.
+    FB_ROOT="$_t" "$0" --settled 'https://ff66.no-tag-here.example/page' >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled matched a url that carries no campaign tag"; _fails=1; }
     FB_ROOT="$_t" "$0" --settled https://never.seen.example/x >/dev/null 2>&1
     [ $? -eq 1 ] || { echo "FAIL --settled claimed to know an unseen url"; _fails=1; }
     # one keypress must not silence a future alert: agree-only is NOT an answer
@@ -278,6 +328,40 @@ if [ -n "$SETTLED" ]; then
     _rows=$("$0" --host "$_h" 2>/dev/null)
     _hit=$(printf '%s\n' "$_rows" | awk -F'\t' -v u="$_url" '$2=="inspected" && $3==u { print "exact\t"$0 }' | tail -1)
     [ -z "$_hit" ] && _hit=$(printf '%s\n' "$_rows" | awk -F'\t' '$2=="inspected" { print "host\t"$0 }' | tail -1)
+
+    # Third scope: the CAMPAIGN tag, and it can only ever answer "bad".
+    #
+    # The exact/host scopes above stop deliberately short of the apex, because a wrong auto-resolve
+    # is a missed phish rather than a noisy alert. That reasoning is about exit 0. It says nothing
+    # about exit 2, and in the other direction the ledger was being ignored: sixteen alerts sat
+    # unanswered in the channel, eleven of them `*.imean.space/?s1=upg12`, while the ledger held
+    # THIRTY inspected-DANGEROUS rows across twenty-eight unrelated hosts carrying that same tag.
+    # A human had already named the operator, thirty times, and --settled still said "unknown" and
+    # sent someone to scan the thirty-first domain by hand.
+    #
+    # So the scope is asymmetric on purpose, and the asymmetry is the safety property:
+    #   * a DANGEROUS campaign sibling  -> exit 2, auto-confirm. Being wrong here is a page that
+    #     turns out to be less bad than an operator's other thirty. Cheap.
+    #   * a SAFE campaign sibling       -> NOTHING. An affiliate tag is not a certificate of
+    #     innocence, and one benign landing page in a rotation must never clear the next one.
+    #   * a SUSPICIOUS sibling          -> NOTHING. It is the verdict that means "could not
+    #     decide", so it cannot settle anything for another url.
+    # Only `inspected` rows count, as everywhere else, so this can never bootstrap off the
+    # scanner's own output. The scan path already floors on the same evidence (`campbad` in
+    # verdict.sh), so this is --settled catching up with what a scan would have concluded anyway --
+    # which is the whole point of asking before spending one.
+    if [ -z "$_hit" ]; then
+        _ckey=$(campaign_key "$_url")
+        if [ -n "$_ckey" ]; then
+            _hit=$(cat "${FILES[@]}" | sort | awk -F'\t' 'NF>=4 && $3=="inspected" && $2=="DANGEROUS" \
+                       { print $2"\t"$3"\t"$4"\t"(NF>=5?$5:"")"\t"(NF>=6?$6:"") }' \
+                   | while IFS=$'\t' read -r _cv _cs _cu _cn _cc; do
+                         campaign_match "$_ckey" "$(campaign_key "$_cu")" \
+                             && printf 'campaign\t%s\t%s\t%s\t%s\t%s\n' "$_cv" "$_cs" "$_cu" "$_cn" "$_cc"
+                     done | tail -1)
+        fi
+    fi
+
     [ -z "$_hit" ] && exit 1
     IFS=$'\t' read -r _scope _v _st _u _note _cat <<< "$_hit"
     printf '%s\t%s\t%s\t%s\t%s\n' "$_v" "${_cat:-?}" "$_scope" "$_u" "$_note"
@@ -307,7 +391,7 @@ if [ -n "$CORPUS" ]; then
 fi
 
 # sort: chronological, so "last row wins" below is genuinely the latest state per URL.
-cat "${FILES[@]}" | sort | awk -F'\t' -v R="$RED" -v G="$GREEN" -v Y="$YELLOW" -v C="$CYAN" -v GY="$GREY" -v B="$BOLD" -v X="$RESET" '
+cat "${FILES[@]}" | sort | awk -F'\t' -v R="$RED" -v G="$GREEN" -v Y="$YELLOW" -v C="$CYAN" -v GY="$GREY" -v B="$BOLD" -v X="$RESET" -v JSON="$JSONOUT" '
 NF < 4 { next }
 # liveness is not a response: it never counts toward the totals or the current judgement state
 $3=="gone"  { dead[$4]=1; next }
@@ -325,8 +409,10 @@ $3=="alive" { dead[$4]=0; next }
   state[u]=fb; when[u]=$1; verd[u]=v; note[u]=(NF>=5 ? $5 : ""); cat[u]=(NF>=6 ? $6 : "")
   if (!(u in ord)) { ord[u]= ++nURL; URLS[nURL]=u }
 }
+function js(t) { gsub(/\\/, "\\\\", t); gsub(/"/, "\\\"", t)
+                 gsub(/\t/, " ", t); gsub(/\n/, " ", t); return t }
 END {
-  if (tot==0) { print GY "No parseable feedback rows." X; exit }
+  if (tot==0) { if (JSON) print "{\"responses\":0}"; else print GY "No parseable feedback rows." X; exit }
   openN=0; inspN=0; deadN=0
   for (i=1;i<=nURL;i++) { u=URLS[i]
     tag = (dead[u] ? " " GY "[gone]" X : ""); if (dead[u]) deadN++
@@ -334,6 +420,31 @@ END {
     kind = (cat[u] ? "/" cat[u] : "")
     if (state[u]=="flag")      { openN++;  OP[openN]=when[u]" "verd[u] kind" "u tag }
     if (state[u]=="inspected") { inspN++;  IN[inspN]=when[u]" "verd[u] kind" "u tag "\n      " note[u] }
+  }
+  # --json: the SAME numbers, for a reader that is not a terminal. One owner for the arithmetic --
+  # the web dashboard computing its own agreement rate from the raw rows is how two answers to
+  # "how accurate is this" start disagreeing, and only one of them gets fixed.
+  # jq is not available inside awk, so strings that reach JSON are escaped by hand -- notes and
+  # urls are the only free text here, and js() below handles the four characters that can break a
+  # document (backslash, quote, and the two control characters a ledger note can actually contain).
+  if (JSON) {
+    printf "{\"responses\":%d,\"agree\":%d,\"disagree\":%d,\"skip\":%d,", tot, agree+0, disN+0, skipN+0
+    printf "\"open_flags\":%d,\"inspected\":%d,\"gone\":%d,\"urls\":%d,", openN, inspN, deadN, nURL
+    printf "\"by_verdict\":{"; sep=""
+    for (v in seen) { scored = aV[v]+dis[v]
+      printf "%s\"%s\":{\"agree\":%d,\"disagree\":%d,\"total\":%d,\"rate\":%d}",
+             sep, js(v==""?"(none)":v), aV[v]+0, dis[v]+0, seen[v], (scored ? 100*aV[v]/scored : 0); sep="," }
+    printf "},\"by_category\":{"; sep=""
+    for (c in ctally) { printf "%s\"%s\":%d", sep, js(c), ctally[c]; sep="," }
+    printf "},\"disagreements\":["; sep=""
+    for (i=1;i<=disN;i++) { printf "%s\"%s\"", sep, js(DL[i]); sep="," }
+    printf "],\"flags\":["; sep=""
+    for (i=1;i<=nURL;i++) { u=URLS[i]
+      if (state[u]!="flag") continue
+      printf "%s{\"url\":\"%s\",\"verdict\":\"%s\",\"category\":\"%s\",\"at\":\"%s\",\"gone\":%s}",
+             sep, js(u), js(verd[u]), js(cat[u]), js(when[u]), (dead[u] ? "true" : "false"); sep="," }
+    printf "]}\n"
+    exit
   }
   printf "%s%s== Analyst feedback: %d responses ==%s\n", B, C, tot, X
   printf "  %sagree %d   disagree %d   skip %d   open flags %d   inspected %d   gone %d%s\n\n", GY, agree+0, disN+0, skipN+0, openN, inspN, deadN, X

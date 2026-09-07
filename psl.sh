@@ -33,6 +33,12 @@ psl_ensure() {
     [ -s "$PSL_FILE" ]
 }
 
+# An IP literal is not a domain name. Nothing in it was registered, so there is no public suffix
+# ("90" is not a TLD), no registrant-chosen word to judge, and the whole address is the only thing
+# a ledger scope or an RDAP lookup can key on. Before this, 102.135.154.90 gave suffix "90", head
+# "102.135.154" and apex "154.90" -- and "154.90" went to RDAP as if it were a domain.
+is_ip_literal() { case "${1%.}" in "") return 1 ;; *:*) return 0 ;; *[!0-9.]*) return 1 ;; *) return 0 ;; esac; }
+
 # suffix_of <host> -> the public suffix: the tail NOBODY registers (com, co.uk, github.io,
 # s3.us-east-1.amazonaws.com). Everything a brand or entropy check may judge lies to its left --
 # see head_of. apex_of is this plus the one label below it.
@@ -40,6 +46,7 @@ suffix_of() {
     local host="${1,,}"
     host="${host%.}"
     [ -z "$host" ] && return 0
+    is_ip_literal "$host" && return 0
 
     if ! psl_ensure; then
         # Fallback = the pre-PSL heuristic's implied suffix: a known ccTLD second level (co.uk),
@@ -81,6 +88,7 @@ head_of() {
     local host="${1,,}" suffix
     host="${host%.}"
     [ -z "$host" ] && return 0
+    is_ip_literal "$host" && return 0
     suffix=$(suffix_of "$host")
     [ "$suffix" = "$host" ] && return 0
     printf '%s' "${host%.$suffix}"
@@ -94,7 +102,7 @@ apex_of() {
     host="${host%.}"
     [ -z "$host" ] && return 0
     suffix=$(suffix_of "$host")
-    [ "$suffix" = "$host" ] && { printf '%s' "$host"; return 0; }
+    { [ -z "$suffix" ] || [ "$suffix" = "$host" ]; } && { printf '%s' "$host"; return 0; }
     head="${host%.$suffix}"
     printf '%s.%s' "${head##*.}" "$suffix"
 }
@@ -119,6 +127,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     t za.com                    za.com          # a bare public suffix has no registrable domain
     t co.uk                     co.uk
     t localhost                 localhost       # single label, no TLD
+    t 102.135.154.90            102.135.154.90  # IP literal: was "154.90", which then went to RDAP
 
     h() { # h <host> <expected head>
         local got; got=$(head_of "$1")
@@ -133,5 +142,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     h accounts.barclays.co.uk   accounts.barclays
     h user.github.io            user
     h za.com                    ""              # host IS a public suffix: registrant chose nothing
+    h 102.135.154.90            ""              # an IP has no registrant-chosen word to judge
+    s_() { local got; got=$(suffix_of "$1"); if [ "$got" = "$2" ]; then p=$((p+1)); printf 'ok   suffix %-31s -> %s\n' "$1" "$got"
+        else f=$((f+1)); printf 'FAIL suffix %-31s -> %s (want %s)\n' "$1" "$got" "$2"; fi; }
+    s_ 102.135.154.90           ""              # nobody registered "90"
+    s_ www.google.com           com
     echo; echo "passed $p, failed $f"; [ "$f" -eq 0 ]
 fi

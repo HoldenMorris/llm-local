@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% set tab = 'triage' %}
+{% block body %}<section class="pad">
+  <div class="headrow">
+    <h1>Triage</h1>
+    <span class="dim">the LUCA queue is plan 05 &mdash; these are the most recent cached scans</span>
+  </div>
+
+  {% if not scans %}
+    <p class="dim">Nothing cached yet. Run a scan from the Scan tab.</p>
+  {% else %}
+  <table class="rows">
+    <tbody>
+    {% for s in scans %}
+      <tr>
+        <td class="w-verdict"><span class="v {{ s.verdict|lower or 'none' }}">{{ s.verdict or '&mdash;'|safe }}</span></td>
+        <td class="w-cat dim">{{ s.category }}</td>
+        <td class="w-url">{{ s.url|inert|safe if s.url else '<span class="dim">no record</span>'|safe }}</td>
+        <td class="w-open"><a class="btn" href="/scan/{{ s.hash }}">open &#8629;</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>{% endblock %}

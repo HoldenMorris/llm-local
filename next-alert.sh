@@ -8,8 +8,8 @@
 # It NEVER clicks. Clicking is submit_report()+chat_update() inside the gateway, and a recorded
 # verdict is supposed to mean a human looked. You look at this, then you click.
 #
-#   ./next-alert.sh                # newest unruled alert in Holden's LUCA DM
-#   ./next-alert.sh C099U43SRS5    # ...in the shared alerts channel instead
+#   ./next-alert.sh                # newest unruled alert: the LUCA DM, then #luca-phishing-alerts
+#   ./next-alert.sh C099U43SRS5    # ...in that one channel only
 #   ./next-alert.sh -u <url>       # skip Slack, just rule on one URL
 #   ./next-alert.sh -a             # re-offer an alert already shown (ignore the seen-list)
 #   ./next-alert.sh --self-test
@@ -19,12 +19,62 @@ cd "$SCRIPT_DIR"
 source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/inspect.sh"   # deep_inspect + its parsers, shared with url-analyze.sh
 
-DM_CHANNEL="D0BAMTCJE7K"     # "You're up" prompts land here; the shared channel is mostly settled
+DM_CHANNEL="D0BAMTCJE7K"     # "You're up" prompts land here: the open worklist, read first
+VERIFY_CHANNEL="C099U43SRS5" # #luca-phishing-alerts, the "Phishing alert N -- verify?" feed.
+# Two places to look, in that order: the DM is where work is handed to you personally, and the
+# channel is the shared feed anyone may already have taken. Falling back only when the DM is
+# empty keeps one person's queue ahead of the pile, and stops a channel alert being offered
+# while a DM alert is still waiting.
 # any flag at all disables url-analyze's interactive prompts. -m auto picks the best model per
 # results/url_benchmark.csv (without it a flagged run takes whatever model is installed first);
 # -t adds VirusTotal + urlscan, which is what a LUCA alert deserves -- these URLs are already
 # reported as phish, and VT's 5-vendor quorum floors DANGEROUS with no credential form needed.
 SCAN_FLAGS=(-c mono -m auto -t)
+LAST_RULED=""   # what the newest already-ruled alert was ruled, for the empty-queue line
+OPEN_N=""       # how many alerts in the channel are still open, so a backlog cannot hide
+
+# How far back to look, and NOT a detail. At 15 this tool reported "nothing waiting" while
+# **sixteen** unruled alerts sat in the channel: rulings land newest-first, so the recently-answered
+# ones fill the top of the window and push the backlog out of sight. That is the one failure mode a
+# worklist tool must not have, because "nothing waiting" and "I cannot see the work" read
+# identically. The open COUNT that read_channel now returns is the other half of the fix -- any
+# window can be too small, and a number you can compare against the channel makes it visible when
+# it is.
+READ_LIMIT="${READ_LIMIT:-60}"
+
+# One channel, newest alert nobody has ruled on, or NONE. A ruled alert has been rewritten in
+# place with a "Recorded: <user> marked this ..." line, so absence of that line IS the
+# open-worklist filter. Read-only tool, so it cannot reply.
+#
+# When everything IS ruled it returns "NONE: <what the newest one was ruled>". A bare "nothing
+# waiting" is indistinguishable from "the read failed and found no alerts at all" -- and the two
+# want opposite reactions. Naming the last verdict is the cheapest possible proof the read
+# actually worked and that the queue really is empty rather than unreachable.
+read_channel() {   # <channel-id> -> "<open count>\t<url | NONE: what the newest one was ruled>"
+    claude -p "Read Slack channel $1 (limit $READ_LIMIT, response_format concise).
+A LUCA phishing alert is a message about a reported URL, which may read like
+'Phishing alert 0 -- verify?'. An alert is OPEN when it carries NO 'Recorded:' line, which means
+nobody has given it a verdict yet.
+Print EXACTLY TWO LINES and nothing else.
+Line 1: OPEN: <how many alerts are open, as a plain number>
+Line 2: the URL of the NEWEST open alert, bare -- no backticks, no markdown, no explanation.
+        If none are open, print instead NONE followed by a colon, a space, and what the NEWEST
+        alert's Recorded: line says: who ruled it and what they called it. For example:
+        NONE: Sam marked this Verify phish" \
+        --allowedTools "mcp__claude_ai_Slack__slack_read_channel" 2>/dev/null | parse_reply
+}
+
+# The reply, as "<open count>\t<url | NONE:... | ERR>". A read that produced NEITHER a url NOR a
+# NONE line did not find an empty queue -- it FAILED, and saying "nothing waiting" for that is the
+# phantom-SAFE shape one layer out: the two sentences read identically and want opposite reactions.
+# The usual cause is mundane and invisible from here -- `claude` is logged out, so the headless
+# Slack read errors out on stderr and stdout is empty, while sixteen alerts sit in the DM.
+parse_reply() {
+    tr -d '`' | awk '
+        /^[[:space:]]*OPEN:/ { c = $0; gsub(/[^0-9]/, "", c); if (c != "") n = c; next }
+        /^https?:\/\// || /^NONE/ { line = $0 }
+        END { printf "%s\t%s\n", (n == "" ? "?" : n), (line == "" ? "ERR" : line) }'
+}
 
 # Verdict -> button. UNCLEAR and SUSPICIOUS deliberately do NOT get a confident button: a scan
 # that could not decide is not evidence for either "phish" or "false positive", and Skip is the
@@ -199,6 +249,11 @@ if [ "${1:-}" = "--self-test" ]; then
         got=$(button_for "${pair%%:*}" | cut -d'|' -f1)
         [ "$got" = "${pair#*:}" ] || { echo "FAIL ${pair%%:*} -> $got"; exit 1; }
     done
+    _pr() { [ "$(printf '%s' "$2" | parse_reply)" = "$1" ] || { echo "FAIL parse_reply [$2] -> [$(printf '%s' "$2" | parse_reply)] want [$1]"; exit 1; }; }
+    _pr "3	https://x/?a=1" "$(printf 'OPEN: 3\nhttps://x/?a=1')"
+    _pr "0	NONE: Sam marked this Verify phish" "$(printf 'OPEN: 0\nNONE: Sam marked this Verify phish')"
+    _pr "?	ERR" ""                                            # logged out: nothing on stdout
+    _pr "?	ERR" "Invalid API key . Please run /login"          # logged out, but chatty
     SEEN=$(mktemp)
     printf 'SUSPICIOUS\thttps://legacy2col\n'                 >>"$SEEN"   # written before the flag existed
     printf 'SAFE\thttps://legacy-safe\n'                      >>"$SEEN"
@@ -227,26 +282,45 @@ if [ "${1:-}" = "-u" ]; then
     URL="${2:?-u needs a url}"
 else
     FROM_SLACK=1
-    CHANNEL="${1:-$DM_CHANNEL}"
     command -v claude >/dev/null 2>&1 || { echo_red "need 'claude' on PATH to read Slack"; exit 1; }
-    echo_grey "reading $CHANNEL for an alert nobody has ruled on..."
-    # A ruled alert has been rewritten in place with a "Recorded: <user> marked this ..." line,
-    # so absence of that line IS the open-worklist filter. Read-only tool, so it cannot reply.
-    URL=$(claude -p "Read Slack channel $CHANNEL (limit 15, response_format concise).
-Find the NEWEST message that is a LUCA phishing alert AND has NO 'Recorded:' line in it --
-that means nobody has given it a verdict yet.
-Print ONLY that message's URL. Bare, no backticks, no markdown, no explanation.
-If every alert already carries a 'Recorded:' line, print exactly: NONE" \
-        --allowedTools "mcp__claude_ai_Slack__slack_read_channel" 2>/dev/null \
-        | tr -d '`' | grep -oE 'https?://[^[:space:]]+|^NONE$' | tail -1)
+    CHANNELS=("$@"); [ ${#CHANNELS[@]} -eq 0 ] && CHANNELS=("$DM_CHANNEL" "$VERIFY_CHANNEL")
+    for CHANNEL in "${CHANNELS[@]}"; do
+        echo_grey "reading $CHANNEL for an alert nobody has ruled on..."
+        _reply=$(read_channel "$CHANNEL")
+        OPEN_N="${_reply%%$'\t'*}"; URL="${_reply#*$'\t'}"
+        # Keep the last channel's "NONE: ..." so the empty-queue line below can name the verdict
+        # it saw. The DM answering NONE and the channel answering NONE are both worth reporting;
+        # the one printed is the last channel actually read.
+        case "$URL" in NONE*) LAST_RULED="${URL#NONE}"; LAST_RULED="${LAST_RULED#:}" ;; esac
+        # A failed read is not an empty queue. Stop here rather than fall through to the
+        # "nothing waiting" line, which is what this looked like for a whole logged-out day.
+        [ "$URL" = ERR ] && {
+            echo_red "could not read Slack ($CHANNEL) -- the queue is UNKNOWN, not empty"
+            echo_grey "  headless 'claude -p' returned nothing usable; usually it is logged out."
+            echo_grey "  run 'claude' and then /login, then try again."
+            exit 1
+        }
+        case "$URL" in NONE*|"") ;; *) break ;; esac
+    done
+
+    # How deep the queue is. One alert per invocation is fine; not knowing there are twenty-three
+    # behind it is not -- that is how a backlog stops being merely long and becomes invisible.
+    case "$OPEN_N" in
+        ""|0|1|"?") ;;
+        *) echo_yellow "  $OPEN_N open in this channel -- this is the newest; run again for the next" ;;
+    esac
     # LUCA's extractor swallows trailing punctuation from the source mail (seen: "yhopecn.com/)")
     URL="${URL%)}"
 fi
 
-if [ -z "$URL" ] || [ "$URL" = "NONE" ]; then
-    echo_green "nothing waiting -- every alert already has a verdict"
+case "${URL:-NONE}" in NONE*)
+    # Name what the newest alert was ruled. "Nothing waiting" on its own is the same sentence a
+    # broken Slack read would produce, and the two need opposite reactions from you.
+    _lr=$(printf '%s' "${LAST_RULED:-}" | sed 's/^ *//; s/ *$//')
+    echo_green "nothing waiting -- every alert already has a verdict${_lr:+  [$_lr]}"
+    [ -n "$_lr" ] || echo_grey "  (Slack answered, but did not say what the last verdict was)"
     exit 0
-fi
+esac
 
 # On a loop this runs every few minutes against the same open alert, so without a seen-list it
 # nags about one URL forever -- and an alert you have already declined to scan is not news.

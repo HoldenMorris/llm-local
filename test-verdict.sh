@@ -44,7 +44,7 @@ CAMPSUSP='A url under the same campaign tag s1=upg12 was previously inspected as
 check "campaign SUSPICIOUS sibling never floors up"    SUSPICIOUS "$(cv false space 0 '' 'https://x.space/?s1=upg12' "$CAMPSUSP" '' '' SAFE)"
 
 echo "== campaign_key / campaign_match =="
-UPG='https://gbq17.ecandy.space/?s1=upg12&email=georgen@pesca.co.za&s3=pvx4g'
+UPG='https://gbq17.ecandy.space/?s1=upg12&email=victim@example.co.za&s3=pvx4g'
 UPG2='https://oen666.ouronly.space/?s1=upg12&email=x@y.co.za&s3=3j78q'
 BARE='https://ul590.getmypair.space/?s1=upg12'
 check "one key per line not a composite" "s1=upg12
@@ -462,6 +462,32 @@ check "credential form outranks adult" phishing     "$(co DANGEROUS true 'https:
 check "ADULT: no changes nothing"     other         "$(co SUSPICIOUS false 'https://x.com/' '' '' '' 'BRAND: none. PASSWORD: no. ADULT: no')"
 check "UNCLEAR gets no category"      ""            "$(co UNCLEAR false 'https://x.com/survey' '' '')"
 check "empty verdict gets no category" ""           "$(co '' false 'https://x.com/survey' '' '')"
+
+# --- floor_parts: read the floor notice back --------------------------------------------------
+# url-analyze.sh puts "which rule fired, and what the LLM said instead" into verdict.json, which
+# means something parses the prose classify_verdict writes to stderr. These cases pin the two
+# together: reword the notice without updating floor_parts and this fails here, rather than
+# silently emitting a null floor into every scan record from then on.
+#
+# The notice is captured from a REAL classify_verdict call, not hand-written, so the test cannot
+# drift from the format by agreeing with a stale copy of it.
+fp() { IFS=$'\t' read -r r f l <<< "$(floor_parts "$1")"; printf '%s|%s|%s' "$r" "$f" "$l"; }
+_notice() { classify_verdict "$@" 2>&1 >/dev/null; }
+
+check "floor_parts: login + flags" \
+    "login form + 1 red flag(s)|DANGEROUS|SAFE" \
+    "$(fp "$(_notice true com 400 'https://x.com/' 'https://x.com/' 'Suspicious JS: eval' '' '' SAFE)")"
+
+check "floor_parts: flags only, no llm verdict" \
+    "1 red flag(s)|SUSPICIOUS|UNCLEAR" \
+    "$(fp "$(_notice false com 400 'https://x.com/' 'https://x.com/' 'Suspicious JS: eval' '' '' '')")"
+
+check "floor_parts: colour codes are stripped" \
+    "1 red flag(s)|SUSPICIOUS|UNCLEAR" \
+    "$(CYAN=$'\033[36m' RESET=$'\033[0m' bash -c 'source ./verdict.sh; classify_verdict false com 400 "https://x.com/" "https://x.com/" "Suspicious JS: eval" "" "" "" 2>&1 >/dev/null' | { IFS=$'\t' read -r r f l <<< "$(floor_parts "$(cat)")"; printf '%s|%s|%s' "$r" "$f" "$l"; })"
+
+check "floor_parts: no floor fired -> nothing" "||" "$(fp "")"
+check "floor_parts: unrelated stderr -> nothing" "||" "$(fp "some other warning")"
 
 echo
 echo "passed $pass, failed $fail"

@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}scope{% endblock %}</title>
+<link rel="stylesheet" href="/static/scope.css">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/scope.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <span class="brand">scope</span>
+  <nav class="tabs">
+    <a href="/"       class="{{ 'on' if tab == 'triage' }}">Triage</a>
+    <a href="/scan"   class="{{ 'on' if tab == 'scan'   }}">Scan</a>
+    <a href="/ledger" class="{{ 'on' if tab == 'ledger' }}">Ledger</a>
+    <a href="/tools"  class="{{ 'on' if tab == 'tools'  }}">Tools</a>
+  </nav>
+  <span class="spacer"></span>
+  {% if worker_up %}
+    <span class="status"><span class="dot ok"></span>worker</span>
+  {% else %}
+    <span class="status bad"><span class="dot bad"></span>worker down &mdash; run <code>./web/worker.sh</code></span>
+  {% endif %}
+  {% if running %}<span class="status"><span class="dot warn"></span>1 running</span>{% endif %}
+  {% if queue_depth %}<span class="status">{{ queue_depth }} queued</span>{% endif %}
+</header>
+<main>{% block body %}{% endblock %}</main>
+</body>
+</html>

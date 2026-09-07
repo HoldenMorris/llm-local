@@ -85,12 +85,16 @@ NO_DEOBFUS=""
 VT=""
 PROXY=""
 EXIT_CC=""
+JSON_OUT=""
 VISION_MODEL="${VISION_MODEL:-openbmb/minicpm-v4.6:q4_K_M}"
 
 # Help as the first arg (getopts won't catch bare `help` or long `--help`).
 case "${1:-}" in -h|--help|help) usage; exit 0 ;; esac
 
-while getopts "m:sVHrc:Dhtp:g:" opt; do
+# ponytail: getopts has no long options, so --json is rewritten to -j before it runs. The /#
+# anchors the match to the start of each argument, so a URL containing the text is untouched.
+set -- "${@/#--json/-j}"
+while getopts "m:sVHrc:Dhtjp:g:" opt; do
     case $opt in
         m) MODEL="$OPTARG" ;;
         s) SKIP_FETCH=1 ;;
@@ -100,6 +104,7 @@ while getopts "m:sVHrc:Dhtp:g:" opt; do
         c) case "$OPTARG" in mono|none|off|no) MONO=1 ;; esac ;;  # -c mono = no color
         D) NO_DEOBFUS=1 ;;    # skip JS deobfuscation escalation
         t) VT=1 ;;            # opt-in third-party reputation (VirusTotal + urlscan.io)
+        j) JSON_OUT=1 ;;      # print verdict.json to stdout; the human narration goes to stderr
         p) PROXY="$OPTARG" ;; # scanner egress: tor (or none). Geo-target / dodge blacklists.
         g) EXIT_CC="$OPTARG" ;; # Tor exit country (ISO code, e.g. us, gb) -- only with -p tor
         h) usage; exit 0 ;;
@@ -117,6 +122,130 @@ shift $((OPTIND-1))
 
 # Now that -c mono is known, load the shared color helpers.
 source "$SCRIPT_DIR/colors.sh"
+
+# -j: the JSON is the answer, so it gets stdout to itself and the narration moves to stderr. A
+# scripted caller can then read the verdict off a pipe without also parsing three screens of
+# phase output, while a human running -j on a terminal still watches the scan happen.
+# ponytail: two lines instead of threading an output mode through 1900 lines of echo.
+[ -n "$JSON_OUT" ] && exec 3>&1 1>&2
+
+# write_verdict_json -> $CACHE_DIR/verdict.json
+#
+# The verdict is the ONE thing a scan does not persist. The page, the followed login and
+# interstitial pages, every screenshot, the host facts, the vision read, the LLM answer and the
+# feedback ledger are already files in $CACHE_DIR -- so a reader can reconstruct every part of a
+# scan except its answer, which lived only in these shell variables and in a coloured banner on a
+# terminal. Without this, anything reading a scan has to scrape that banner: prose that changes
+# whenever the wording does, and that breaks silently on exactly the scans worth reading.
+#
+# jq -n builds it, never printf. Titles, signals and smells are attacker-controlled strings, and
+# hand-rolled JSON escaping is how a page title with a quote in it becomes a parse error -- or,
+# worse, valid JSON that says something other than what the scan found.
+#
+# Numbers arrive as possibly-empty shell strings, so every one is converted inside jq rather than
+# passed with --argjson: an absent domain age must serialise as null, never as 0, for the same
+# reason count_red_flags does not count an unknown age. Manufacturing a fact from a missing one is
+# the phantom-SAFE shape one layer further out.
+write_verdict_json() {
+    [ -n "$CACHE_DIR" ] && [ -d "$CACHE_DIR" ] && command -v jq >/dev/null 2>&1 || return 0
+
+    # The floor notice is built for a terminal -- colour codes and one prose line. Strip the
+    # escapes and split it back into the three facts it carries: which rule fired, what it forced,
+    # and what the LLM had said instead. That disagreement is the most useful line in a scan.
+    local _freason _fforced _fllm _flags _arts _port _scheme
+
+    # PORT defaults to 443 for every scheme upstream, because the per-host cache key wants one
+    # value -- harmless on a terminal, a lie in a machine-readable record. Report the scheme's own
+    # default when the url carried no port. ponytail: local to the record; changing PORT itself
+    # would rename the host cache directory of every http host for no gain.
+    _port="$PORT"; _scheme="https"
+    case "$URL" in http://*) _scheme="http"; case "$AUTHORITY" in *:*) ;; *) _port=80 ;; esac ;; esac
+    IFS=$'\t' read -r _freason _fforced _fllm <<< "$(floor_parts "$FLOOR_MSG")"
+
+    # FLAGS_LLM is computed inside the LLM branch, and -H skips that whole block, so recompute
+    # here rather than emit a null red-flag count on every heuristic-only scan.
+    _flags=$(count_red_flags "$TLD" "$AGE_DAYS" "$FINAL_URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS")
+
+    # What is actually on disk for this scan, so a reader never guesses at a filename.
+    _arts=$(cd "$CACHE_DIR" 2>/dev/null && find . -maxdepth 2 -type f ! -name verdict.json -printf '%P\n' 2>/dev/null | sort)
+
+    jq -n \
+        --arg  url        "$URL" \
+        --arg  final_url  "${FINAL_URL:-$URL}" \
+        --arg  host       "$DOMAIN" \
+        --arg  scheme     "$_scheme" \
+        --arg  port       "$_port" \
+        --arg  at         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg  verdict    "${VERDICT:-UNCLEAR}" \
+        --arg  category   "$CATEGORY" \
+        --arg  flags      "$_flags" \
+        --arg  has_login  "$HAS_LOGIN" \
+        --arg  freason    "$_freason" \
+        --arg  fforced    "$_fforced" \
+        --arg  fllm       "$_fllm" \
+        --arg  model      "${MODEL:-}" \
+        --arg  llmv       "$LLM_VERDICT" \
+        --arg  llmsecs    "${LLM_SECS:-}" \
+        --arg  llmlabel   "${LLM_LABEL:-}" \
+        --arg  signals    "$(printf '%s\n' "${SIGNALS[@]}")" \
+        --arg  smells     "$SMELLS" \
+        --arg  suspjs     "$SUSP_JS" \
+        --arg  deob       "$DEOBFUS_SIGNALS" \
+        --arg  status     "$PAGE_STATUS" \
+        --arg  elems      "$PAGE_ELEMS" \
+        --arg  title      "$TITLE" \
+        --arg  ip         "$IP" \
+        --arg  country    "$COUNTRY" \
+        --arg  org        "$ORG" \
+        --arg  age        "$AGE_DAYS" \
+        --arg  certage    "$CERT_AGE_DAYS" \
+        --arg  certissuer "$CERT_ISSUER" \
+        --arg  rdap       "$RDAP_STATUS" \
+        --arg  expiry     "$EXPIRY_DATE" \
+        --arg  arecords   "$A_RECORDS" \
+        --arg  ttl        "$TTL" \
+        --arg  vision     "$VISION_NOTE" \
+        --arg  rec_at     "${_its:-}" \
+        --arg  rec_v      "${_iv:-}" \
+        --arg  rec_c      "${_icat:-}" \
+        --arg  rec_note   "${_inote:-}" \
+        --arg  rec_mach   "${_vmachine:-}" \
+        --arg  arts       "$_arts" \
+        --arg  cache      "$(basename "$CACHE_DIR")" \
+        '
+        def num: if . == "" or . == null then null else (tonumber? // null) end;
+        def txt: if . == "" then null else . end;
+        def lines: split("\n") | map(select(length > 0));
+        def csv:   split(", ")  | map(select(length > 0));
+        {
+          schema: 1,
+          url: $url, final_url: $final_url, host: $host,
+          scheme: $scheme, port: ($port | num),
+          scanned_at: $at, cache: $cache,
+          verdict: $verdict, category: ($category | txt),
+          red_flags: ($flags | num),
+          has_login: ($has_login == "true"),
+          floor: (if $freason == "" then null
+                  else { reason: $freason, forced: $fforced, llm_said: ($fllm | txt) } end),
+          llm: { model: ($model | txt), verdict: ($llmv | txt),
+                 seconds: ($llmsecs | num), cached: ($llmlabel == "cached") },
+          signals: ($signals | lines),
+          smells:  ($smells  | csv),
+          suspicious_js: ($suspjs | csv),
+          deobfuscated:  ($deob   | csv),
+          page: { status: ($status | num), elements: ($elems | num), title: ($title | txt) },
+          domain: { ip: ($ip | txt), country: ($country | txt), org: ($org | txt),
+                    age_days: ($age | num), cert_age_days: ($certage | num),
+                    cert_issuer: ($certissuer | txt), rdap_status: ($rdap | txt),
+                    expiry: ($expiry | txt), a_records: ($arecords | num), ttl: ($ttl | num) },
+          vision: ($vision | txt),
+          recorded: (if $rec_at == "" then null
+                     else { at: $rec_at, verdict: ($rec_v | txt), category: ($rec_c | txt),
+                            note: ($rec_note | txt), machine_verdict: ($rec_mach | txt) } end),
+          artifacts: ($arts | lines)
+        }' > "$CACHE_DIR/verdict.json" 2>/dev/null \
+        || rm -f "$CACHE_DIR/verdict.json"   # a half-written record is worse than none
+}
 
 # === Claude (Anthropic API) backend ===
 # -m claude-<id> (or -m claude, an alias for claude-opus-4-8) runs the verdict LLM through the
@@ -418,8 +547,15 @@ if [ -z "$REFRESH" ] && [ -n "$(find "$HOST_DIR/meta.env" -mtime "-$META_TTL_DAY
 else
 echo "${BOLD}Domain Info${RESET}"
 
-# DNS + IP info
-IP=$(dig +short "$DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+# DNS + IP info. A bare-IP URL resolves to itself: dig on a literal returns nothing, so without
+# this the host read "no DNS A record", the fetch below was skipped, and a scan with no facts at
+# all landed SAFE -- the phantom-SAFE class, and three LUCA alerts were auto-ruled false-positive
+# on pages nothing ever fetched.
+if is_ip_literal "$DOMAIN"; then
+    IP="${DOMAIN//[\[\]]/}"
+else
+    IP=$(dig +short "$DOMAIN" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+fi
 if [ -n "$IP" ]; then
     IP_INFO=$(curl -s --max-time 5 "http://ip-api.com/json/$IP?fields=country,org,isp" 2>/dev/null)
     COUNTRY=$(echo "$IP_INFO" | jq -r '.country // "?"')
@@ -436,7 +572,8 @@ else
     RDAP_URL="https://rdap.org/domain/$APEX_DOMAIN"
 fi
 # -L: rdap.org is a bootstrap service that 302s to the authoritative registry (see domain_dns).
-RDAP=$(curl -sL --max-time 8 "$RDAP_URL" 2>/dev/null)
+# An IP literal has no registration record, so there is nothing to ask and no 8s to spend on it.
+if is_ip_literal "$DOMAIN"; then RDAP=""; else RDAP=$(curl -sL --max-time 8 "$RDAP_URL" 2>/dev/null); fi
 CREATED=$(echo "$RDAP" | jq -r '.events[]? | select(.eventAction=="registration") | .eventDate' 2>/dev/null | head -1)
 if [ -n "$CREATED" ] && [ "$CREATED" != "null" ]; then
     CREATED_DATE=$(echo "$CREATED" | cut -d'T' -f1)
@@ -1786,7 +1923,15 @@ fi
 # Signals are extracted deterministically upstream, so the final verdict is
 # decided by the decision table in verdict.sh -- it escalates over the LLM's
 # verdict but never downgrades. The "[floor] Safety floor" notice goes to stderr.
-VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS" "$VERDICT")
+# The floor notice goes to stderr, and it is the single most useful line in a scan -- it names
+# which rule fired and what the LLM said instead. Capture it rather than let it stream past, so
+# verdict.json can carry it; it is then re-emitted byte-for-byte, colour and all, so the terminal
+# output is unchanged.
+LLM_VERDICT="$VERDICT"
+_floor_err=$(mktemp)
+VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS" "$VERDICT" 2>"$_floor_err")
+FLOOR_MSG=$(cat "$_floor_err"); rm -f "$_floor_err"
+[ -n "$FLOOR_MSG" ] && printf '%s\n' "$FLOOR_MSG" >&2
 
 # A prior deep inspection is the strongest context available on a re-scan: a human (or a claude
 # triage) already read the artifacts and settled this URL. Its verdict therefore REPLACES the
@@ -1812,6 +1957,9 @@ fi
 # is a category that only exists for verdicts we are calling bad.
 CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE" "$VISION_NOTE")
 [ -n "$_icat" ] && [ -t 0 ] && CATEGORY="$_icat"
+
+# Everything the scan decided is now final. Persist it beside the artifacts it was decided from.
+write_verdict_json
 
 case "$VERDICT" in
     SAFE)       VC="$GREEN";  VLINE="[+] VERDICT: SAFE" ;;
@@ -1976,3 +2124,8 @@ fi
 # and the next thing you usually do is paste it into a ticket or re-run it with another flag.
 echo ""
 echo_grey "scanned: $URL"
+
+# -j: the record itself, on the stdout reserved for it back at the top. Last, so the wipe prompt
+# above has already run -- feedback.txt survives a wipe and so does this, because both are the
+# answer rather than the evidence.
+[ -n "$JSON_OUT" ] && { [ -s "$CACHE_DIR/verdict.json" ] && cat "$CACHE_DIR/verdict.json" >&3 || echo '{"schema":1,"error":"no verdict record was written"}' >&3; }

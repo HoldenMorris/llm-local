@@ -32,3 +32,8 @@ tmp/
 temp/
 *.tmp
 .planning/slack-states/
+
+# scope web UI: job spool (per-run request/log/state files) and any local venv
+.cache/web-jobs/
+web/.venv/
+web/__pycache__/

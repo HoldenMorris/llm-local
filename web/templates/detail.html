@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% set tab = 'triage' %}
+{% block title %}{{ v.verdict or 'scan' }} &middot; scope{% endblock %}
+{% block body %}<section class="pad detail">
+
+  <div class="headrow">
+    <a class="btn back" href="/">&#8592; esc &middot; queue</a>
+    {{ (v.url or page.url or '')|inert|safe }}
+  </div>
+
+  {% if legacy %}
+    <p class="dim">Scanned before <code>verdict.json</code> existed, so there is no recorded
+    answer &mdash; what follows is read from the other artifacts. Re-scan to write one.</p>
+  {% endif %}
+
+  {% if v.verdict %}
+  <div class="banner {{ v.verdict|lower }}">
+    <div class="rule"></div>
+    <div class="vline">
+      {% if v.verdict == 'DANGEROUS' %}[!!]{% elif v.verdict == 'SUSPICIOUS' %}[!]{% elif v.verdict == 'SAFE' %}[+]{% else %}[?]{% endif %}
+      VERDICT: {{ v.verdict }}{% if v.category %} <span class="cat">({{ v.category }})</span>{% endif %}
+    </div>
+    <div class="rule"></div>
+    {% if v.floor %}
+      <p class="floorline">floor: {{ v.floor.reason }} &rarr; {{ v.floor.forced }}
+        <span class="dim">&mdash; the LLM said {{ v.floor.llm_said or 'nothing' }}</span></p>
+    {% elif v.llm and v.llm.verdict %}
+      <p class="floorline dim">no floor fired; the verdict is the LLM's own ({{ v.llm.verdict }})</p>
+    {% endif %}
+    <p class="floorline dim">{{ v.red_flags if v.red_flags is not none else '?' }} red flag(s)
+      {%- if v.llm and v.llm.model %} &middot; {{ v.llm.model }}
+        {%- if v.llm.cached %} (cached){% elif v.llm.seconds %} in {{ '%.1f'|format(v.llm.seconds) }}s{% endif %}
+      {%- endif %}
+      {%- if v.scanned_at %} &middot; {{ v.scanned_at }}{% endif %}</p>
+  </div>
+  {% endif %}
+
+  <div class="paned">
+    <div class="tabstrip">
+      <button type="button" class="on" data-pane="signals">Signals{% if v.signals %} {{ v.signals|length }}{% endif %}</button>
+      <button type="button" data-pane="shots">Screens{% if shots %} {{ shots|length }}{% endif %}</button>
+      <button type="button" data-pane="dom">DOM</button>
+      <button type="button" data-pane="scripts">Scripts{% if scripts %} {{ scripts|length }}{% endif %}</button>
+      <button type="button" data-pane="llm">LLM</button>
+      <button type="button" data-pane="ledger">Ledger{% if rows %} {{ rows|length }}{% endif %}</button>
+      <button type="button" data-pane="files">Files</button>
+    </div>
+
+    <div class="pane" data-pane="signals">
+      <div class="cols">
+        <div>
+          {% if v.signals %}
+            <ul class="signals">{% for s in v.signals %}<li>{{ s }}</li>{% endfor %}</ul>
+          {% else %}<p class="dim">no signals recorded</p>{% endif %}
+          {% if v.suspicious_js %}
+            <h2>Suspicious JS</h2>
+            <ul class="signals">{% for s in v.suspicious_js %}<li>{{ s }}</li>{% endfor %}</ul>
+          {% endif %}
+          {% if v.deobfuscated %}
+            <h2>Deobfuscation</h2>
+            <ul class="signals">{% for s in v.deobfuscated %}<li>{{ s }}</li>{% endfor %}</ul>
+          {% endif %}
+        </div>
+        <aside>
+          <h2>Host</h2>
+          <dl class="facts">
+            {% for k in ['ip','country','org','age_days','cert_age_days','cert_issuer','rdap_status','expiry','a_records','ttl'] %}
+              {% if v.domain and v.domain[k] is not none %}<dt>{{ k }}</dt><dd>{{ v.domain[k] }}</dd>{% endif %}
+            {% endfor %}
+            {% if v.scheme %}<dt>scheme</dt><dd>{{ v.scheme }}{% if v.port %}:{{ v.port }}{% endif %}</dd>{% endif %}
+          </dl>
+          {% if vision %}<h2>Vision</h2><pre class="mini">{{ vision }}</pre>{% endif %}
+        </aside>
+      </div>
+    </div>
+
+    <div class="pane" data-pane="shots" hidden>
+      {% if shots %}
+        <div class="shotgrid">
+        {% for s in shots %}
+          <figure><figcaption>{{ s }}{% if loop.first %} <span class="dim">&mdash; the one the VLM read</span>{% endif %}</figcaption>
+          <img class="shot" src="/artifact/{{ h }}/{{ s }}" alt="{{ s }}"></figure>
+        {% endfor %}
+        </div>
+      {% else %}<p class="dim">no screenshot &mdash; the fetch was skipped or the page was never reached</p>{% endif %}
+    </div>
+
+    <div class="pane" data-pane="dom" hidden>
+      {% if page %}
+        <h2>page.json</h2>
+        <dl class="facts">
+          <dt>title</dt><dd>{{ page.title }}</dd>
+          <dt>status</dt><dd>{{ page.status }}</dd>
+          <dt>final url</dt><dd class="brk">{{ page.finalUrl }}</dd>
+          {% for k, val in (page.counts or {}).items() %}<dt>{{ k }}</dt><dd>{{ val }}</dd>{% endfor %}
+        </dl>
+        {% for key, label in [('phishingSmells','Smells'), ('thirdPartyDomains','Third-party hosts'),
+                              ('exfilDomains','Exfil targets'), ('webSockets','WebSockets'),
+                              ('siteKeys','Bot-gate sitekeys'), ('loginLinks','Login links'),
+                              ('redirects','Redirect chain')] %}
+          {% if page[key] %}<h2>{{ label }}</h2>
+            <ul class="signals">{% for item in page[key] %}<li>{{ item if item is string else item|tojson }}</li>{% endfor %}</ul>
+          {% endif %}
+        {% endfor %}
+        {% if page.console %}<h2>Console</h2>
+          <ul class="signals">{% for c in page.console[:25] %}<li>[{{ c.type }}] {{ c.text }}</li>{% endfor %}</ul>{% endif %}
+      {% else %}<p class="dim">no page was fetched</p>{% endif %}
+
+      {% for name, fp in followed.items() %}
+        {% if fp %}<h2>{{ name }}</h2>
+        <dl class="facts"><dt>title</dt><dd>{{ fp.title }}</dd>
+          <dt>final url</dt><dd class="brk">{{ fp.finalUrl }}</dd>
+          <dt>login form</dt><dd>{{ fp.hasLoginForm }}</dd></dl>{% endif %}
+      {% endfor %}
+    </div>
+
+    <div class="pane" data-pane="scripts" hidden>
+      {% if scripts %}
+        <p class="dim small">Served as text, never as script. These are the kit's own inline files.</p>
+        <ul class="arts">{% for s in scripts %}<li><a href="/artifact/{{ h }}/{{ s }}">{{ s }}</a></li>{% endfor %}</ul>
+      {% else %}<p class="dim">no inline scripts were captured</p>{% endif %}
+    </div>
+
+    <div class="pane" data-pane="llm" hidden>
+      {% if llm %}<pre class="mini wide">{{ llm }}</pre>
+      {% else %}<p class="dim">no LLM answer cached &mdash; a heuristic-only scan (<code>-H</code>) never asks one</p>{% endif %}
+    </div>
+
+    <div class="pane" data-pane="ledger" hidden>
+      {% if rows %}
+        <table class="rows small">
+          {% for r in rows %}<tr><td class="dim">{{ r.at }}</td><td>{{ r.action }}</td>
+            <td>{{ r.verdict }}</td><td>{{ r.category }}</td><td class="note">{{ r.note }}</td></tr>{% endfor %}
+        </table>
+        <p class="dim small">Append-only, latest row wins &mdash; an inspection supersedes a flag,
+        and a later re-flag reopens the url.</p>
+      {% else %}<p class="dim">nobody has ruled on this url yet</p>{% endif %}
+
+      {# The one write in this application. It carries four values to feedback-report.sh -i, which
+         owns the row format -- including the two-row shape a disagreement produces. #}
+      <form class="record" method="post" action="/ledger/record">
+        <input type="hidden" name="url" value="{{ v.url or page.url or '' }}">
+        <input type="hidden" name="back" value="/scan/{{ h }}">
+        <span class="flabel">WHAT SHOULD THE VERDICT BE?</span>
+        <div class="vpick">
+          {% for opt in ['SAFE', 'SUSPICIOUS', 'DANGEROUS'] %}
+            <label><input type="radio" name="verdict" value="{{ opt }}"
+                     {% if v.verdict == opt %}checked{% endif %}><span>{{ opt }}</span></label>
+          {% endfor %}
+        </div>
+        <span class="flabel">WHAT IS IT?</span>
+        <select name="category">
+          <option value="">(no category)</option>
+          {% for c in categories %}
+            <option value="{{ c }}" {% if v.category == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+        <span class="flabel">WHAT DID YOU FIND?</span>
+        <textarea name="note" placeholder="the evidence, in one or two sentences"></textarea>
+        <div class="brow">
+          <button class="btn go" type="submit">record in the ledger</button>
+          <span class="dim small">then <code>--settled</code> answers with it and the weekly
+          replay corpus scores against it</span>
+        </div>
+      </form>
+
+      <form method="post" action="/inspect" class="inline">
+        <input type="hidden" name="url" value="{{ v.url or page.url or '' }}">
+        <input type="hidden" name="back" value="/scan/{{ h }}">
+        <button class="btn" type="submit">or run the deep inspection first</button>
+      </form>
+    </div>
+
+    <div class="pane" data-pane="files" hidden>
+      <ul class="arts">{% for a in artifacts %}<li><a href="/artifact/{{ h }}/{{ a }}">{{ a }}</a></li>{% endfor %}</ul>
+      <p class="dim small">An image is served as an image; everything else as <code>text/plain</code>
+      under its own <code>default-src 'none'; sandbox</code>.</p>
+    </div>
+  </div>
+</section>{% endblock %}

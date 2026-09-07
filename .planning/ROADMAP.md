@@ -151,6 +151,52 @@ benchmarks say it is not reliably winnable headless from a datacenter IP
 
 **Non-goals:** paid CAPTCHA-solver integration; anything that only serves offensive use.
 
+### Phase: `scope` — a local web UI over the whole toolkit  — planned 2026-08-21
+**Why:** the detection works and the ledger proves it, but there is no surface. `next-alert.sh`
+hands you one alert per invocation and the queue behind it is invisible; a scan writes eight kinds
+of artifact and shows you a bullet list; the ledger report — 5 open flags, SUSPICIOUS at 77%
+agreement, 16 URLs categorised `other` — is an invocation nobody makes on a Tuesday.
+
+**Shape:** FastAPI + Jinja + HTMX on `127.0.0.1:8787`, single analyst, no auth. The scripts stay the
+single source of truth for detection: the API shells out (exec array, semaphore of 1), reads
+`.cache/` directly, and writes **only** through `feedback-report.sh -i`. One script change —
+`url-analyze.sh` writes `verdict.json` at the end of a scan, because the verdict is the one thing a
+scan does not already persist, and `cat`-ing it is the `--json` the CLI never had.
+
+Four surfaces: the triage queue, the scan workbench, the ledger dashboard, the tool runner. Seven
+plans in four waves. **The triage inbox is the app** (decided 2026-08-21): it is what opens, and
+the workbench and ledger are drill-ins from it — `enter` opens the workbench on the alert you are
+already reading, with no re-scan because the artifacts are already on disk; a `LEDGER SAYS` row
+opens the ledger filtered to that host or campaign; `esc` returns to the same queue position.
+
+**The part not to be lazy about:** this is the first thing in the repo that renders
+attacker-controlled content in a browser. Escaping, `text/plain` artifact serving, an artifact-path
+allowlist, inert URLs, a CSP, and the `127.0.0.1` bind are in wave 1 rather than retrofitted.
+
+**Progress:** plans 01 and 02 shipped 2026-08-21. A scan now writes `verdict.json` (and `-j` prints
+it), and `scope` runs at `http://127.0.0.1:8787` via `./web/up.sh` — container for the UI, host
+worker for execution, four-file spool between them, and the whole fence in place. Plan 03 followed
+the same day: the scan workbench, streaming a live scan over SSE with a phase timeline read off the
+script's own markers, and seven evidence panes over the cached artifacts. Plan 04 followed: the
+ledger surface, reading `feedback-report.sh --json` (new, so the arithmetic keeps one owner) and
+writing through `feedback-report.sh -i` like every other writer. Next: 05 the triage queue, then
+06 the tool runner.
+
+**The test that matters:** the CLI behaves exactly as it does today and the benchmark numbers do not
+move. If this phase changes a verdict, the wrap was done wrong.
+See [phases/web-ui/](phases/web-ui/) — CONTEXT.md, RESEARCH.md, PLAN.md.
+
+### Ledger: `--settled` now answers for a campaign  — shipped 2026-08-21
+A live check of `#luca-phishing-alerts` found **16 alerts still showing buttons**, and 11 of them
+were one campaign (`*.imean.space/?s1=upg12`) that the ledger already held **30 inspected-DANGEROUS
+rows across 28 unrelated hosts** for. `--settled` said "unknown" for every one, because its scope
+stopped at the host.
+
+That scope was reasoned about exit 0 — a wrong auto-resolve is a missed phish — and the reasoning
+was never re-examined for exit 2. `--settled` now has a third, **asymmetric** scope: a confirmed
+DANGEROUS campaign sibling auto-confirms, a SAFE or SUSPICIOUS one answers nothing. The live queue
+went from 14 unknown to 4. Six golden cases pin both directions.
+
 ### Backlog
 - `-F` follow mode: re-scan off-domain redirect targets as their own pass.
 - External `<script src>` fetch + deobfuscation (currently inline-only).
