@@ -205,6 +205,12 @@ check "placeholder never downgrades the LLM" DANGEROUS "$(cv false com 400 '' 'h
 check "placeholder named even on UNCLEAR"   parked     "$(category_of UNCLEAR false 'https://x.com/' "$PARK" '')"
 check "placeholder named on a bad verdict"  parked     "$(category_of SUSPICIOUS false 'https://x.com/' "$PARK" '')"
 check "credential form outranks placeholder" phishing  "$(category_of DANGEROUS true 'https://x.com/' "$PARK" '')"
+# A confirmed campaign sibling's recorded category replaces the "other" shrug, and nothing else.
+check "campaign category replaces other"     adult     "$(category_of DANGEROUS false 'https://tm030.myfast.lol/t' '' '' '' '' adult)"
+check "credential form outranks campaign"    phishing  "$(category_of DANGEROUS true 'https://tm030.myfast.lol/t' '' '' '' '' adult)"
+check "no campaign category -> other"        other     "$(category_of DANGEROUS false 'https://tm030.myfast.lol/t' '' '' '' '' '')"
+check "campaign category never names SAFE"   content   "$(category_of SAFE false 'https://x.com/a' '' '' '' '' adult)"
+check "campaign category never names UNCLEAR" ''       "$(category_of UNCLEAR false 'https://x.com/a' '' '' '' '' adult)"
 check "parked is in the vocabulary"         yes        "$(is_category parked && echo yes)"
 
 # Multi-vendor VirusTotal consensus is stronger than any local heuristic and needs no credential

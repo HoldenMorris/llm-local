@@ -30,6 +30,7 @@ is_category() { case " $VERDICT_CATEGORIES " in *" $1 "*) return 0 ;; *) return 
 # signals the LLM already has, so it would only give a small model more to miscount).
 category_of() {
     local verdict="$1" has_login="$2" url="$3" smells="$4" deobfus="$5" title="${6:-}" vision="${7:-}"
+    local campcat="${8:-}"   # category humans recorded on confirmed siblings of this campaign
     local text="$url $title" adult=""
     # The VLM looked at the screenshot and saw explicit imagery. This is the one category with no
     # trace in scraped text -- the page below titles itself "No swiping. No ghosting." -- so it is
@@ -67,7 +68,11 @@ category_of() {
         # -- it only ever comes from an analyst answer or a deep inspection. adult used to be in
         # the same boat, and now arrives from the VLM above, because the scraper reads text and
         # this class is entirely pictures.
-        echo other; return 0
+        # Before shrugging: humans already named what this campaign's other links are. It
+        # replaces "other" and nothing else -- every guess above read THIS page, the sibling's
+        # category describes a different one. tm030.myfast.lol read "other" while 46 inspected
+        # rotator links said adult.
+        echo "${campcat:-other}"; return 0
     fi
     # Benign shapes. Same evidence, read for what the page is FOR rather than what it steals.
     [ -n "$adult" ] && { echo adult; return 0; }

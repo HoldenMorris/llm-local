@@ -161,6 +161,9 @@ write_verdict_json() {
     _port="$PORT"; _scheme="https"
     case "$URL" in http://*) _scheme="http"; case "$AUTHORITY" in *:*) ;; *) _port=80 ;; esac ;; esac
     IFS=$'\t' read -r _freason _fforced _fllm <<< "$(floor_parts "$FLOOR_MSG")"
+    # The notice names what the verdict core was handed, which is blank after a no-page degrade.
+    # The record names what the model said.
+    [ -n "$_freason" ] && [ -n "$LLM_VERDICT" ] && _fllm="$LLM_VERDICT"
 
     # FLAGS_LLM is computed inside the LLM branch, and -H skips that whole block, so recompute
     # here rather than emit a null red-flag count on every heuristic-only scan.
@@ -1255,6 +1258,7 @@ fi
 # can see that, because the domains share nothing. Only runs when this domain is otherwise unknown
 # to us: with a settled sibling on the domain itself the smell is already recorded, and a second
 # one would double-count as two red flags for what is one piece of evidence.
+_camp_cat=""
 if [ -z "$_host_bad" ] && [ -z "$_host_susp" ]; then
     _ckey=$(campaign_key "${FINAL_URL:-$URL}")
     [ -z "$_ckey" ] && _ckey=$(campaign_key "$URL")
@@ -1283,6 +1287,11 @@ if [ -z "$_host_bad" ] && [ -z "$_host_susp" ]; then
         _ckey=$(printf '%s' "$_ckey" | tr '\n' ' ')
         _camp_smell=""
         if [ -n "$_camp_bad" ]; then
+            # What humans called the confirmed siblings, for category_of's "other" fallback. The
+            # most common one, so a single Slack-harvested row with a blank or odd category
+            # cannot name the whole campaign.
+            _camp_cat=$(printf '%s\n' "$_camp" | awk -F'\t' '$1=="DANGEROUS" && $2=="inspected" && $5!="" && $5!="other" { n[$5]++ }
+                END { for (c in n) if (n[c] > m) { m = n[c]; b = c }; print b }')
             _camp_smell="Confirmed phishing previously inspected under the same campaign tag $_ckey ($(printf '%s' "$_camp_bad" | tr ',' ' '))"
         elif [ -n "$_camp_susp" ]; then
             _camp_smell="A url under the same campaign tag $_ckey was previously inspected as suspicious ($(printf '%s' "$_camp_susp" | tr ',' ' '))"
@@ -1920,6 +1929,13 @@ if [ -f "$SHOT" ] && can_prompt && command -v xdg-open >/dev/null 2>&1; then
     [[ "$_ans" =~ ^[Yy] ]] && { xdg-open "$SHOT" >/dev/null 2>&1 & }
 fi
 
+# What the LLM actually answered, captured BEFORE the two degrades below blank it. They clear any
+# answer, not just SAFE (an LLM DANGEROUS on a page nobody saw is not evidence either, and the floor
+# still escalates on real signals), but the record must not then claim the model said UNCLEAR:
+# tm030.myfast.lol logged "LLM said UNCLEAR" while its cached answer read VERDICT: DANGEROUS.
+LLM_VERDICT="$VERDICT"
+_llm_aside=""
+[ -n "$VERDICT" ] && _llm_aside=" (the LLM said $VERDICT - set aside, the floor decides)"
 # The scanner cannot clear a page it never saw. An error status or an empty DOM makes any SAFE --
 # from the LLM or from the no-signal default -- a phantom, so drop it to UNCLEAR here and let the
 # floor below still escalate on whatever static signals exist. Same failure shape as the data: URL
@@ -1929,14 +1945,14 @@ if [ -n "$PAGE_FETCHED" ] && is_blank_page "$PAGE_STATUS" "$PAGE_ELEMS" "$SMELLS
     # element counts that make it look like a healthy page we simply disliked.
     _why="HTTP ${PAGE_STATUS:-?} / ${PAGE_ELEMS:-0} DOM elements"
     [ -n "$_placeholder" ] && _why="a registrar/host placeholder - not the linked site"
-    echo_yellow "[!] No assessable page ($_why) -- cannot call this SAFE"
-    VERDICT=""
+    echo_yellow "[!] No assessable page ($_why) -- cannot call this SAFE$_llm_aside"
+    VERDICT=""; _llm_aside=""
 fi
 # Same rule one step earlier: the host did not resolve, so there was no page to fetch at all. The
 # scan holds nothing but the url itself, and "no facts" is not evidence of innocence -- a phish
 # whose host is already sinkholed or rotated away must not read SAFE the day after it worked.
 if [ -n "$NO_DNS" ]; then
-    echo_yellow "[!] Host does not resolve -- nothing was fetched, so this cannot be called SAFE"
+    echo_yellow "[!] Host does not resolve -- nothing was fetched, so this cannot be called SAFE$_llm_aside"
     VERDICT=""
 fi
 
@@ -1948,7 +1964,6 @@ fi
 # which rule fired and what the LLM said instead. Capture it rather than let it stream past, so
 # verdict.json can carry it; it is then re-emitted byte-for-byte, colour and all, so the terminal
 # output is unchanged.
-LLM_VERDICT="$VERDICT"
 _floor_err=$(mktemp)
 VERDICT=$(classify_verdict "$HAS_LOGIN" "$TLD" "${AGE_DAYS}" "$FINAL_URL" "$URL" "$SMELLS" "$SUSP_JS" "$DEOBFUS_SIGNALS" "$VERDICT" 2>"$_floor_err")
 FLOOR_MSG=$(cat "$_floor_err"); rm -f "$_floor_err"
@@ -1976,7 +1991,7 @@ fi
 # inspection looked at the page. Computed AFTER the override, never before -- guessing from the
 # machine verdict and then printing the overridden one produced "SAFE (other)", where "other"
 # is a category that only exists for verdicts we are calling bad.
-CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE" "$VISION_NOTE")
+CATEGORY=$(category_of "$VERDICT" "$HAS_LOGIN" "${FINAL_URL:-$URL}" "$SMELLS" "$DEOBFUS_SIGNALS" "$TITLE" "$VISION_NOTE" "$_camp_cat")
 [ -n "$_icat" ] && [ -t 0 ] && CATEGORY="$_icat"
 
 # Everything the scan decided is now final. Persist it beside the artifacts it was decided from.
