@@ -1786,6 +1786,16 @@ else
 
 "
     fi
+    # Mirrors the `formlesskit` floor in verdict.sh, on the same string and count.
+    if printf '%s' "$SMELLS" | grep -qi 'needs no credential form' \
+       && [ "${FLAGS_LLM:-0}" -ge 2 ] 2>/dev/null; then
+        # Quotes the smell text verbatim: a first wording that only described the kit was skipped
+        # in favour of RULE 3 by qwen2.5:1.5b, which matches strings it can see in its input.
+        RULES="${RULES}RULE 2e: the 'Phishing smells flagged by scraper' line contains \"Known phishing kit\" AND \"needs no credential form\", AND the RED FLAG COUNT is 2 or more.
+   -> VERDICT: DANGEROUS. That kit sends the recipient address and a device fingerprint away without any login form, so a missing form is not evidence of safety. You must NOT downgrade this to SUSPICIOUS or SAFE.
+
+"
+    fi
     # The floor already forces UNCLEAR here (is_blank_page), but the LLM must not be left arguing
     # the opposite: on a parked domain every counted flag is 0, so RULE 4 handed it a confident SAFE
     # that then had to be overridden. UNCLEAR parses to empty in _parse_verdict, which is exactly

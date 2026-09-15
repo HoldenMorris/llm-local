@@ -37,6 +37,8 @@ category_of() {
     # the only one worth reading out of the vision note. It never outranks a credential form: an
     # adult-baited harvester is still, first, after the password.
     printf '%s' "$vision" | grep -qiE 'ADULT:?[[:space:]]*yes' && adult=1
+    # ... or the page runs the adult-dating funnel kit, whose lure is text-only and passes the VLM.
+    printf '%s' "$smells" | grep -qi 'Known phishing kit: Adult-dating' && adult=1
     # A registrar/host placeholder is the ONE thing worth naming on an unjudgeable page, and it is
     # named ABOVE the UNCLEAR guard below on purpose: "we could not judge this, because the domain
     # is parked" is a complete answer, where a bare UNCLEAR is a shrug. It is also the only fact
@@ -556,6 +558,14 @@ classify_verdict() {
     # piece of evidence counted twice.
     local campbad=""
     printf '%s' "$smells" | grep -qi 'previously inspected under the same campaign tag' && campbad=1
+    # A kit signature marked noForm in page-fetch.sh: a kit whose harm does not wait for a password.
+    # An ordinary kit signature stays an ordinary red flag (our string table, no second opinion), but
+    # a noForm entry is only added with one: the adult-dating funnel's tokens sit on 70 of 71 cached
+    # pages of a campaign humans inspected DANGEROUS 46 times, and on none of 170 other pages. Its
+    # pages never carry a form, so the login-gated rule cannot fire and the kit alone topped out at
+    # SUSPICIOUS. Same two-halves shape as campbad: the kit plus one independent flag.
+    local formlesskit=""
+    printf '%s' "$smells" | grep -qi 'needs no credential form' && formlesskit=1
     # Spamhaus DBL listed the domain itself as a phish / malware / botnet domain. Same shape as the
     # VirusTotal quorum above and for the same reason: it is an outside authority naming the
     # domain, it needs no credential form to be true, and a dead or gated page (where every local
@@ -584,6 +594,8 @@ classify_verdict() {
         floor=DANGEROUS; reason="bot/cloak gate hiding the real page + phishing already confirmed on this host, domain or campaign"
     elif [ -n "$campbad" ] && [ "$flags" -ge 2 ]; then
         floor=DANGEROUS; reason="phishing already confirmed by inspection under this campaign tag + $flags red flag(s)"
+    elif [ -n "$formlesskit" ] && [ "$flags" -ge 2 ]; then
+        floor=DANGEROUS; reason="known kit that needs no credential form + $flags red flag(s)"
     elif [ "$flags" -ge 1 ] || [ -n "$unsub" ] || [ -n "$offhost" ] || [ -n "$hotlink" ] || [ -n "$priorsusp" ] || [ -n "$antianalysis" ] || [ -n "$rdaphold" ] || [ -n "$bitm" ]; then
         floor=SUSPICIOUS
         reason="$flags red flag(s)${unsub:+ + unsubscribe endpoint}${offhost:+ + login form loading off-CDN third-party host}${hotlink:+ + login form displaying hotlinked brand artwork}${priorsusp:+ + a url on this domain or campaign was already inspected and found suspicious}${antianalysis:+ + page javascript actively resists analysis}${rdaphold:+ + the domain is suspended at the registry (RDAP hold)}${bitm:+ + credential page relaying over its own websocket (browser-in-the-middle)}"

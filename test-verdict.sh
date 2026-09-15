@@ -292,6 +292,15 @@ KIT='Known phishing kit: Kratos (build artifact "barr.svg")'
 check "kit signature counts once"        1          "$(count_red_flags com '' '' "$KIT" '' '')"
 check "kit signature -> SUSPICIOUS"      SUSPICIOUS "$(cv false com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
 check "kit signature + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://x.com/' "$KIT" '' '' SAFE)"
+# A kit whose harm needs no form (the adult-dating funnel ships the recipient address and a device
+# fingerprint by redirect). Its second opinion is 46 human DANGEROUS inspections, and it still needs
+# one independent flag, like campbad: alone on an aged .com it stays SUSPICIOUS.
+FUNNEL='Known phishing kit: Adult-dating recipient-tracking funnel (build artifact "l_tr_pperror") - needs no credential form'
+check "formless kit counts once"             1          "$(count_red_flags com 4000 '' "$FUNNEL" '' '')"
+check "formless kit alone stays SUSPICIOUS"  SUSPICIOUS "$(cv false com 4000 '' 'https://x.com/' "$FUNNEL" '' '' SAFE)"
+check "formless kit + young domain -> DANGEROUS" DANGEROUS "$(cv false space 1 '' 'https://ab12.x.space/' "$FUNNEL" '' '' SAFE)"
+check "ordinary kit + young domain stays SUSPICIOUS" SUSPICIOUS "$(cv false space 1 '' 'https://ab12.x.space/' "$KIT" '' '' SAFE)"
+check "adult-dating funnel is adult"         adult      "$(category_of DANGEROUS false 'https://ab12.x.space/' "$FUNNEL" '')"
 
 SITEKEY='Bot-gate sitekey: 0x4AAAAAAABkMYinukE8nzYS'
 echo "== bot-gate sitekey (attribution, not evidence of theft) =="

@@ -685,6 +685,15 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
     // reasoning as Kratos above -- neither token is a kit token on its own, since chat apps ship
     // socket.io and the real fiduswriter ships diffDOM, so it has to be BOTH on one page.
     { name: 'BitM relay (Socket.IO + DOM diffing)', all: ['socket.io', 'domdiffer'] },
+    // The adult-dating rotator (s1=upg12 / snm3, and the .digital label-echo links). Its inline
+    // script base64-decodes the recipient address from an invented global and ships it, with a
+    // FingerprintJS / canvas / GPU fingerprint, to its OWN /click by redirect -- so every
+    // off-domain exfil check is blind to it. Both tokens are invented names: window.svne and the
+    // canvas-error sentinel l_tr_pperror. Measured on the cache: 70 of 71 campaign pages (the
+    // 71st kept no scripts), 0 of 170 other pages. The URL shape and the tag both rotate; these
+    // only change if the kit is rebuilt.
+    // noForm: its harm needs no password, so verdict.sh lets it reach DANGEROUS with one more flag.
+    { name: 'Adult-dating recipient-tracking funnel', any: ['l_tr_pperror', 'window.svne'], noForm: true },
   ];
   for (const kit of kitSignatures) {
     if (kit.not && (apexDomain === kit.not || domain.endsWith('.' + kit.not))) continue;
@@ -692,7 +701,7 @@ const httpsAvailable = (host, timeout = 5000) => new Promise((res) => {
                         : kit.any.filter(t => kitHay.includes(t));
     const matched = kit.all ? (hit ? kit.all : []) : hit;
     if (matched.length)
-      smells.push(`Known phishing kit: ${kit.name} (build artifact "${matched[0]}")`);
+      smells.push(`Known phishing kit: ${kit.name} (build artifact "${matched[0]}")${kit.noForm ? ' - needs no credential form' : ''}`);
   }
 
   // A credential page holding a socket to its OWN origin does not submit -- it streams. That is
