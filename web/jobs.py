@@ -117,6 +117,45 @@ def kind(job_id: str) -> str:
     return ""
 
 
+def find(kind_: str, states: set[str], **fields) -> str | None:
+    """The newest job of this kind, in one of these states, asked with exactly these values.
+
+    What lets a page reuse a read instead of re-asking for it: a visit to /ledger while the worker
+    is three hours into a replay used to queue one more report per visit, each waiting 20s for an
+    answer that could not come.
+    """
+    if not JOBS.is_dir():
+        return None
+    for p in sorted(JOBS.glob("*.state"), reverse=True):          # ids sort by time
+        job_id = p.stem
+        if _read(p) not in states or kind(job_id) != kind_:
+            continue
+        body = _body(job_id)
+        if all(body.get(k) == v for k, v in fields.items() if v is not None):
+            return job_id
+    return None
+
+
+def finished_at(job_id: str) -> float | None:
+    p = _path(job_id, "state")
+    try:
+        return p.stat().st_mtime if p else None
+    except OSError:
+        return None
+
+
+def _body(job_id: str) -> dict:
+    for ext in ("req", "claimed", "done-req"):
+        p = _path(job_id, ext)
+        try:
+            data = json.loads(p.read_text()) if p else None
+            if isinstance(data, dict):
+                return data
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
 def queued() -> list[str]:
     """Ids waiting to start, oldest first — the queue depth the UI shows."""
     if not JOBS.is_dir():
@@ -227,6 +266,20 @@ if __name__ == "__main__":
             check("kind survives the worker finishing it", kind(job), "scan")
             os.replace(JOBS / f"{job}.done-req", JOBS / f"{job}.req")
             check("kind of a traversal id is empty", kind("../../etc/passwd"), "")
+
+            # find: reuse a read instead of queueing another one
+            r1 = submit("rollup", scope="host", key="a.example")
+            time.sleep(1.1)                                   # ids are per-second
+            r2 = submit("rollup", scope="host", key="b.example")
+            check("find by kind and values", find("rollup", {"queued"}, scope="host", key="a.example"), r1)
+            check("find the newest of a kind", find("rollup", {"queued"}), r2)
+            check("find respects the state", find("rollup", {"done"}, scope="host", key="a.example"), None)
+            (JOBS / f"{r1}.state").write_text("done\n")
+            check("a finished read is found as done", find("rollup", {"done"}, key="a.example"), r1)
+            check("finished_at reads the state file", finished_at(r1) is not None, True)
+            for j in (r1, r2):
+                for ext in ("req", "state"):
+                    (JOBS / f"{j}.{ext}").unlink(missing_ok=True)
             check("request carries values", (body["url"], body["flags"]), ("https://example.com/", "-t"))
             check("None fields are omitted, not sent as null", "model" in body, False)
             check("no field names a program", [k for k in body if k in ("argv", "cmd", "exec")], [])

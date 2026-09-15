@@ -129,6 +129,9 @@ h2 { font-size:11px; font-weight:600; letter-spacing:.4px; color:var(--dim);
 .jobview { margin-top:18px; }
 .jobcols { display:grid; grid-template-columns:210px minmax(0,1fr); gap:16px; }
 @media (max-width: 820px) { .jobcols { grid-template-columns:minmax(0,1fr); } }
+/* Only a scan lights the phase timeline. Without one (a replay, a harvest, any tool) the log was
+   left in the 210px timeline column and wrapped every line. */
+.jobcols:has(> .phases[hidden]) { grid-template-columns:minmax(0,1fr); }
 .phases { list-style:none; margin:0; padding:0; font:11.5px var(--mono); }
 .phases[hidden] { display:none; }
 .phases li { padding:6px 0 6px 18px; position:relative; color:var(--dim2); }
@@ -224,3 +227,4 @@ form.inline { display:inline; }
 .chart .hit { fill:transparent; }
 .chart .pt:hover .dotm { r:5; }
 .chart .dlabel { fill:var(--fg2); font:11px var(--mono); }
+.scanform label .flag { color:var(--dim2); }

@@ -188,9 +188,23 @@ async def scan_form(request: Request):
     return render(request, "scan.html", job=None, url="")
 
 
+# The scan form speaks in steps that RUN, one meaning per tick. The CLI flags mix the two senses
+# (-t and -r switch a step on, -V -D -H switch one off), and a form that copied them made a tick
+# mean "on" in one row and "off" in the next. The flags themselves stay: benchmarks, next-alert.sh
+# and every doc use them, and the worker's whitelist is still what decides.
+STEP_ON = {"reputation": "-t", "refresh": "-r"}              # ticked -> add the flag
+STEP_OFF = {"vision": "-V", "deobfuscation": "-D", "llm": "-H"}  # unticked -> add the flag
+
+
+def scan_flags(steps: list[str]) -> str:
+    return " ".join([f for s, f in STEP_ON.items() if s in steps] +
+                    [f for s, f in STEP_OFF.items() if s not in steps])
+
+
 @app.post("/scan", response_class=HTMLResponse)
-async def scan_start(request: Request, url: str = Form(...), flags: list[str] = Form(default=[]),
+async def scan_start(request: Request, url: str = Form(...), steps: list[str] = Form(default=[]),
                      model: str = Form(default="auto")):
+    flags = scan_flags(steps)
     # No validation here beyond shape: the worker owns the whitelist, and a second opinion in the
     # container would be a second thing to keep in step with it. What this does is refuse to submit
     # obvious nonsense so the user gets an answer now instead of a refused job in a second.
@@ -198,7 +212,7 @@ async def scan_start(request: Request, url: str = Form(...), flags: list[str] = 
     if not url.startswith(("http://", "https://")):
         return render(request, "scan.html", job=None, url=url,
                       error="Needs a http:// or https:// url.")
-    job = jobq.submit("scan", url=url, flags=" ".join(flags), model=model or None)
+    job = jobq.submit("scan", url=url, flags=flags, model=model or None)
     # The cache directory is a pure function of the url, so the workbench link exists before the
     # scan does. That is what lets the live view hand over to the record view the moment it ends,
     # instead of making the reader go and find the scan they just ran.
@@ -216,43 +230,43 @@ async def ledger(request: Request, host: str = "", apex: str = "", campaign: str
     scope, key = next(((s, k) for s, k in
                        (("host", host), ("apex", apex), ("campaign", campaign)) if k), ("", ""))
     if key:
-        # A rollup is already TSV, so it is read synchronously rather than shown as a job: the
-        # queue links straight into it and a spinner between "3 settled DANGEROUS" and the three
-        # rows would be the whole point of the link, wasted.
-        return render(request, "ledger.html", scope=scope, key=key,
-                      rollup=await sh_rows("rollup", scope=scope, key=key), report=None)
-    return render(request, "ledger.html", scope="", key="",
-                  report=await sh_json("report"), rollup=None)
-
-
-async def sh_json(kind: str, **fields) -> dict | None:
-    """Run a read-only job and parse its JSON. None when the worker is not there to run it."""
-    out = await _await_job(kind, **fields)
+        out, pending, as_of = await ledger_read("rollup", scope=scope, key=key)
+        rows = [ln.split("\t") for ln in (out or "").splitlines() if ln.strip()]
+        return render(request, "ledger.html", scope=scope, key=key, rollup=rows, report=None,
+                      read=out is not None, pending=pending, as_of=as_of)
+    out, pending, as_of = await ledger_read("report")
     try:
-        return json.loads(out)
-    except (ValueError, TypeError):
-        return None
+        report = json.loads(out) if out else None
+    except ValueError:
+        report = None
+    return render(request, "ledger.html", scope="", key="", report=report, rollup=None,
+                  read=out is not None, pending=pending, as_of=as_of)
 
 
-async def sh_rows(kind: str, **fields) -> list[list[str]]:
-    """Run a read-only job and split its TSV."""
-    out = await _await_job(kind, **fields)
-    return [ln.split("\t") for ln in (out or "").splitlines() if ln.strip()]
+async def ledger_read(kind: str, **fields) -> tuple[str | None, str | None, str | None]:
+    """A ledger read that never waits behind a long job: (output, pending job, as-of time).
 
-
-async def _await_job(kind: str, timeout: float = 20.0, **fields) -> str:
-    """Submit and wait. Only ever for the cheap read-only kinds -- a scan is a job you watch.
-
-    A worker that is down means this returns nothing rather than hanging the page; the chrome
-    already shows "worker down", so the surface degrades to an empty panel with an explanation
-    rather than a spinner that never resolves.
+    The worker runs one job at a time, and a replay holds it for hours. Waiting for a fresh read
+    then cost every visit the full 20s timeout, returned nothing, and left one more report queued
+    per visit. So: reuse the last finished read while the ledger has not changed since; otherwise
+    keep ONE read queued, wait for it only when the worker is free, and while it is busy show the
+    last read with its time. No read at all is output None -- which the page must say, because
+    "nothing settled" for a read that never ran is the empty-queue lie again.
     """
-    job = jobq.submit(kind, **fields)
-    waited = 0.0
-    while jobq.state(job) not in jobq.TERMINAL and waited < timeout:
-        await asyncio.sleep(0.1)
-        waited += 0.1
-    return jobq.log(job) if jobq.state(job) == "done" else ""
+    last = jobq.find(kind, {"done"}, **fields)
+    last_at = jobq.finished_at(last) if last else None
+    if last and last_at and last_at >= cache.ledger_mtime():
+        return jobq.log(last), None, None
+    pending = jobq.find(kind, {"queued", "running"}, **fields) or jobq.submit(kind, **fields)
+    if jobq.running() in (None, pending):
+        waited = 0.0
+        while jobq.state(pending) not in jobq.TERMINAL and waited < 20:
+            await asyncio.sleep(0.1)
+            waited += 0.1
+        if jobq.state(pending) == "done":
+            return jobq.log(pending), None, None
+    stamp = time.strftime("%H:%M", time.localtime(last_at)) if last_at else None
+    return (jobq.log(last) if last else None), pending, stamp
 
 
 @app.post("/ledger/record", response_class=HTMLResponse)

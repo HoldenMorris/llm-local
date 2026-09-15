@@ -5,11 +5,12 @@
   {% if error %}<p class="bad">{{ error }}</p>{% endif %}
   <form method="post" action="/scan" class="scanform">
     <input class="urlin" type="text" name="url" value="{{ url }}" placeholder="https://..." autofocus>
-    <label><input type="checkbox" name="flags" value="-t" checked> -t reputation</label>
-    <label><input type="checkbox" name="flags" value="-r"> -r refresh</label>
-    <label><input type="checkbox" name="flags" value="-V"> -V no vision</label>
-    <label><input type="checkbox" name="flags" value="-H"> -H heuristic only</label>
-    <label><input type="checkbox" name="flags" value="-D"> -D no deobfuscation</label>
+    {# Every tick means "this step runs". The dim part is the CLI flag the choice turns into. #}
+    <label title="VirusTotal, urlscan.io, Spamhaus DBL"><input type="checkbox" name="steps" value="reputation" checked> reputation <span class="flag">-t</span></label>
+    <label title="re-fetch everything, ignore the cached scan"><input type="checkbox" name="steps" value="refresh"> fresh fetch <span class="flag">-r</span></label>
+    <label title="the screenshot reader"><input type="checkbox" name="steps" value="vision" checked> vision <span class="flag">off: -V</span></label>
+    <label title="webcrack on obfuscated scripts"><input type="checkbox" name="steps" value="deobfuscation" checked> deobfuscation <span class="flag">off: -D</span></label>
+    <label title="off = the heuristic decision table alone"><input type="checkbox" name="steps" value="llm" checked> verdict LLM <span class="flag">off: -H</span></label>
     <input class="modelin" type="text" name="model" value="auto" size="14" title="-m">
     <button class="btn go" type="submit">scan</button>
   </form>

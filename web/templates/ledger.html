@@ -1,6 +1,10 @@
 {% extends "base.html" %}
 {% set tab = 'ledger' %}
 {% block body %}<section class="pad">
+{% if pending %}
+  <p class="dim small">{% if as_of %}Showing the ledger as last read at {{ as_of }}.{% else %}No ledger read has finished yet.{% endif %}
+  A fresh read is queued{% if running %} behind the job the worker is running now{% endif %} &mdash; reload once it is free.</p>
+{% endif %}
 
 {% if key %}
   <div class="headrow">
@@ -19,8 +23,9 @@
       {% endfor %}
     </table>
   {% else %}
-    <p class="dim">Nothing settled under that {{ scope }}{% if not worker_up %} &mdash; or the host
-    worker is not running, so nothing could be read{% endif %}.</p>
+    {% if read %}<p class="dim">Nothing settled under that {{ scope }}.</p>
+    {% else %}<p class="bad">Not read yet{% if not worker_up %} &mdash; the host worker is not running{% endif %}.
+    This is not an empty rollup.</p>{% endif %}
   {% endif %}
 
 {% elif report %}
@@ -94,7 +99,7 @@
 
 {% else %}
   <h1>Ledger</h1>
-  <p class="bad">Could not read the report.{% if not worker_up %} The host worker is not running &mdash;
+  <p class="bad">{% if pending %}The report has not been read yet.{% else %}Could not read the report.{% endif %}{% if not worker_up %} The host worker is not running &mdash;
   start it with <code>./web/worker.sh</code>.{% endif %}</p>
 {% endif %}
 

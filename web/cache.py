@@ -220,6 +220,22 @@ def artifacts_present(h: str) -> list[str]:
     return found
 
 
+def ledger_mtime() -> float:
+    """When the ledger last changed: the newest feedback.txt anywhere in the cache.
+
+    A report read after this is still current; one read before it is stale. Liveness rows count
+    too (a replay appends alive/gone as it goes), which only ever errs toward re-reading.
+    """
+    newest = 0.0
+    if CACHE.is_dir():
+        for p in CACHE.glob("*/feedback.txt"):
+            try:
+                newest = max(newest, p.stat().st_mtime)
+            except OSError:
+                pass
+    return newest
+
+
 def triage() -> dict | None:
     """The saved LUCA queue that `next-alert.sh --json` writes, or None before the first refresh.
 
@@ -364,6 +380,9 @@ if __name__ == "__main__":
         check("ledger keeps order", [r["action"] for r in rows], ["agree", "inspected"])
         check("short row is not a failure", rows[0]["category"], "")
         check("full row parses", rows[1]["category"], "content")
+
+        check("ledger changed when its newest row was written",
+              ledger_mtime() == (d / "feedback.txt").stat().st_mtime, True)
 
         # the triage queue file
         check("no queue yet is None", triage(), None)
