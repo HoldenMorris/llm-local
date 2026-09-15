@@ -40,6 +40,11 @@ CAMPBAD='Confirmed phishing previously inspected under the same campaign tag s1=
 check "campaign confirmed + young domain -> DANGEROUS" DANGEROUS  "$(cv false space 0 '' 'https://x.space/?s1=upg12' "$CAMPBAD" '' '' SAFE)"
 check "campaign confirmed alone stays SUSPICIOUS"      SUSPICIOUS "$(cv false com 4000 '' 'https://x.com/?s1=upg12' "$CAMPBAD" '' '' SAFE)"
 check "campaign confirmed + login is DANGEROUS anyway" DANGEROUS  "$(cv true com 4000 '' 'https://x.com/?s1=upg12' "$CAMPBAD" '' '' SAFE)"
+# A rotated tag keys on the generator shape; url-analyze flattens the key set onto one line, and it
+# must stay ONE flag -- the three keys are one piece of evidence.
+CAMPROT='Confirmed phishing previously inspected under the same campaign tag s1=upg17 s3=t6vkz8 shape:aa00-rotator  (https://aa11.x.space/?s1=upg12)'
+check "rotated-tag campaign smell is one flag"      1          "$(count_red_flags com 4000 'https://gne45.bestfor.lat/?s1=upg17' "$CAMPROT" '' '')"
+check "rotated-tag campaign + young .lat -> DANGEROUS" DANGEROUS "$(cv false lat 2 '' 'https://gne45.bestfor.lat/?s1=upg17' "$CAMPROT" '' '' SAFE)"
 CAMPSUSP='A url under the same campaign tag s1=upg12 was previously inspected as suspicious (https://a.space/?s1=upg12)'
 check "campaign SUSPICIOUS sibling never floors up"    SUSPICIOUS "$(cv false space 0 '' 'https://x.space/?s1=upg12' "$CAMPSUSP" '' '' SAFE)"
 
@@ -48,7 +53,8 @@ UPG='https://gbq17.ecandy.space/?s1=upg12&email=victim@example.co.za&s3=pvx4g'
 UPG2='https://oen666.ouronly.space/?s1=upg12&email=x@y.co.za&s3=3j78q'
 BARE='https://ul590.getmypair.space/?s1=upg12'
 check "one key per line not a composite" "s1=upg12
-s3=pvx4g" "$(campaign_key "$UPG")"
+s3=pvx4g
+shape:aa00-rotator" "$(campaign_key "$UPG")"
 check "email= is still dropped"          ""  "$(campaign_key 'https://x.space/?email=a@b.co')"
 expect "per-link s3 still groups on s1"  yes campaign_match "$(campaign_key "$UPG")" "$(campaign_key "$BARE")"
 expect "two links of one campaign group" yes campaign_match "$(campaign_key "$UPG")" "$(campaign_key "$UPG2")"
@@ -362,9 +368,23 @@ check "obfuscated redirect is a red flag" 1 "$(count_red_flags com '' '' "$OBF" 
 check "obfuscated redirect + login -> DANGEROUS" DANGEROUS "$(cv true com '' '' 'https://accounts.google.com/o' "$OBF" '' '' SAFE)"
 
 echo "== campaign_key (what survives a domain rotation) =="
-check "affiliate tag"          's1=upg12'  "$(campaign_key 'https://ul590.getmypair.space/?s1=upg12')"
-check "same tag, other domain" 's1=upg12'  "$(campaign_key 'https://lxu438.getnew.space/?s1=upg12')"
-check "different sub-campaign" 's1=snm3'   "$(campaign_key 'https://mg64.victorypuck.com/?s1=snm3')"
+ROT='shape:aa00-rotator'
+check "affiliate tag"          "s1=upg12
+$ROT"  "$(campaign_key 'https://ul590.getmypair.space/?s1=upg12')"
+check "same tag, other domain" "s1=upg12
+$ROT"  "$(campaign_key 'https://lxu438.getnew.space/?s1=upg12')"
+check "different sub-campaign" "s1=snm3
+$ROT"  "$(campaign_key 'https://mg64.victorypuck.com/?s1=snm3')"
+# The operator rotates the domain, the label AND the tag (upg12 -> upg17, 2026-09-10), and a
+# second link format carries no query at all -- only the generator's shape survives all of it.
+TOK=$(printf 'Qz9_x%.0s' {1..30})
+expect "rotated tag still groups"        yes campaign_match "$(campaign_key 'https://gne45.bestfor.lat/?s1=upg17&email=a@b.co&s3=t6vkz8')" "$(campaign_key 'https://ul590.getmypair.space/?s1=upg12')"
+expect "path-token link groups with s1"  yes campaign_match "$(campaign_key "https://tm030.myfast.lol/$TOK")" "$(campaign_key 'https://ol475.efast.space/?s1=upg12')"
+check "s1 tag on an ordinary host"     's1=upg17' "$(campaign_key 'https://www.brand.example/?s1=upg17')"
+check "rotator label, no tag or token" ''         "$(campaign_key 'https://ns12.example.com/')"
+check "mailchimp us10 host is not it"  'u=5f1c9a' "$(campaign_key 'https://us10.campaign-archive.com/?u=5f1c9a&id=7be2')"
+check "long token under a real path"   ''         "$(campaign_key "https://ab12.example.com/track/$TOK")"
+check "label under a two-label suffix" 's1=upg12' "$(campaign_key 'https://ab12.foo.co.za/?s1=upg12')"
 check "no query -> nothing"    ''          "$(campaign_key 'https://x.com/a/b')"
 check "word value -> nothing"  ''          "$(campaign_key 'https://news.lawncots.co/?p=unsubscribe')"
 check "utm is legit sharing"   ''          "$(campaign_key 'https://x.com/?utm_campaign=aug26')"

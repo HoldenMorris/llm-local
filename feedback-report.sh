@@ -170,6 +170,14 @@ if [ -n "$SELFTEST" ]; then
     [ $? -eq 2 ] || { echo "FAIL --settled did not auto-confirm a confirmed-DANGEROUS campaign sibling"; _fails=1; }
     _got=$(FB_ROOT="$_t" NO_COLOR=1 "$0" --settled 'https://zz99.never-seen-before.example/?s1=upg12' | cut -f3)
     [ "$_got" = campaign ] || { echo "FAIL --settled campaign scope not named: got [$_got]"; _fails=1; }
+    # The operator rotates the tag too (upg12 -> upg17) and sends a second, query-less link format.
+    # Only the generator shape survives both, and it must still auto-confirm.
+    FB_ROOT="$_t" "$0" --settled 'https://gne45.rotated-tag.example/?s1=upg17&s3=t6vkz8' >/dev/null 2>&1
+    [ $? -eq 2 ] || { echo "FAIL --settled missed a rotated tag on the same generator shape"; _fails=1; }
+    FB_ROOT="$_t" "$0" --settled "https://tm030.token-link.example/$(printf 'Qz9_x%.0s' {1..30})" >/dev/null 2>&1
+    [ $? -eq 2 ] || { echo "FAIL --settled missed the path-token link format"; _fails=1; }
+    FB_ROOT="$_t" "$0" --settled 'https://www.ordinary-host.example/?s1=upg17' >/dev/null 2>&1
+    [ $? -eq 1 ] || { echo "FAIL --settled grouped a rotated tag on a host without the generator shape"; _fails=1; }
 
     # A SAFE sibling on the same tag must NOT clear an unseen domain: an affiliate tag is not a
     # certificate of innocence, and this is the direction where being wrong is a missed phish.

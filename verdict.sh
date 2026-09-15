@@ -286,8 +286,23 @@ campaign_key() {
         printf 'shape:label=%s' "$_label"
         return 0
     fi
+    # Shape 3: the adult-dating rotator, keyed on its GENERATOR because it rotates everything else.
+    # 60 distinct ledger links on ~30 throwaway domains, 47 inspected and 46 of those DANGEROUS --
+    # and the tag moved too (s1=upg12 -> upg17 on gne45.bestfor.lat, 2026-09-10), so --settled
+    # said "unknown" to a link a human had already named 46 times. What never changes is the shape:
+    # one <2-3 letters><2-3 digits> label on a bare registrable domain, then either ?s1=<3 letters>
+    # <digits> or a single ~150-char base64url path segment with no query (tm030.myfast.lol).
+    # Both halves are required: the label alone is ordinary infra (ns12., us10.campaign-archive.com)
+    # and s1= alone is every affiliate network. Across all 267 urls this toolkit has seen, the pair
+    # matches this operator and nothing else. Emitted ALONGSIDE the exact tag, never instead of it.
+    local _host="${_rest%%[/?#]*}" _rot=""
+    if [[ ${_host,,} =~ ^[a-z]{2,3}[0-9]{2,3}\.[a-z0-9-]+\.[a-z]{2,12}$ ]] \
+       && { [[ $url =~ [?\&]s1=[a-z]{3}[0-9]{1,3}(&|#|$) ]] \
+            || [[ $_rest =~ ^[^/?#]+/[A-Za-z0-9_-]{140,170}$ ]]; }; then
+        _rot='shape:aa00-rotator'
+    fi
     q="${url#*\?}"
-    [ "$q" = "$url" ] && return 0        # no query string at all
+    [ "$q" = "$url" ] && { printf '%s' "$_rot"; return 0; }   # no query string at all
     q="${q%%#*}"
     oldifs="$IFS"; IFS='&'
     for pair in $q; do
@@ -338,6 +353,7 @@ campaign_key() {
                 ;;
         esac
     fi
+    [ -n "$_rot" ] && out="${out:+$out$_NL}$_rot"
     printf '%s' "$out"
 }
 

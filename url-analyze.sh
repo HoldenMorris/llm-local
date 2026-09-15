@@ -1271,6 +1271,10 @@ if [ -z "$_host_bad" ] && [ -z "$_host_susp" ]; then
         # a settled SUSPICIOUS one is capped at SUSPICIOUS by verdict.sh (the wording carries it).
         # Both branches add_signal as well, so the finding that carried the floor is named in the
         # output. On a dead tracker link the campaign tag is usually the ONLY evidence there is.
+        # campaign_key emits one key per LINE, and count_red_flags splits smells on commas and counts
+        # lines -- so an unflattened s1=upg17 / s3=... / shape: key set would score three red flags
+        # for what is one piece of evidence.
+        _ckey=$(printf '%s' "$_ckey" | tr '\n' ' ')
         _camp_smell=""
         if [ -n "$_camp_bad" ]; then
             _camp_smell="Confirmed phishing previously inspected under the same campaign tag $_ckey ($(printf '%s' "$_camp_bad" | tr ',' ' '))"
@@ -1753,6 +1757,17 @@ else
        && printf '%s' "$SMELLS" | grep -qi 'confirmed phishing previously inspected'; then
         RULES="${RULES}RULE 2b: a bot/cloak challenge is hiding the real page from the scraper, AND a url on this same host, domain or campaign tag was already CONFIRMED as phishing by a human analyst.
    -> VERDICT: DANGEROUS. The gate is the REASON no credential form is visible; its absence is not evidence of safety. You must NOT downgrade this to SUSPICIOUS or SAFE.
+
+"
+    fi
+    # Mirrors the `campbad` floor in verdict.sh on the same string and the same count (the campaign
+    # smell is one flag, so >= 2 means one independent flag besides it). An affiliate lure has no
+    # credential form, so without this the formless branch could only ever say SUSPICIOUS about a
+    # rotated domain from a campaign a human has already confirmed dozens of times.
+    if printf '%s' "$SMELLS" | grep -qi 'previously inspected under the same campaign tag' \
+       && [ "${FLAGS_LLM:-0}" -ge 2 ] 2>/dev/null; then
+        RULES="${RULES}RULE 2d: a url from this same campaign (same link generator or tag, on another domain) was already CONFIRMED as phishing by a human analyst, AND this url has at least one other red flag of its own.
+   -> VERDICT: DANGEROUS. Campaigns rotate throwaway domains; no credential form is needed for this to be true. You must NOT downgrade this to SUSPICIOUS or SAFE.
 
 "
     fi
