@@ -67,6 +67,7 @@ expect "bit.ly is a shortener"        yes is_shortener bit.ly
 expect "www.bit.ly too"               yes is_shortener www.bit.ly
 expect "case insensitive"             yes is_shortener BIT.LY
 expect "t.co is a shortener"          yes is_shortener t.co
+expect "t.ly is a shortener (login-follow guard)" yes is_shortener t.ly
 expect "notbit.ly is not"             no  is_shortener notbit.ly
 expect "a subdomain of one is not"    no  is_shortener a.bit.ly
 expect "motusaa.co.za is not"         no  is_shortener motusaa.co.za

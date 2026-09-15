@@ -749,8 +749,14 @@ if [ -z "$SKIP_FETCH" ]; then
         # The LINK is never a signal: having a login page is not suspicious. Only what the followed
         # page CONTAINS counts, merged below as if it had been seen on the landed page.
         # A page.json cached before loginLinks existed simply has no candidates; -r refreshes it.
+        # Never on a public shortener's own page: its "login" is the SERVICE's account sign-in, not
+        # anything the link's sender built. A dead t.ly link (404 "URL Expired") followed T.LY's
+        # own /login and read DANGEROUS (phishing) -- a made-up slug did the same. Judged on the
+        # LANDED host, so a shortener that did redirect us still follows on the destination.
         LOGIN_URL=""
-        [ "$HAS_LOGIN" != "true" ] && LOGIN_URL=$(echo "$PAGE_DATA" | jq -r '.loginLinks[0] // empty' 2>/dev/null)
+        [ "$HAS_LOGIN" != "true" ] \
+            && ! is_shortener "$(echo "$PAGE_DATA" | jq -r '.domain // empty' 2>/dev/null)" \
+            && LOGIN_URL=$(echo "$PAGE_DATA" | jq -r '.loginLinks[0] // empty' 2>/dev/null)
         if [ -n "$LOGIN_URL" ]; then
             if [ -f "$CACHE_DIR/page-login.json" ]; then
                 LOGIN_DATA=$(cat "$CACHE_DIR/page-login.json")
