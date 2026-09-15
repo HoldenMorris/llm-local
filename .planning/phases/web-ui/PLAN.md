@@ -165,7 +165,7 @@ Two bugs, both found by running it:
 
 ## Wave 3 — the daily job
 
-### 05 · Triage queue
+### 05 · Triage queue — SHIPPED
 
 **Goal:** every unruled LUCA alert on one screen, each already answered by the ledger or scanned.
 

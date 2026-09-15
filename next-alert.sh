@@ -243,6 +243,78 @@ record_inspection() {
     FB_VERDICT="$VERDICT" FB_CATEGORY="${ICAT:-}" ./feedback-report.sh -i "$URL" "$INOTE"
 }
 
+# --- the whole open list, for the triage queue (./next-alert.sh --json) ---------------------------
+#
+# The single-alert flow above hands you ONE url and hides the rest behind "run again". The queue in
+# scope shows all of them, so it needs the list -- same channels, same order (the DM, then the
+# channel only when the DM has nothing open), same "no Recorded: line" filter.
+TRIAGE="$SCRIPT_DIR/.cache/triage.json"
+
+read_open_list() {   # <channel-id> -> "<open count>\t<OK | NONE: ... | ERR>", then one url per line
+    claude -p "Read Slack channel $1 (limit $READ_LIMIT, response_format concise).
+A LUCA phishing alert is a message about a reported URL, which may read like
+'Phishing alert 0 -- verify?'. An alert is OPEN when it carries NO 'Recorded:' line, which means
+nobody has given it a verdict yet.
+Print only these lines and nothing else.
+Line 1: OPEN: <how many alerts are open, as a plain number>
+Then the URL of EVERY open alert, one per line, newest first, bare -- no backticks, no markdown,
+no numbering, no explanation.
+If none are open, print instead of the urls ONE line: NONE followed by a colon, a space, and what
+the NEWEST alert's Recorded: line says: who ruled it and what they called it." \
+        --allowedTools "mcp__claude_ai_Slack__slack_read_channel" 2>/dev/null | parse_list
+}
+
+# Same contract as parse_reply: no url and no NONE line is a FAILED read (ERR), never an empty
+# queue. Tolerates the list markers and backticks a model adds despite being told not to, strips
+# the trailing ")" LUCA's extractor leaves, and dedupes -- one url alerted twice is one decision.
+parse_list() {
+    tr -d '`' | awk '
+        /^[[:space:]]*OPEN:/ { c = $0; gsub(/[^0-9]/, "", c); if (c != "") n = c; next }
+        /^[[:space:]]*(- |\* |[0-9]+\. )?https?:\/\// {
+            u = $0; sub(/^[[:space:]]*(- |\* |[0-9]+\. )?/, "", u); sub(/[[:space:]].*$/, "", u); sub(/\)$/, "", u)
+            if (!(u in seen)) { seen[u] = 1; urls[++m] = u }
+            next }
+        /^[[:space:]]*NONE/ { none = $0; sub(/^[[:space:]]*/, "", none) }
+        END {
+            printf "%s\t%s\n", (n == "" ? "?" : n), (m ? "OK" : (none != "" ? none : "ERR"))
+            for (i = 1; i <= m; i++) print urls[i] }'
+}
+
+# One alert as a JSON object: what the ledger says, or else what a cached scan said, and the
+# button that follows. Local only -- a grep of the ledger and a read of verdict.json, no network --
+# so re-checking the whole queue after a ruling is cheap. The button comes from button_for above,
+# so the web page and this script cannot disagree about which button a verdict earns.
+triage_row() {   # <url> <refreshed_at>
+    local url="$1" at="$2" s rc v="" c="" scope="" match="" note="" src=none h d key="" host ruled="" last
+    h=$(printf '%s' "$url" | sha256sum | cut -c1-16); d="$SCRIPT_DIR/.cache/$h"
+    host=$(printf '%s' "$url" | sed -E 's#^[a-zA-Z]+://##; s#[/?#].*$##; s#^[^@]*@##; s#:[0-9]+$##' | tr 'A-Z' 'a-z')
+    if s=$(./feedback-report.sh --settled "$url" </dev/null 2>/dev/null); then rc=0; else rc=$?; fi
+    if [ "$rc" = 0 ] || [ "$rc" = 2 ]; then
+        IFS=$'\t' read -r v c scope match note <<<"$(printf '%s' "$s" | head -1)"
+        # Same fallback as the single-alert path: the exit code only says "clean" or "bad".
+        case "$v" in SAFE|SUSPICIOUS|DANGEROUS) ;; *) v=$([ "$rc" = 0 ] && echo SAFE || echo DANGEROUS) ;; esac
+        [ "$c" = "?" ] && c=""
+        src=ledger
+        # The key to link the campaign rollup on: the one this url SHARES with the matched row. The
+        # url's own first key is often a rotated tag nothing else carries.
+        [ "$scope" = campaign ] && key=$(campaign_key "$url" | grep -Fxf <(campaign_key "$match") | head -1)
+    elif [ -s "$d/verdict.json" ]; then
+        v=$(jq -r '.verdict // ""' "$d/verdict.json"); c=$(jq -r '.category // ""' "$d/verdict.json")
+        note=$(jq -r '.floor.reason // ""' "$d/verdict.json"); src=scan
+    fi
+    # Ruled HERE since the list was read: an inspected row on this exact url newer than the Slack
+    # read. The queue drops it -- and only once the row exists, because this reads the row.
+    last=$(awk -F'\t' '$3=="inspected" { ts = $1 } END { print ts }' "$d/feedback.txt" 2>/dev/null)
+    [ -n "$last" ] && [[ ! "$last" < "$at" ]] && ruled=1
+    jq -cn --arg url "$url" --arg hash "$h" --arg verdict "$v" --arg category "$c" --arg source "$src" \
+        --arg scope "$scope" --arg matched "$match" --arg note "$note" --arg key "$key" --arg host "$host" \
+        --arg button "$(button_for "${v:-UNCLEAR}" | cut -d'|' -f1)" \
+        --arg scanned "$([ -s "$d/verdict.json" ] || [ -s "$d/page.json" ] && echo 1)" --arg ruled "$ruled" \
+        '{url:$url, hash:$hash, verdict:$verdict, category:$category, source:$source, scope:$scope,
+          matched:$matched, note:$note, key:$key, host:$host, button:$button,
+          scanned:($scanned=="1"), ruled:($ruled=="1")}'
+}
+
 SEEN="$SCRIPT_DIR/.cache/next-alert-seen.txt"
 # Reads the last row for this url, across all three row formats this file has had: a bare url,
 # "<verdict>\t<url>", and today's "<verdict>\t<resolved>\t<url>\t<note>". The url is NOT always the
@@ -265,6 +337,12 @@ if [ "${1:-}" = "--self-test" ]; then
     _pr "0	NONE: Sam marked this Verify phish" "$(printf 'OPEN: 0\nNONE: Sam marked this Verify phish')"
     _pr "?	ERR" ""                                            # logged out: nothing on stdout
     _pr "?	ERR" "Invalid API key . Please run /login"          # logged out, but chatty
+    # The whole-list reader behind --json: every open url, deduped, in the order given.
+    _pl() { [ "$(printf '%s' "$2" | parse_list)" = "$1" ] || { echo "FAIL parse_list [$2] -> [$(printf '%s' "$2" | parse_list)] want [$1]"; exit 1; }; }
+    _pl "$(printf '3\tOK\nhttps://a/?s1=x\nhttps://b/')" "$(printf 'OPEN: 3\nhttps://a/?s1=x\n- https://b/)\nhttps://a/?s1=x')"
+    _pl "$(printf '0\tNONE: Sam marked this Verify phish')" "$(printf 'OPEN: 0\nNONE: Sam marked this Verify phish')"
+    _pl "$(printf '?\tERR')" "Invalid API key . Please run /login"
+    _pl "$(printf '2\tOK\nhttps://c/')" "$(printf 'OPEN: 2\n1. \x60https://c/\x60 (newest)')"
     SEEN=$(mktemp)
     printf 'SUSPICIOUS\thttps://legacy2col\n'                 >>"$SEEN"   # written before the flag existed
     printf 'SAFE\thttps://legacy-safe\n'                      >>"$SEEN"
@@ -280,6 +358,46 @@ if [ "${1:-}" = "--self-test" ]; then
     _sf https://never-seen v ""
     rm -f "$SEEN"
     echo "self-test ok"; exit 0
+fi
+
+# ./next-alert.sh --json            read Slack, annotate every open alert, write .cache/triage.json
+# ./next-alert.sh --json --cached   re-annotate the saved list against the ledger; no Slack
+# JSON on stdout and nothing else, because the web worker captures both streams into one log.
+# A failed Slack read does NOT overwrite the saved list: the page keeps showing the last list it
+# really read, with its real timestamp, and the failed job says why. Writing an empty list here
+# would be "nothing waiting" again, for a read that saw nothing.
+if [ "${1:-}" = "--json" ]; then
+    source "$SCRIPT_DIR/verdict.sh"   # campaign_key, for the rollup link
+    URLS=()
+    if [ "${2:-}" = "--cached" ]; then
+        [ -s "$TRIAGE" ] || { jq -cn '{error:"no list yet -- refresh from Slack first"}'; exit 1; }
+        META=$(jq -c 'del(.alerts, .annotated_at)' "$TRIAGE")
+        AT=$(jq -r '.refreshed_at' "$TRIAGE")
+        mapfile -t URLS < <(jq -r '.alerts[].url' "$TRIAGE")
+    else
+        command -v claude >/dev/null 2>&1 || { jq -cn '{error:"need claude on PATH to read Slack"}'; exit 1; }
+        AT=$(date -u +%Y-%m-%dT%H:%M:%SZ); OPEN_N=""; CHANNEL=""
+        for CHANNEL in "$DM_CHANNEL" "$VERIFY_CHANNEL"; do
+            _list=$(read_open_list "$CHANNEL")
+            _head=${_list%%$'\n'*}; OPEN_N=${_head%%$'\t'*}; _st=${_head#*$'\t'}
+            case "$_st" in
+                ERR) jq -cn --arg p "$(place_of "$CHANNEL")" \
+                        '{error:("could not read " + $p + " -- the queue is UNKNOWN, not empty. claude -p returned nothing usable; usually it is logged out: run claude, then /login")}'
+                     exit 1 ;;
+                NONE*) LAST_RULED="${_st#NONE}"; LAST_RULED="${LAST_RULED#:}"; LAST_RULED="${LAST_RULED# }" ;;
+                *) mapfile -t URLS < <(printf '%s\n' "$_list" | tail -n +2); break ;;
+            esac
+        done
+        META=$(jq -cn --arg at "$AT" --arg ch "$CHANNEL" --arg place "$(place_of "$CHANNEL")" \
+                   --arg open "$OPEN_N" --arg last "$LAST_RULED" \
+                   '{refreshed_at:$at, channel:$ch, place:$place, open:($open|tonumber? // null), last_ruled:$last}')
+    fi
+    ROWS=$(for _u in "${URLS[@]}"; do [ -n "$_u" ] && triage_row "$_u" "$AT"; done | jq -cs .)
+    OUT=$(jq -cn --argjson m "$META" --argjson a "${ROWS:-[]}" '$m + {alerts:$a, annotated_at:(now|todate)}')
+    mkdir -p "$SCRIPT_DIR/.cache"
+    _tmp=$(mktemp "$TRIAGE.XXXXXX") && printf '%s\n' "$OUT" >"$_tmp" && mv "$_tmp" "$TRIAGE"
+    printf '%s\n' "$OUT"
+    exit 0
 fi
 
 # A rule across the terminal, first thing, so a run on a loop is visibly separate from the last

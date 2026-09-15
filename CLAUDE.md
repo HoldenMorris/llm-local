@@ -61,6 +61,25 @@ non-XML. And the feed is **not well-formed**: Blogger emits bare `&` in titles (
 Analyst"), so bare ampersands are escaped before parsing. A DTD in the prolog is refused outright
 (entity-expansion DoS) rather than pulling in `defusedxml` for a document type no feed needs.
 
+**Inspiration, not yet acted on.** These are ideas to mine, not detections. Each one still has to
+earn a signature (or a UI change) through the same three steps as any other detection change.
+
+- [Joe Reverser 2.1 "Golden Eagle"](https://www.joesecurity.org/blog/7805730759550031570) (2026-09-14).
+  This is a product release, not a technique write-up, so `intel-feed.sh` only matched it on
+  keywords. The ideas worth taking:
+  - **Parallel mode.** The dynamic sandbox and the agentic reverser run on one sample at once and
+    are then merged. Our deep inspection (`inspect.sh`) runs strictly *after* the scan, and only on
+    a Skip. It could start beside the scan instead.
+  - **Stealthy browser with VPN/proxy egress.** This is the same fight as our bot-gate section. They
+    are betting on automation, where we chose operator attach plus `-p tor`. Check this against
+    `.planning/phases/anti-bot-rendering` before re-opening automated bypass.
+  - **QR-code decoding.** Their example workflow goes email, attachment, QR code, phishing site. We
+    never decode a QR code, in a screenshot or anywhere else. A quishing lure whose only link is an
+    image has nothing for us to scan.
+  - **IOC relationship map.** Their report diagrams how email, attachment, QR, verification step,
+    credential harvest and infrastructure connect. The ledger rollups already hold our version of
+    that graph (host, apex, campaign key, kit signature), and the scope workbench could draw it.
+
 ### Recommended models (CPU-only laptop: 14 cores, 30GB RAM, no GPU)
 
 | Role | Model | Notes |
@@ -752,13 +771,13 @@ handed to the one process in this repo that renders attacker-controlled strings.
 asks and the worker decides.
 
 **`web/worker.sh` is the security boundary.** The container does not send a command line. It sends
-a **kind** (`scan`, `settled`, `report`, `flags`, `corpus`, `rollup`) and named values; the worker
+a **kind** (`scan`, `settled`, `report`, `flags`, `corpus`, `rollup`, `record`, `inspect`, `triage`, `triage-cached`) and named values; the worker
 owns the whitelist and builds the argv itself. Nothing from a request ever becomes `ARGV[0]`, there
 is no `eval` and no `sh -c`, an unrecognised flag is dropped in silence, and a url must carry an
 `http(s)` scheme — that last one is not decoration, because `getopts` stops at the first
 non-option argument, so a value starting with `-` would be read as a flag. `-p tor` and
 `-m claude-*` are deliberately **absent** from the whitelist: egress routing and a paid API are
-operator decisions that stay on the command line. Sixteen cases in `--self-test` pin it, including
+operator decisions that stay on the command line. Twenty-seven cases in `--self-test` pin it, including
 `$(id)`, a semicolon, `file://`, and `../../bin/sh` as a model name.
 
 **The protocol is four files** in `.cache/web-jobs/<id>.{req,state,log,rc}`. One reader, one
@@ -794,8 +813,8 @@ browser and serves attacker-controlled files:
 **Self-checks, none of which need the server running:**
 
 ```bash
-./web/worker.sh --self-test   # the whitelist: 16 cases
-python3 web/cache.py          # the artifact fence + the cache readers: 22 cases
+./web/worker.sh --self-test   # the whitelist: 27 cases
+python3 web/cache.py          # the artifact fence + the cache readers: 30 cases
 python3 web/jobs.py           # the job protocol, playing both halves: 18 cases
 ```
 
@@ -843,9 +862,34 @@ a library its two interactive callers weave into a conversation, and the worker 
 inspection as a plain command. It reads the arguments `deep_inspect` wants out of `verdict.json`,
 which is what that file was added for.
 
-Status: plans 01-04 are in — `verdict.json`, the API/runner/fence/shell, the workbench and the
-ledger surface. The triage queue and the tool runner are plans 05-06; see
-`.planning/phases/web-ui/PLAN.md`.
+**The triage queue** (`/`, plan 05) is every open LUCA alert on one screen.
+`next-alert.sh --json` reads the same places in the same order as the single-alert flow: the DM,
+then the channel only when the DM has nothing open. It returns the whole open list and annotates
+each alert with what `--settled` says, or else what a cached `verdict.json` says, plus the button
+from `button_for`. The page and the script therefore cannot disagree about which button a verdict
+earns. The result is written to `.cache/triage.json`, and the page reads that file off disk, so
+loading the queue never waits behind a running scan. Header buttons:
+
+- **refresh from slack** runs the `triage` job, about 20s per channel.
+- **re-check ledger** runs `triage-cached`: the saved list against the ledger, with no Slack call.
+- **scan N unanswered** queues the scans with the same `-m auto -t` flags the CLI uses, then a
+  re-check behind them.
+
+Neither job kind takes a value, so nothing a request says reaches the argv.
+
+- **A failed Slack read never overwrites the saved list.** The page keeps the last list it really
+  read, with that read's timestamp, and the failed job shows the error. Writing an empty list there
+  would be "nothing waiting" for a read that saw nothing.
+- **Recording from the queue queues a `triage-cached` behind the write.** The alert drops out only
+  when its `inspected` row is newer than the Slack read, so the row is always written first.
+- **Navigation:** `j`/`k` move the selection, and Enter opens the workbench. The workbench's Esc
+  link is `/#a-<hash>`, which returns to the same row.
+- **Nothing here clicks a Slack button.**
+
+Verified against live Slack: the queue's first row is the same url `next-alert.sh`'s own reader
+picks.
+
+Status: plans 01-05 are in. The tool runner is plan 06; see `.planning/phases/web-ui/PLAN.md`.
 
 ## Brand Detection (80+ brands)
 

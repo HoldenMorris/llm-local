@@ -105,6 +105,10 @@
       // the artifacts, none of which existed while it was still running.
       var open = view.querySelector("a.open-when-done");
       if (open && ev.data === "done") open.classList.add("ready");
+      // A queue job (refresh, re-check) rewrote triage.json: show the list it wrote. A GET, never a
+      // reload -- this page came from a POST, and a reload would submit the job again.
+      var reload = view.closest("[data-reload]");
+      if (reload && ev.data === "done") location.href = reload.dataset.reload;
     });
 
     es.onerror = function () {
@@ -120,11 +124,36 @@
     return d.value;
   }
 
+  // --- the queue cursor ------------------------------------------------------------------------
+  // One selected alert. The workbench's esc link is /#a-<hash>, so coming back lands on the same
+  // row instead of the top of the queue.
+  var rows = Array.prototype.slice.call(document.querySelectorAll(".queue tr.alert"));
+  function select(i) {
+    if (!rows.length) return;
+    i = Math.max(0, Math.min(rows.length - 1, i));
+    rows.forEach(function (r, j) { r.classList.toggle("sel", j === i); });
+    rows[i].scrollIntoView({ block: "nearest" });
+    if (history.replaceState) history.replaceState(null, "", "#" + rows[i].id);
+  }
+  function current() { return rows.findIndex(function (r) { return r.classList.contains("sel"); }); }
+  if (rows.length) {
+    var at = location.hash ? rows.findIndex(function (r) { return "#" + r.id === location.hash; }) : -1;
+    select(at < 0 ? 0 : at);
+  }
+
   // --- the keyboard layer ------------------------------------------------------------------
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     var t = e.target;
-    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+
+    if (rows.length && (e.key === "j" || e.key === "ArrowDown")) { e.preventDefault(); select(current() + 1); return; }
+    if (rows.length && (e.key === "k" || e.key === "ArrowUp"))   { e.preventDefault(); select(current() - 1); return; }
+    if (rows.length && e.key === "Enter") {
+      var link = rows[current()] && rows[current()].querySelector("a.open");
+      if (link) { e.preventDefault(); location.href = link.getAttribute("href"); }
+      return;
+    }
 
     if (e.key === "Escape") {
       var back = document.querySelector("a.back");

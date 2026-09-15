@@ -185,3 +185,19 @@ form.inline { display:inline; }
 .record select:focus, .record textarea:focus { outline:none; border-color:#2b3a4d; }
 .record .flabel { font:10px var(--mono); color:var(--dim); letter-spacing:.4px; }
 .record .brow { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+
+/* triage queue: the button to press in Slack, in the colour next-alert.sh prints it */
+.queue .w-click { width:132px; } .queue .w-open { width:auto; white-space:nowrap; }
+.click { display:inline-block; font:10px var(--mono); font-weight:600; letter-spacing:.5px;
+         padding:3px 7px; border:1px solid var(--line); border-radius:3px; }
+.click.verify-phish { color:var(--red); border-color:#5a2621; background:#23100e; }
+.click.false-positive { color:var(--green); border-color:#234030; background:#101c15; }
+.click.skip { color:var(--yellow); border-color:#3d3521; background:#17140e; }
+.queue tr.alert.sel td { background:var(--panel2); }
+.queue tr.alert.sel td:first-child { box-shadow:inset 2px 0 0 var(--cyan); }
+.queue details.rec { display:inline-block; text-align:left; vertical-align:top; }
+.queue details.rec summary { list-style:none; cursor:pointer; }
+.queue details.rec summary::-webkit-details-marker { display:none; }
+.queue details.rec[open] .record { position:absolute; right:22px; width:360px; z-index:2;
+         display:flex; flex-direction:column; gap:8px; }
+.queue details.rec textarea { min-height:54px; }

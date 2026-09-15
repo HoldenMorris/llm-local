@@ -3,20 +3,96 @@
 {% block body %}<section class="pad">
   <div class="headrow">
     <h1>Triage</h1>
-    <span class="dim">the LUCA queue is plan 05 &mdash; these are the most recent cached scans</span>
+    {% if t %}
+      <span class="dim">{{ t.place }}{% if t.open is not none %} &middot; {{ t.open }} open{% endif %}
+        &middot; {{ alerts|length }} listed{% if ruled %} &middot; {{ ruled }} ruled here since{% endif %}</span>
+      <span class="dim small">slack read {{ t.refreshed_at }} &middot; ledger checked {{ t.annotated_at }}</span>
+    {% endif %}
+    <span class="spacer"></span>
+    <form method="post" action="/triage/refresh" class="inline"><button class="btn go" type="submit">refresh from slack</button></form>
+    {% if t %}<form method="post" action="/triage/recheck" class="inline"><button class="btn" type="submit">re-check ledger</button></form>{% endif %}
+    {% if unanswered %}<form method="post" action="/triage/scan" class="inline"><button class="btn" type="submit">scan {{ unanswered }} unanswered</button></form>{% endif %}
   </div>
 
-  {% if not scans %}
-    <p class="dim">Nothing cached yet. Run a scan from the Scan tab.</p>
-  {% else %}
-  <table class="rows">
-    <tbody>
+  {% if note %}<p class="dim small">{{ note }}</p>{% endif %}
+  {% if job %}<div data-reload="/">{% include "_job.html" %}</div>{% endif %}
+
+  {% if not t %}
+    <p class="dim">No queue yet. <b>refresh from slack</b> reads the LUCA DM (then
+    #luca-phishing-alerts when the DM is empty) through <code>claude -p</code>, ~20&ndash;40s.</p>
+    {% if scans %}
+    <h2>recent cached scans</h2>
+    <table class="rows"><tbody>
     {% for s in scans %}
       <tr>
-        <td class="w-verdict"><span class="v {{ s.verdict|lower or 'none' }}">{{ s.verdict or '&mdash;'|safe }}</span></td>
+        <td class="w-verdict"><span class="v {{ s.verdict|lower or 'none' }}">{{ s.verdict or '-' }}</span></td>
         <td class="w-cat dim">{{ s.category }}</td>
-        <td class="w-url">{{ s.url|inert|safe if s.url else '<span class="dim">no record</span>'|safe }}</td>
+        <td class="w-url">{% if s.url %}{{ s.url|inert|safe }}{% else %}<span class="dim">no record</span>{% endif %}</td>
         <td class="w-open"><a class="btn" href="/scan/{{ s.hash }}">open &#8629;</a></td>
+      </tr>
+    {% endfor %}
+    </tbody></table>
+    {% endif %}
+  {% elif not alerts %}
+    <p class="dim">nothing waiting in {{ t.place }}{% if t.last_ruled %} &mdash; the newest was ruled: {{ t.last_ruled }}{% endif %}</p>
+  {% else %}
+  <p class="dim small">j/k to move &middot; enter opens the workbench &middot; the button is what to press <b>in Slack</b>; nothing here clicks it</p>
+  <table class="rows queue">
+    <tbody>
+    {% for a in alerts %}
+      <tr class="alert" id="a-{{ a.hash }}">
+        <td class="w-click"><span class="click {{ a.button|lower|replace(' ', '-') }}">{{ a.button }}</span></td>
+        <td class="w-verdict">
+          <span class="v {{ a.verdict|lower or 'none' }}">{{ a.verdict or 'UNANSWERED' }}</span>
+          {% if a.category %}<div class="dim small">{{ a.category }}</div>{% endif %}
+        </td>
+        <td class="w-url">
+          {{ a.url|inert|safe }}
+          <div class="dim small">
+            {% if a.source == 'ledger' and a.scope == 'campaign' %}
+              ledger: campaign <a href="/ledger?campaign={{ a.key|urlencode }}">{{ a.key }}</a> was confirmed on another domain
+            {% elif a.source == 'ledger' and a.scope == 'host' %}
+              ledger: <a href="/ledger?host={{ a.host|urlencode }}">{{ a.host }}</a> was inspected before
+            {% elif a.source == 'ledger' %}
+              ledger: this url was inspected
+            {% elif a.source == 'scan' %}
+              cached scan{% if a.note %}: {{ a.note }}{% endif %}
+            {% else %}
+              not answered by the ledger and not scanned yet
+            {% endif %}
+            {% if a.source == 'ledger' and a.note %}<br>{{ a.note }}{% endif %}
+          </div>
+        </td>
+        <td class="w-open">
+          {% if a.scanned %}<a class="btn open" href="/scan/{{ a.hash }}">workbench &#8629;</a>{% endif %}
+          {% if a.source == 'none' %}
+            <form method="post" action="/triage/scan" class="inline">
+              <input type="hidden" name="url" value="{{ a.url }}">
+              <button class="btn" type="submit">scan</button>
+            </form>
+          {% endif %}
+          <details class="rec">
+            <summary class="btn">record</summary>
+            <form class="record" method="post" action="/ledger/record">
+              <input type="hidden" name="url" value="{{ a.url }}">
+              <input type="hidden" name="back" value="/#a-{{ a.hash }}">
+              <div class="vpick">
+                {% for opt in ['SAFE', 'SUSPICIOUS', 'DANGEROUS'] %}
+                  <label><input type="radio" name="verdict" value="{{ opt }}"
+                           {% if a.verdict == opt %}checked{% endif %}><span>{{ opt }}</span></label>
+                {% endfor %}
+              </div>
+              <select name="category">
+                <option value="">(no category)</option>
+                {% for c in categories %}
+                  <option value="{{ c }}" {% if a.category == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+              </select>
+              <textarea name="note" placeholder="what you found"></textarea>
+              <button class="btn go" type="submit">record in the ledger</button>
+            </form>
+          </details>
+        </td>
       </tr>
     {% endfor %}
     </tbody>

@@ -130,11 +130,57 @@ def worker_up() -> bool:
 
 # --- pages ---------------------------------------------------------------------------------------
 
+def triage_page(request: Request, job: str | None = None, note: str = "") -> HTMLResponse:
+    """The LUCA queue, read from .cache/triage.json -- never through the worker.
+
+    A page load must not wait behind a two-minute scan, so the list is whatever the last refresh
+    wrote, stamped with when that was. Alerts ruled here since then are dropped, and only once the
+    ledger row exists: the `ruled` flag is computed from the row, by the re-check that the record
+    route queues behind the write.
+    """
+    t = cache.triage()
+    alerts = [a for a in (t or {}).get("alerts", []) if not a.get("ruled")]
+    return render(request, "triage.html", t=t, alerts=alerts, job=job, note=note,
+                  ruled=len((t or {}).get("alerts", [])) - len(alerts),
+                  unanswered=sum(1 for a in alerts if a.get("source") == "none"),
+                  scans=[] if t else cache.scans()[:12])
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
-    # The triage queue is plan 05; until then the landing surface says so honestly rather than
-    # showing an empty box that looks broken.
-    return render(request, "triage.html", scans=cache.scans()[:12])
+    return triage_page(request)
+
+
+@app.post("/triage/refresh", response_class=HTMLResponse)
+async def triage_refresh(request: Request):
+    # claude -p over Slack, ~20-40s a channel -- a job you watch, not a page that hangs.
+    return triage_page(request, job=jobq.submit("triage"))
+
+
+@app.post("/triage/recheck", response_class=HTMLResponse)
+async def triage_recheck(request: Request):
+    return triage_page(request, job=jobq.submit("triage-cached"))
+
+
+@app.post("/triage/scan", response_class=HTMLResponse)
+async def triage_scan(request: Request, url: str = Form(default="")):
+    """Scan what the ledger could not answer: one url, or every unanswered one when none is given.
+
+    Same flags next-alert.sh scans with (-m auto -t). The re-check is queued LAST, so the worker's
+    one-at-a-time order runs it after the scans it depends on.
+    """
+    t = cache.triage() or {}
+    open_alerts = [a for a in t.get("alerts", []) if not a.get("ruled")]
+    if url:
+        urls = [a["url"] for a in open_alerts if a.get("url") == url.strip()]
+    else:
+        urls = [a["url"] for a in open_alerts if a.get("source") == "none" and not a.get("scanned")]
+    for u in urls:
+        jobq.submit("scan", url=u, flags="-t", model="auto")
+    job = jobq.submit("triage-cached") if urls else None
+    return triage_page(request, job=job,
+                       note=f"{len(urls)} scan(s) queued; the queue re-checks itself after the last one"
+                       if urls else "nothing unanswered to scan")
 
 
 @app.get("/scan", response_class=HTMLResponse)
@@ -221,6 +267,10 @@ async def ledger_record(request: Request, url: str = Form(...), verdict: str = F
     """
     job = jobq.submit("record", url=url.strip(), verdict=verdict,
                       category=category or None, note=note.strip() or None)
+    # Ruled from the queue: re-check it behind the write, so the alert leaves the queue only once
+    # its row exists. `back` only selects whether to queue this; nothing in it reaches the worker.
+    if back == "/" or back.startswith("/#"):
+        jobq.submit("triage-cached")
     return render(request, "recorded.html", job=job, url=url.strip(),
                   verdict=verdict, category=category, back=back)
 

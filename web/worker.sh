@@ -97,6 +97,10 @@ build_argv() {
             ARGV=(./feedback-report.sh --settled "$R_url")
             ;;
         report)  ARGV=(./feedback-report.sh --json) ;;
+        # The triage queue. Neither takes a value: Slack is read by the script (claude -p), and the
+        # re-check re-reads the list that script saved. Nothing a request says reaches the argv.
+        triage)        ARGV=(./next-alert.sh --json) ;;
+        triage-cached) ARGV=(./next-alert.sh --json --cached) ;;
         prose)   ARGV=(./feedback-report.sh) ;;
         flags)   ARGV=(./feedback-report.sh -f) ;;
         corpus)  ARGV=(./feedback-report.sh --corpus) ;;
@@ -235,6 +239,10 @@ if [ "${1:-}" = "--self-test" ]; then
     t "rollup key is a bare word" "REFUSED:bad rollup key"
 
     KIND=report; t "report takes no input" "./feedback-report.sh --json"
+    # The triage queue: the list comes from Slack through the script, never from the request.
+    KIND=triage;        R_url="https://evil.example/"; t "triage takes no input" "./next-alert.sh --json"
+    KIND=triage-cached; t "triage re-check takes no input" "./next-alert.sh --json --cached"
+    R_url="https://example.com/x"
 
     # Recording is the one kind that writes. It goes through feedback-report.sh -i, and the
     # vocabulary is checked here rather than trusted from the form.

@@ -220,6 +220,21 @@ def artifacts_present(h: str) -> list[str]:
     return found
 
 
+def triage() -> dict | None:
+    """The saved LUCA queue that `next-alert.sh --json` writes, or None before the first refresh.
+
+    Read off disk, never through the worker, so the landing page cannot block behind a running
+    scan. Every alert's hash is re-checked here because it goes into an href: the file is written
+    by our own script, but it is built from urls an attacker chose.
+    """
+    data = _json(CACHE / "triage.json")
+    if data is None:
+        return None
+    data["alerts"] = [a for a in data.get("alerts") or []
+                      if isinstance(a, dict) and HASH_RE.match(str(a.get("hash", "")))]
+    return data
+
+
 def scans() -> list[dict]:
     """Every cached scan, newest first, as much as each one can say about itself."""
     if not CACHE.is_dir():
@@ -321,6 +336,17 @@ if __name__ == "__main__":
         check("ledger keeps order", [r["action"] for r in rows], ["agree", "inspected"])
         check("short row is not a failure", rows[0]["category"], "")
         check("full row parses", rows[1]["category"], "content")
+
+        # the triage queue file
+        check("no queue yet is None", triage(), None)
+        (CACHE / "triage.json").write_text(json.dumps({"place": "your LUCA DM", "alerts": [
+            {"url": "https://a.example/", "hash": h},
+            {"url": "https://b.example/", "hash": "../../etc/passwd"},
+            "not an object"]}))
+        check("queue keeps well-formed alerts only", [a["url"] for a in triage()["alerts"]],
+              ["https://a.example/"])
+        (CACHE / "triage.json").write_text("{half a file")
+        check("a half-written queue is None, not a crash", triage(), None)
 
     print()
     print("failed" if fails else "self-test ok")
