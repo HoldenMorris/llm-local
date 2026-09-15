@@ -76,6 +76,17 @@ parse_reply() {
         END { printf "%s\t%s\n", (n == "" ? "?" : n), (line == "" ? "ERR" : line) }'
 }
 
+# What to call a channel id in a sentence. A DM id starts with D, and "33 open in this channel"
+# sent you looking for 33 alerts in #luca-phishing-alerts that were never there.
+place_of() {
+    case "$1" in
+        "$DM_CHANNEL") echo "your LUCA DM" ;;
+        "$VERIFY_CHANNEL") echo "#luca-phishing-alerts" ;;
+        D*) echo "DM $1" ;;
+        *) echo "channel $1" ;;
+    esac
+}
+
 # Verdict -> button. UNCLEAR and SUSPICIOUS deliberately do NOT get a confident button: a scan
 # that could not decide is not evidence for either "phish" or "false positive", and Skip is the
 # only honest answer a machine can give there.
@@ -285,7 +296,7 @@ else
     command -v claude >/dev/null 2>&1 || { echo_red "need 'claude' on PATH to read Slack"; exit 1; }
     CHANNELS=("$@"); [ ${#CHANNELS[@]} -eq 0 ] && CHANNELS=("$DM_CHANNEL" "$VERIFY_CHANNEL")
     for CHANNEL in "${CHANNELS[@]}"; do
-        echo_grey "reading $CHANNEL for an alert nobody has ruled on..."
+        echo_grey "reading $(place_of "$CHANNEL") ($CHANNEL) for an alert nobody has ruled on..."
         _reply=$(read_channel "$CHANNEL")
         OPEN_N="${_reply%%$'\t'*}"; URL="${_reply#*$'\t'}"
         # Keep the last channel's "NONE: ..." so the empty-queue line below can name the verdict
@@ -295,7 +306,7 @@ else
         # A failed read is not an empty queue. Stop here rather than fall through to the
         # "nothing waiting" line, which is what this looked like for a whole logged-out day.
         [ "$URL" = ERR ] && {
-            echo_red "could not read Slack ($CHANNEL) -- the queue is UNKNOWN, not empty"
+            echo_red "could not read $(place_of "$CHANNEL") -- the queue is UNKNOWN, not empty"
             echo_grey "  headless 'claude -p' returned nothing usable; usually it is logged out."
             echo_grey "  run 'claude' and then /login, then try again."
             exit 1
@@ -307,7 +318,7 @@ else
     # behind it is not -- that is how a backlog stops being merely long and becomes invisible.
     case "$OPEN_N" in
         ""|0|1|"?") ;;
-        *) echo_yellow "  $OPEN_N open in this channel -- this is the newest; run again for the next" ;;
+        *) echo_yellow "  $OPEN_N open in $(place_of "$CHANNEL") -- this is the newest; run again for the next" ;;
     esac
     # LUCA's extractor swallows trailing punctuation from the source mail (seen: "yhopecn.com/)")
     URL="${URL%)}"
