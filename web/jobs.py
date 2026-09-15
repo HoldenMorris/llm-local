@@ -104,6 +104,19 @@ def log(job_id: str) -> str:
         return ""
 
 
+def kind(job_id: str) -> str:
+    """What a job was asked to be. The request file is renamed as the worker claims and finishes it."""
+    for ext in ("req", "claimed", "done-req"):
+        p = _path(job_id, ext)
+        if p is None:
+            return ""
+        try:
+            return str(json.loads(p.read_text()).get("kind", ""))
+        except (OSError, ValueError, AttributeError):
+            continue
+    return ""
+
+
 def queued() -> list[str]:
     """Ids waiting to start, oldest first — the queue depth the UI shows."""
     if not JOBS.is_dir():
@@ -209,6 +222,11 @@ if __name__ == "__main__":
 
             body = json.loads((JOBS / f"{job}.req").read_text())
             check("request carries the kind", body["kind"], "scan")
+            check("kind reads the request", kind(job), "scan")
+            os.replace(JOBS / f"{job}.req", JOBS / f"{job}.done-req")
+            check("kind survives the worker finishing it", kind(job), "scan")
+            os.replace(JOBS / f"{job}.done-req", JOBS / f"{job}.req")
+            check("kind of a traversal id is empty", kind("../../etc/passwd"), "")
             check("request carries values", (body["url"], body["flags"]), ("https://example.com/", "-t"))
             check("None fields are omitted, not sent as null", "model" in body, False)
             check("no field names a program", [k for k in body if k in ("argv", "cmd", "exec")], [])

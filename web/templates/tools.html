@@ -1,8 +1,119 @@
 {% extends "base.html" %}
 {% set tab = 'tools' %}
 {% block body %}<section class="pad">
-<h1>Tools</h1>
-<p class="dim">The tool runner is plan 06. The job runner underneath it is already here &mdash;
-the weekly replay, <code>slack-harvest</code>, <code>intel-feed</code>, <code>model-scout</code>
-and <code>tor-up</code> each become one more <code>kind</code> in <code>web/worker.sh</code>.</p>
+  <div class="headrow">
+    <h1>Tools</h1>
+    <span class="dim small">the periodic work, through the same one-at-a-time worker &mdash; a replay holds it
+    for hours, and alert scans queue behind it</span>
+  </div>
+
+  {% if job %}
+    <h2>{{ kind or 'job' }}</h2>
+    <div data-reload="/tools?job={{ job }}">{% include "_job.html" %}</div>
+    {% if intel is not none %}
+      <h2>feed items &mdash; no matching detection first</h2>
+      {% if not intel %}<p class="dim">nothing new in the feed</p>{% endif %}
+      {% for it in intel %}
+        <div class="intel{{ ' gap' if it.gap }}">{% for ln in it.lines %}<div>{{ ln }}</div>{% endfor %}</div>
+      {% endfor %}
+    {% endif %}
+  {% endif %}
+
+  <div class="toolgrid">
+    <div class="tool">
+      <h2>weekly replay</h2>
+      <p class="dim small">Every settled, live url in the ledger through the heuristic core and the
+      verdict LLM: <code>url-benchmark.sh --live</code>, which writes the same CSV row as the CLI.
+      ~3h for 235 urls.</p>
+      <form method="post" action="/tools/run" class="toolform">
+        <input type="hidden" name="kind" value="replay">
+        <input type="text" name="model" placeholder="qwen2.5:1.5b" size="16" title="model (default qwen2.5:1.5b)">
+        <button class="btn go" type="submit">run the replay</button>
+      </form>
+    </div>
+
+    <div class="tool">
+      <h2>slack harvest</h2>
+      <p class="dim small">Rulings analysts already clicked in Slack, written back to the ledger. The
+      preview writes nothing &mdash; run it first.</p>
+      <form method="post" action="/tools/run" class="toolform">
+        <button class="btn" type="submit" name="kind" value="harvest-preview">preview</button>
+        <button class="btn go" type="submit" name="kind" value="harvest">harvest into the ledger</button>
+      </form>
+    </div>
+
+    <div class="tool">
+      <h2>intel feed</h2>
+      <p class="dim small">Joe Security's feed, each item tagged with the detection we already have.
+      <b>new</b> records what it shows as seen; <b>all</b> leaves the seen-list alone.</p>
+      <form method="post" action="/tools/run" class="toolform">
+        <button class="btn go" type="submit" name="kind" value="intel">new since last check</button>
+        <button class="btn" type="submit" name="kind" value="intel-all">every item</button>
+      </form>
+    </div>
+
+    <div class="tool">
+      <h2>model scout</h2>
+      <p class="dim small">Small GGUF contenders on Hugging Face, with the <code>ollama pull</code> for each.</p>
+      <form method="post" action="/tools/run" class="toolform">
+        <input type="hidden" name="kind" value="scout">
+        <input type="text" name="search" placeholder="instruct" size="10">
+        <input type="text" name="maxb" placeholder="4" size="3" title="max size, billions (needs a search)">
+        <button class="btn go" type="submit">scout</button>
+      </form>
+    </div>
+
+    <div class="tool">
+      <h2>tor egress</h2>
+      <p class="dim small">The sidecar for <code>-p tor</code>. Scans from this page never use it
+      &mdash; egress stays a command-line decision.</p>
+      <form method="post" action="/tools/run" class="toolform">
+        <input type="text" name="cc" placeholder="cc" size="3" maxlength="2" title="exit country, two letters">
+        <button class="btn go" type="submit" name="kind" value="tor-up">up</button>
+        <button class="btn" type="submit" name="kind" value="tor-rotate">new circuit</button>
+        <button class="btn" type="submit" name="kind" value="tor-down">down</button>
+      </form>
+    </div>
+  </div>
+
+  <h2>replay accuracy &mdash; results/url_benchmark.csv</h2>
+  {% if not chart %}
+    <p class="dim">No replay yet on this machine (runs under 20 urls are smoke tests and are left out).</p>
+  {% else %}
+  <div class="chart">
+    <div class="legend">{% for s in chart.series %}<span><i style="background:{{ s.color }}"></i>{{ s.engine }}</span>{% endfor %}</div>
+    <div class="chartscroll">
+    <svg viewBox="0 0 {{ chart.W }} {{ chart.H }}" width="{{ chart.W }}" height="{{ chart.H }}" role="img"
+         aria-label="Replay accuracy per engine, 0 to 100 percent">
+      {% for g in chart.grid %}
+        <line class="grid" x1="{{ chart.L }}" x2="{{ chart.right }}" y1="{{ g.y }}" y2="{{ g.y }}"></line>
+        <text class="axis" x="{{ chart.L - 6 }}" y="{{ g.y + 3 }}" text-anchor="end">{{ g.v }}%</text>
+      {% endfor %}
+      {% for st in chart.stamps %}
+        <text class="axis" x="{{ st.x }}" y="{{ chart.H - 10 }}" text-anchor="middle">{{ st.ts[:10] }}</text>
+      {% endfor %}
+      {% for s in chart.series %}
+        {% if s.points|length > 1 %}<polyline class="line" points="{{ s.path }}" style="stroke:{{ s.color }}"></polyline>{% endif %}
+        {% for p in s.points %}
+          <g class="pt">
+            <circle cx="{{ p.x }}" cy="{{ p.y }}" r="10" class="hit"></circle>
+            <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4" class="dotm" style="fill:{{ s.color }}"></circle>
+            <title>{{ s.engine }} &middot; {{ p.ts }} &middot; {{ p.accuracy|int }}% ({{ p.correct }}/{{ p.total }}) &middot; {{ p.avg_time }}s avg</title>
+          </g>
+        {% endfor %}
+        <circle cx="{{ chart.right + 14 }}" cy="{{ s.label_y - 4 }}" r="4" style="fill:{{ s.color }}"></circle>
+        <text class="dlabel" x="{{ chart.right + 24 }}" y="{{ s.label_y }}">{{ s.engine }} {{ s.points[-1].accuracy|int }}%</text>
+      {% endfor %}
+    </svg>
+    </div>
+    <table class="rows small">
+      <thead><tr><td>when</td><td>engine</td><td>accuracy</td><td>correct</td><td>avg time</td></tr></thead>
+      <tbody>
+      {% for r in bench|reverse %}
+        <tr><td>{{ r.ts }}</td><td>{{ r.engine }}</td><td>{{ r.accuracy|int }}%</td><td>{{ r.correct }}/{{ r.total }}</td><td>{{ r.avg_time }}s</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 </section>{% endblock %}

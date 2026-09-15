@@ -8,7 +8,7 @@
 # Ollama model. The page is fetched once per URL and cached, so comparing N
 # models costs one fetch, not N.
 #
-# Usage:  ./url-benchmark.sh [model ...]        (default: qwen2.5:1.5b)
+# Usage:  ./url-benchmark.sh [--live] [model ...]   (default: qwen2.5:1.5b; --live = the ledger corpus)
 #         ./url-benchmark.sh gemma2:2b minicpm4.1:8b
 #         CORPUS=my-urls.txt ./url-benchmark.sh
 # ==============================================================================
@@ -23,6 +23,17 @@ ANALYZE="$SCRIPT_DIR/url-analyze.sh"
 source "$SCRIPT_DIR/colors.sh"
 source "$SCRIPT_DIR/machine.sh"
 MACHINE=$(machine_id)   # timings only comparable within the same hardware fingerprint
+
+# --live: the weekly replay in one command. Exports every settled, live url from the ledger and
+# benchmarks against that. It was two commands (feedback-report.sh --corpus, then CORPUS=...),
+# which the web worker cannot chain: it runs one fixed argv per job, never a shell string.
+# The export is gitignored -- live phishing urls carry recipient addresses and reset tokens.
+if [ "$1" = "--live" ]; then
+    shift
+    CORPUS="$SCRIPT_DIR/url-corpus-live.txt"
+    "$SCRIPT_DIR/feedback-report.sh" --corpus </dev/null >"$CORPUS" 2>/dev/null \
+        || { echo "could not export the live corpus from the ledger"; exit 1; }
+fi
 
 [ -f "$CORPUS" ] || { echo "Corpus not found: $CORPUS"; exit 1; }
 

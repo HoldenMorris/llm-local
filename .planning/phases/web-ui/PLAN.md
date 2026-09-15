@@ -183,7 +183,7 @@ Two bugs, both found by running it:
 a settled alert costs zero network; ruling on one removes it from the queue only after the ledger
 row exists.
 
-### 06 · Tool runner
+### 06 · Tool runner — SHIPPED
 
 **Goal:** the periodic work is a button, and its output is readable.
 

@@ -235,6 +235,34 @@ def triage() -> dict | None:
     return data
 
 
+def benchmark(min_total: int = 20) -> list[dict]:
+    """The replay rows of results/url_benchmark.csv, oldest first.
+
+    Only runs of `min_total` urls or more: the file also holds 1-6 url smoke tests from while a
+    model was being tried, and a 100% on five urls plotted beside 59% on 220 is a lie by scale.
+    Only the most recent machine's rows, because timings compare within one fingerprint only.
+    """
+    import csv
+    try:
+        with (ROOT / "results" / "url_benchmark.csv").open(newline="") as fh:
+            raw = list(csv.DictReader(fh))
+    except OSError:
+        return []
+    rows = []
+    for r in raw:
+        try:
+            rows.append({"ts": r["timestamp"], "machine": r["machine"], "engine": r["engine"],
+                         "total": int(r["total"]), "correct": int(r["correct"]),
+                         "accuracy": float(r["accuracy"].rstrip("%")),
+                         "avg_time": float(r["avg_time"].rstrip("s") or 0)})
+        except (KeyError, ValueError, AttributeError):
+            continue
+    if not rows:
+        return []
+    machine = rows[-1]["machine"]
+    return [r for r in rows if r["machine"] == machine and r["total"] >= min_total]
+
+
 def scans() -> list[dict]:
     """Every cached scan, newest first, as much as each one can say about itself."""
     if not CACHE.is_dir():
@@ -347,6 +375,23 @@ if __name__ == "__main__":
               ["https://a.example/"])
         (CACHE / "triage.json").write_text("{half a file")
         check("a half-written queue is None, not a crash", triage(), None)
+
+    # the benchmark csv, on a throwaway root
+    with tempfile.TemporaryDirectory() as tmp:
+        ROOT = Path(tmp)                                   # noqa: F811 - rebinding for the test
+        check("no csv is no rows", benchmark(), [])
+        (ROOT / "results").mkdir()
+        (ROOT / "results" / "url_benchmark.csv").write_text(
+            "timestamp,machine,engine,total,correct,accuracy,avg_time\n"
+            "2026-07-09 13:03:42,old-box,none,220,100,45%,.15s\n"
+            "2026-07-17 13:21:01,14c-30g-cpu,qwen2.5:1.5b,6,5,83%,6.91s\n"
+            "2026-08-14 17:44:47,14c-30g-cpu,none,220,128,58%,3.53s\n"
+            "2026-08-14 17:44:47,14c-30g-cpu,broken,x,y,z,w\n"
+            "2026-08-14 17:44:47,14c-30g-cpu,qwen2.5:1.5b,220,130,59%,36.43s\n")
+        got = benchmark()
+        check("replays only, this machine only, bad rows skipped",
+              [(r["engine"], r["accuracy"]) for r in got], [("none", 58.0), ("qwen2.5:1.5b", 59.0)])
+        check("a leading-dot time parses", got[0]["avg_time"], 3.53)
 
     print()
     print("failed" if fails else "self-test ok")

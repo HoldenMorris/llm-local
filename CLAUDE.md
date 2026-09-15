@@ -251,8 +251,10 @@ true label.
 The settled ledger rows are labeled data, so the weekly accuracy check is the existing benchmark:
 
 ```bash
-./feedback-report.sh --corpus > url-corpus-live.txt   # settled + live urls only
-CORPUS=url-corpus-live.txt ./url-benchmark.sh         # accuracy-vs-time, writes results/url_benchmark.csv
+./url-benchmark.sh --live   # exports the settled + live corpus, then benchmarks it; writes results/url_benchmark.csv
+# the same thing in two steps:
+./feedback-report.sh --corpus > url-corpus-live.txt
+CORPUS=url-corpus-live.txt ./url-benchmark.sh
 ```
 
 `url-corpus-live.txt` is **gitignored**: live phishing URLs embed recipient email addresses and
@@ -771,13 +773,13 @@ handed to the one process in this repo that renders attacker-controlled strings.
 asks and the worker decides.
 
 **`web/worker.sh` is the security boundary.** The container does not send a command line. It sends
-a **kind** (`scan`, `settled`, `report`, `flags`, `corpus`, `rollup`, `record`, `inspect`, `triage`, `triage-cached`) and named values; the worker
+a **kind** (`scan`, `settled`, `report`, `flags`, `corpus`, `rollup`, `record`, `inspect`, `triage`, `triage-cached`, and the tool runner's `replay`, `harvest-preview`, `harvest`, `intel`, `intel-all`, `scout`, `tor-up`, `tor-rotate`, `tor-down`) and named values; the worker
 owns the whitelist and builds the argv itself. Nothing from a request ever becomes `ARGV[0]`, there
 is no `eval` and no `sh -c`, an unrecognised flag is dropped in silence, and a url must carry an
 `http(s)` scheme — that last one is not decoration, because `getopts` stops at the first
 non-option argument, so a value starting with `-` would be read as a flag. `-p tor` and
 `-m claude-*` are deliberately **absent** from the whitelist: egress routing and a paid API are
-operator decisions that stay on the command line. Twenty-seven cases in `--self-test` pin it, including
+operator decisions that stay on the command line. Forty-five cases in `--self-test` pin it, including
 `$(id)`, a semicolon, `file://`, and `../../bin/sh` as a model name.
 
 **The protocol is four files** in `.cache/web-jobs/<id>.{req,state,log,rc}`. One reader, one
@@ -813,9 +815,9 @@ browser and serves attacker-controlled files:
 **Self-checks, none of which need the server running:**
 
 ```bash
-./web/worker.sh --self-test   # the whitelist: 27 cases
-python3 web/cache.py          # the artifact fence + the cache readers: 30 cases
-python3 web/jobs.py           # the job protocol, playing both halves: 18 cases
+./web/worker.sh --self-test   # the whitelist: 45 cases
+python3 web/cache.py          # the artifact fence + the cache readers: 33 cases
+python3 web/jobs.py           # the job protocol, playing both halves: 21 cases
 ```
 
 **The workbench** (`/scan`, and `/scan/<hash>` for a cached one) is the scan surface. A live scan
@@ -889,7 +891,28 @@ Neither job kind takes a value, so nothing a request says reaches the argv.
 Verified against live Slack: the queue's first row is the same url `next-alert.sh`'s own reader
 picks.
 
-Status: plans 01-05 are in. The tool runner is plan 06; see `.planning/phases/web-ui/PLAN.md`.
+**The tool runner** (`/tools`, plan 06) turns the periodic work into buttons, run by the same
+one-at-a-time worker.
+
+- **Weekly replay.** `url-benchmark.sh --live` writes the same CSV row as the CLI. It is the one
+  job with its own ceiling (`WORKER_REPLAY_CEILING`, 8h), because 235 urls take about 3h, and alert
+  scans queue behind it for that whole time.
+- **Slack harvest.** The preview (`-n`) comes first, then the real run, which writes ledger rows.
+- **Intel feed.** `new` records what it shows as seen, and `all` leaves the seen-list alone. When the
+  job is done, the page lists items with `NO MATCHING DETECTION` first.
+- **Model scout and the tor sidecar.** Tor's up / new circuit / down work here, but scans started
+  from the web still never use it.
+
+Every value a tool takes is checked in the worker: a model name (no leading `-`, never `claude*`),
+a search word, a whole number of billions, and a two-letter country.
+
+`results/url_benchmark.csv` is drawn as accuracy per replay, per engine, on one 0-100% axis. Time
+is a column in the table underneath, never a second axis. Only runs of 20 urls or more on the
+latest machine are plotted; the 1-6 url smoke tests in the file are left out. The series colours
+were checked with the dataviz palette validator against the dark panel.
+
+Status: plans 01-06 are in. Operator attach over the wire is plan 07; see
+`.planning/phases/web-ui/PLAN.md`.
 
 ## Brand Detection (80+ brands)
 

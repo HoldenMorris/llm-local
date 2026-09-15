@@ -36,6 +36,9 @@ POLL="${WORKER_POLL:-0.25}"
 # rather than above any one. It still has to exist: a hung container otherwise holds this loop,
 # and this loop is the whole application's concurrency.
 CEILING="${WORKER_CEILING:-900}"
+# The weekly replay is the exception: ~235 urls through two engines. 8h is well past the ~3h it
+# takes, and it still has one, for the same reason.
+REPLAY_CEILING="${WORKER_REPLAY_CEILING:-28800}"
 
 # --- the whitelist -------------------------------------------------------------------------
 #
@@ -101,6 +104,47 @@ build_argv() {
         # re-check re-reads the list that script saved. Nothing a request says reaches the argv.
         triage)        ARGV=(./next-alert.sh --json) ;;
         triage-cached) ARGV=(./next-alert.sh --json --cached) ;;
+        # THE TOOL RUNNER. Each is the command line the CLI docs give, fixed here.
+        #
+        # The weekly replay: --live exports the ledger corpus itself, so it is one argv. It is hours
+        # long (235 urls, ~36s each through the LLM) and gets its own ceiling below. The model is a
+        # POSITIONAL argument there, so a leading "-" is refused, not just a bad character.
+        replay)
+            ARGV=(./url-benchmark.sh -c mono --live)
+            if [ -n "$R_model" ]; then
+                is_word "$R_model" && [ "${R_model#-}" = "$R_model" ] || { REASON="bad model name"; return 1; }
+                case "$R_model" in claude*) REASON="the anthropic backend is cli-only"; return 1 ;; esac
+                ARGV+=("$R_model")
+            fi
+            ;;
+        # slack-harvest writes ledger rows (through feedback-report.sh -i), so the page offers the
+        # dry run first, exactly as the script's own usage says to.
+        harvest-preview) ARGV=(./slack-harvest.sh -n) ;;
+        harvest)         ARGV=(./slack-harvest.sh) ;;
+        intel)     ARGV=(./intel-feed.sh) ;;
+        intel-all) ARGV=(./intel-feed.sh -a) ;;
+        scout)
+            ARGV=(./model-scout.sh)
+            if [ -n "$R_search" ]; then
+                case "$R_search" in *[!a-zA-Z0-9._-]*|-*) REASON="bad search term"; return 1 ;; esac
+                [ "${#R_search}" -le 40 ] || { REASON="bad search term"; return 1; }
+                ARGV+=("$R_search")
+            fi
+            # Positional: a size only means something after a search term.
+            if [ -n "$R_maxb" ]; then
+                case "$R_maxb" in *[!0-9]*) REASON="size must be a whole number of billions"; return 1 ;; esac
+                [ -n "$R_search" ] && [ "${#R_maxb}" -le 3 ] || { REASON="size must be a whole number of billions"; return 1; }
+                ARGV+=("$R_maxb")
+            fi
+            ;;
+        tor-up)
+            ARGV=(./tor-up.sh)
+            if [ -n "$R_cc" ]; then
+                case "$R_cc" in [a-z][a-z]) ARGV+=(-g "$R_cc") ;; *) REASON="exit country must be a two-letter code"; return 1 ;; esac
+            fi
+            ;;
+        tor-rotate) ARGV=(./tor-up.sh --rotate) ;;
+        tor-down)   ARGV=(./tor-up.sh --down) ;;
         prose)   ARGV=(./feedback-report.sh) ;;
         flags)   ARGV=(./feedback-report.sh -f) ;;
         corpus)  ARGV=(./feedback-report.sh --corpus) ;;
@@ -158,6 +202,13 @@ run_job() {   # <id>
     R_verdict=$(jq -r '.verdict // ""' "$req" 2>/dev/null)
     R_category=$(jq -r '.category // ""' "$req" 2>/dev/null)
     R_note=$(jq -r '.note // ""' "$req" 2>/dev/null)
+    R_search=$(jq -r '.search // ""' "$req" 2>/dev/null)
+    R_maxb=$(jq -r '.maxb // ""' "$req" 2>/dev/null)
+    R_cc=$(jq -r '.cc // ""' "$req" 2>/dev/null)
+    # The replay is the one job measured in hours; everything else keeps the ordinary ceiling, so
+    # a hung scan is still killed in minutes.
+    local ceiling="$CEILING"
+    [ "$kind" = replay ] && ceiling="$REPLAY_CEILING"
 
     if ! build_argv "$kind"; then
         printf 'refused: %s\n' "$REASON" > "$JOBS/$id.log"
@@ -173,12 +224,12 @@ run_job() {   # <id>
     # its floor notice on stderr, and reading them apart loses which came first.
     # stdin from /dev/null: can_prompt() asks whether a human is watching a terminal, not whether
     # flags were passed, so a script that would have asked a question skips it instead of hanging.
-    timeout --foreground -k 5 "$CEILING" "${ARGV[@]}" </dev/null >"$JOBS/$id.log" 2>&1
+    timeout --foreground -k 5 "$ceiling" "${ARGV[@]}" </dev/null >"$JOBS/$id.log" 2>&1
     rc=$?
     echo "$rc" > "$JOBS/$id.rc"
     case "$rc" in
         0)   echo done    > "$JOBS/$id.state" ;;
-        124) echo timeout > "$JOBS/$id.state"; printf -- '-- killed after %ss --\n' "$CEILING" >> "$JOBS/$id.log" ;;
+        124) echo timeout > "$JOBS/$id.state"; printf -- '-- killed after %ss --\n' "$ceiling" >> "$JOBS/$id.log" ;;
         *)   echo failed  > "$JOBS/$id.state" ;;
     esac
 }
@@ -186,7 +237,7 @@ run_job() {   # <id>
 # --- self-test: ./web/worker.sh --self-test ------------------------------------------------------
 if [ "${1:-}" = "--self-test" ]; then
     p=0; f=0
-    R_url=""; R_flags=""; R_model=""; R_scope=""; R_key=""
+    R_url=""; R_flags=""; R_model=""; R_scope=""; R_key=""; R_search=""; R_maxb=""; R_cc=""
     t() {  # t <name> <expected argv, space-joined>
         local name="$1" want="$2"; shift 2
         if build_argv "$KIND"; then got="${ARGV[*]}"; else got="REFUSED:$REASON"; fi
@@ -243,6 +294,31 @@ if [ "${1:-}" = "--self-test" ]; then
     KIND=triage;        R_url="https://evil.example/"; t "triage takes no input" "./next-alert.sh --json"
     KIND=triage-cached; t "triage re-check takes no input" "./next-alert.sh --json --cached"
     R_url="https://example.com/x"
+
+    # The tool runner (plan 06). Fixed argvs; the few values are checked here, not in the form.
+    KIND=replay; R_model=""
+    t "weekly replay" "./url-benchmark.sh -c mono --live"
+    R_model="gemma2:2b"; t "replay against one more model" "./url-benchmark.sh -c mono --live gemma2:2b"
+    R_model="claude-opus-4-8"; t "the paid backend stays out of the replay" "REFUSED:the anthropic backend is cli-only"
+    R_model="--corpus"; t "a flag is not a model" "REFUSED:bad model name"
+    R_model=""
+    KIND=harvest-preview; t "harvest dry run" "./slack-harvest.sh -n"
+    KIND=harvest;         t "harvest for real" "./slack-harvest.sh"
+    KIND=intel;           t "intel feed, recording what is seen" "./intel-feed.sh"
+    KIND=intel-all;       t "intel feed, every item, seen-list untouched" "./intel-feed.sh -a"
+    KIND=scout; R_search=""; R_maxb=""
+    t "model scout defaults" "./model-scout.sh"
+    R_search="qwen"; R_maxb="4"; t "model scout search and size" "./model-scout.sh qwen 4"
+    R_search="qwen; rm -rf /"; t "scout search is a bare word" "REFUSED:bad search term"
+    R_search="qwen"; R_maxb="4b"; t "scout size is a number" "REFUSED:size must be a whole number of billions"
+    R_search=""; R_maxb="4"; t "a size needs a search to sit behind" "REFUSED:size must be a whole number of billions"
+    R_search=""; R_maxb=""
+    KIND=tor-up; R_cc=""; t "tor up" "./tor-up.sh"
+    R_cc="gb"; t "tor exit country" "./tor-up.sh -g gb"
+    R_cc="gb --down"; t "country is two letters" "REFUSED:exit country must be a two-letter code"
+    R_cc=""
+    KIND=tor-rotate; t "tor rotate" "./tor-up.sh --rotate"
+    KIND=tor-down;   t "tor down" "./tor-up.sh --down"
 
     # Recording is the one kind that writes. It goes through feedback-report.sh -i, and the
     # vocabulary is checked here rather than trusted from the form.

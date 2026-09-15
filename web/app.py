@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -283,9 +283,85 @@ async def inspect(request: Request, url: str = Form(...), back: str = Form(defau
                   verdict="", category="", back=back, inspecting=True)
 
 
+# What the Tools page may ask the worker for. The worker is still the authority -- it refuses an
+# unknown kind and validates every value -- this only keeps the form from offering one.
+TOOL_KINDS = {"replay", "harvest-preview", "harvest", "intel", "intel-all", "scout",
+              "tor-up", "tor-rotate", "tor-down"}
+
+# Validated with the dataviz palette checker against --panel (#0e1114), dark mode: lightness band,
+# chroma floor, CVD and normal-vision separation, contrast. Fixed order, never cycled: a fifth
+# engine is drawn in muted grey rather than given a generated hue.
+SERIES = ["#3987e5", "#d95926", "#199e70", "#c98500"]
+
+
+def bench_chart(rows: list[dict]) -> dict:
+    """Accuracy per replay, per engine, on one 0-100% axis.
+
+    Time is a different scale, so it is NOT a second axis -- it is a column in the table under the
+    chart. Replays are placed by order rather than by date: they are meant to be weekly, and a gap
+    in the calendar is not a finding.
+    """
+    W, H, L, R, T, B = 640, 220, 40, 130, 14, 30
+    stamps = sorted({r["ts"] for r in rows})
+    engines = list(dict.fromkeys(r["engine"] for r in rows))
+    pw, ph = W - L - R, H - T - B
+    xs = {ts: L + (pw / 2 if len(stamps) == 1 else i * pw / (len(stamps) - 1))
+          for i, ts in enumerate(stamps)}
+    series = []
+    for i, e in enumerate(engines):
+        # Dodge each engine a few px sideways: two engines one point apart on the same replay
+        # (58% vs 59%) otherwise print one dot on top of the other.
+        dx = (i - (len(engines) - 1) / 2) * 10
+        pts = [{"x": round(xs[r["ts"]] + dx, 1), "y": round(T + ph * (1 - r["accuracy"] / 100), 1), **r}
+               for r in rows if r["engine"] == e]
+        series.append({"engine": e, "color": SERIES[i] if i < len(SERIES) else "#79838f",
+                       "points": pts, "path": " ".join(f"{p['x']},{p['y']}" for p in pts)})
+    # Direct labels sit right of each line's last point; nudge apart any two closer than 13px.
+    placed = sorted(series, key=lambda s: s["points"][-1]["y"])
+    last = -1e9
+    for s in placed:
+        s["label_y"] = max(s["points"][-1]["y"] + 4, last + 13)
+        last = s["label_y"]
+    return {"W": W, "H": H, "L": L, "R": R, "T": T, "B": B, "right": W - R,
+            "grid": [{"v": v, "y": round(T + ph * (1 - v / 100), 1)} for v in (0, 25, 50, 75, 100)],
+            "stamps": [{"ts": ts, "x": round(xs[ts], 1)} for ts in stamps],
+            "series": series}
+
+
+def intel_items(log: str) -> list[dict]:
+    """intel-feed.sh's output as items, the ones with NO MATCHING DETECTION first.
+
+    Those are the only lines worth an hour; everything else is a mechanism we already have. The
+    order within each group is the feed's own.
+    """
+    items = []
+    for block in log.split("\n\n"):
+        lines = [ln for ln in block.splitlines() if ln.strip()]
+        if lines and lines[0].startswith("["):
+            items.append({"lines": lines, "gap": any("NO MATCHING DETECTION" in ln for ln in lines)})
+    return sorted(items, key=lambda it: not it["gap"])
+
+
 @app.get("/tools", response_class=HTMLResponse)
-async def tools(request: Request):
-    return render(request, "tools.html")
+async def tools(request: Request, job: str = ""):
+    rows = cache.benchmark()
+    k = jobq.kind(job) if job else ""
+    done = job and jobq.state(job) == "done"
+    return render(request, "tools.html", job=job or None, kind=k,
+                  chart=bench_chart(rows) if rows else None, bench=rows,
+                  intel=intel_items(jobq.log(job)) if done and k.startswith("intel") else None)
+
+
+@app.post("/tools/run", response_class=HTMLResponse)
+async def tools_run(request: Request, kind: str = Form(...), model: str = Form(default=""),
+                    search: str = Form(default=""), maxb: str = Form(default=""),
+                    cc: str = Form(default="")):
+    if kind not in TOOL_KINDS:
+        return PlainTextResponse("unknown tool", status_code=400)
+    job = jobq.submit(kind, model=model.strip() or None, search=search.strip() or None,
+                      maxb=maxb.strip() or None, cc=cc.strip().lower() or None)
+    # Same page, as a GET: a reload re-attaches to the job instead of submitting it again.
+    return RedirectResponse(f"/tools?job={job}", status_code=303)
 
 
 @app.get("/scan/{h}", response_class=HTMLResponse)

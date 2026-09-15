@@ -201,3 +201,26 @@ form.inline { display:inline; }
 .queue details.rec[open] .record { position:absolute; right:22px; width:360px; z-index:2;
          display:flex; flex-direction:column; gap:8px; }
 .queue details.rec textarea { min-height:54px; }
+
+/* tool runner */
+.toolgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin:6px 0 10px; }
+.tool { border:1px solid var(--line); background:var(--panel); border-radius:4px; padding:4px 15px 13px; }
+.toolform { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.toolform input { background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:3px;
+                  padding:4px 6px; font:11px var(--mono); }
+.intel { font:11px var(--mono); color:var(--fg2); border-left:2px solid var(--line); padding:4px 10px; margin:6px 0; }
+.intel.gap { border-left-color:var(--yellow); color:var(--fg); }
+
+/* replay chart: one axis, recessive grid, 2px lines, 8px markers with a surface ring */
+.chart { border:1px solid var(--line); background:var(--panel); border-radius:4px; padding:12px 15px; }
+.chartscroll { overflow-x:auto; }
+.chart svg { display:block; max-width:none; }
+.legend { display:flex; gap:16px; font:11px var(--mono); color:var(--fg2); margin-bottom:6px; }
+.legend i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+.chart .grid { stroke:var(--line2); stroke-width:1; }
+.chart .axis { fill:var(--dim); font:10px var(--mono); }
+.chart .line { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+.chart .dotm { stroke:var(--panel); stroke-width:2; }
+.chart .hit { fill:transparent; }
+.chart .pt:hover .dotm { r:5; }
+.chart .dlabel { fill:var(--fg2); font:11px var(--mono); }
